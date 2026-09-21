@@ -18,11 +18,11 @@ from pydantic import BaseModel, Field
 from .auth import AuthManager, SESSION_COOKIE, SESSION_TTL_SECONDS
 from .blocklists import fetch_url, normalize_domain, parse_blocklist
 from .db import Database
-from .policy import PolicyEngine
+from .policy import PolicyEngine, normalize_hostname_pattern
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.11.0"
+APP_VERSION = "1.12.0"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -335,7 +335,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
     page_descriptions = {
         "dashboard": "Monitor DNS enforcement, request activity, and policy health at a glance.",
         "lists": "Import, organize, and control the domain intelligence that powers your blocking policy.",
-        "scopes": "Define exactly where filtering applies and pause or resume protection by network or endpoint.",
+        "scopes": "Define filtering by network, exact endpoint, or reverse-DNS hostname and control each target independently.",
         "queries": "Inspect DNS decisions, troubleshoot policy matches, and follow activity across your clients.",
         "security": "Manage administrator access and the API credentials used by connected DNS resolvers.",
         "settings": "Tune Blockinator's response behavior, retention, and core service preferences.",
@@ -352,7 +352,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
     nav = [
         ("/", "dashboard", "Dashboard", "⌂"),
         ("/lists", "lists", "Block Lists", "☷"),
-        ("/scopes", "scopes", "Networks & Endpoints", "◎"),
+        ("/scopes", "scopes", "Policy Targets", "◎"),
         ("/queries", "queries", "Query Log", "≡"),
     ]
     admin_nav = [
@@ -583,6 +583,7 @@ def lists_page(request: Request):
     )
     networks = [scope for scope in scopes if scope["kind"] == "network"]
     clients = [scope for scope in scopes if scope["kind"] == "client"]
+    hostnames = [scope for scope in scopes if scope["kind"] == "hostname"]
 
     def scope_option(scope, selected: set[int], disabled: bool = False) -> str:
         checked = " checked" if int(scope["id"]) in selected else ""
@@ -591,6 +592,9 @@ def lists_page(request: Request):
         if scope["kind"] == "client":
             target_html = client_identity_html(scope["target"], client_names)
             kind_label = "Endpoint"
+        elif scope["kind"] == "hostname":
+            target_html = f'<span class="scope-target mono">{esc(scope["target"])}</span>'
+            kind_label = "Hostname"
         else:
             target_html = f'<span class="scope-target mono">{esc(scope["target"])}</span>'
             kind_label = "Network"
@@ -605,7 +609,7 @@ def lists_page(request: Request):
     def scope_editor(selected: set[int], global_disabled: bool = False) -> str:
         if not scopes:
             return (
-                '<div class="scope-empty">No networks or endpoints exist yet. '
+                '<div class="scope-empty">No policy targets exist yet. '
                 '<a href="/scopes#add-scope">Create one first →</a></div>'
             )
         network_html = "".join(
@@ -613,6 +617,9 @@ def lists_page(request: Request):
         )
         client_html = "".join(
             scope_option(scope, selected, global_disabled) for scope in clients
+        )
+        hostname_html = "".join(
+            scope_option(scope, selected, global_disabled) for scope in hostnames
         )
         disabled_class = " is-global-disabled" if global_disabled else ""
         return (
@@ -623,6 +630,9 @@ def lists_page(request: Request):
             '<section class="scope-group"><div class="scope-group-head"><b>Endpoints</b>'
             f'<span>{len(clients)}</span></div>'
             f'{client_html or "<p class=\"scope-empty-inline\">No endpoint scopes.</p>"}</section>'
+            '<section class="scope-group"><div class="scope-group-head"><b>Hostnames</b>'
+            f'<span>{len(hostnames)}</span></div>'
+            f'{hostname_html or "<p class=\"scope-empty-inline\">No hostname scopes.</p>"}</section>'
             '</div>'
         )
 
@@ -690,7 +700,7 @@ def lists_page(request: Request):
             </div>
           </div>
           <details class="list-editor" id="edit-list-{int(r["id"])}">
-            <summary><span><b>Edit list</b><small>Settings, contents, networks and endpoints</small></span><span class="editor-chevron">⌄</span></summary>
+            <summary><span><b>Edit list</b><small>Settings, contents and policy-target assignments</small></span><span class="editor-chevron">⌄</span></summary>
             <div class="list-edit-body">
               <form method="post" action="/admin/lists/{int(r["id"])}/edit" enctype="multipart/form-data" class="form-grid list-edit-form">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
@@ -699,7 +709,7 @@ def lists_page(request: Request):
                 <label class="full">Source URL<input name="source_url" value="{esc(r["source_url"] or "")}" placeholder="https://example.com/list.txt"></label>
                 <label>Refresh interval (minutes)<input type="number" name="refresh_minutes" min="1" max="10080" value="{int(r["refresh_minutes"])}"></label>
                 <label class="check"><input type="checkbox" name="enabled" value="1"{" checked" if r["enabled"] else ""}> List enabled</label>
-                <label class="check full"><input type="checkbox" name="global_list" value="1" data-global-toggle{" checked" if r["use_globally"] else ""}> Apply globally to every network and endpoint</label>
+                <label class="check full"><input type="checkbox" name="global_list" value="1" data-global-toggle{" checked" if r["use_globally"] else ""}> Apply globally to every network, endpoint, and hostname</label>
 
                 <div class="form-section full schedule-section">
                   <div class="form-section-head"><div><b>Enforcement schedule</b><p>Leave scheduling off to enforce this list at all times.</p></div></div>
@@ -707,7 +717,7 @@ def lists_page(request: Request):
                 </div>
 
                 <div class="form-section full">
-                  <div class="form-section-head"><div><b>Scope assignments</b><p>Select every network and endpoint that should use this list.</p></div><span>{len(selected)} selected</span></div>
+                  <div class="form-section-head"><div><b>Scope assignments</b><p>Select every network, endpoint, and hostname scope that should use this list.</p></div><span>{len(selected)} selected</span></div>
                   {scope_editor(selected, bool(r["use_globally"]))}
                 </div>
 
@@ -1316,11 +1326,25 @@ def scopes_page(request: Request):
     cards = ""
     for scope in scopes:
         selected = memberships.get(int(scope["id"]), set())
-        target_html = (
-            client_identity_html(scope["target"], scope_client_names)
-            if scope["kind"] == "client"
-            else f'<span class="mono">{esc(scope["target"])}</span>'
-        )
+        if scope["kind"] == "client":
+            target_html = client_identity_html(scope["target"], scope_client_names)
+        else:
+            target_html = f'<span class="mono">{esc(scope["target"])}</span>'
+        scope_kind_label = {
+            "network": "Network",
+            "client": "Endpoint",
+            "hostname": "Hostname",
+        }.get(scope["kind"], "Target")
+        scope_kind_class = {
+            "network": "network",
+            "client": "client",
+            "hostname": "hostname",
+        }.get(scope["kind"], "network")
+        scope_kind_icon = {
+            "network": "◎",
+            "client": "◆",
+            "hostname": "◈",
+        }.get(scope["kind"], "◎")
         assigned_names = [
             str(blocklist["name"])
             for blocklist in blocklists
@@ -1333,6 +1357,7 @@ def scopes_page(request: Request):
         )
         kind_network_selected = " selected" if scope["kind"] == "network" else ""
         kind_client_selected = " selected" if scope["kind"] == "client" else ""
+        kind_hostname_selected = " selected" if scope["kind"] == "hostname" else ""
         state_active_selected = " selected" if scope["state"] == "active" else ""
         state_paused_selected = " selected" if scope["state"] == "paused" else ""
         scope_schedule_summary = schedule_summary(scope)
@@ -1342,15 +1367,23 @@ def scopes_page(request: Request):
             if scope["schedule_enabled"]
             else ""
         )
+        scope_target_note = {
+            "network": ("CIDR network", "Matches clients contained by this IPv4/IPv6 network."),
+            "client": ("Exact client address", "Matches one exact IPv4/IPv6 client address."),
+            "hostname": (
+                "Reverse-DNS hostname",
+                "Matches a learned PTR name exactly or by wildcard suffix such as *.kids.home.arpa.",
+            ),
+        }.get(scope["kind"], ("Policy target", "Changing the type changes target validation."))
 
         cards += f'''<article class="scope-card editable-scope-card" id="scope-{int(scope["id"])}">
           <div class="scope-card-summary">
             <div class="scope-summary-main">
-              <div class="scope-icon {"network" if scope["kind"] == "network" else "client"}">{"◎" if scope["kind"] == "network" else "◆"}</div>
+              <div class="scope-icon {scope_kind_class}">{scope_kind_icon}</div>
               <div class="scope-summary-copy">
                 <div class="scope-summary-title">
                   <h3>{esc(scope["name"])}</h3>
-                  <span class="pill">{ "Network" if scope["kind"] == "network" else "Endpoint" }</span>
+                  <span class="pill">{esc(scope_kind_label)}</span>
                   <span class="pill {"green" if scope["state"] == "active" else "amber"}">{esc(scope["state"])}</span>
                   {scope_schedule_badge}
                 </div>
@@ -1372,18 +1405,18 @@ def scopes_page(request: Request):
             </div>
           </div>
           <details class="scope-editor" id="edit-scope-{int(scope["id"])}">
-            <summary><span><b>Edit {"network" if scope["kind"] == "network" else "endpoint"}</b><small>Identity, address, state, schedule and block-list assignments</small></span><span class="editor-chevron">⌄</span></summary>
+            <summary><span><b>Edit {esc(scope_kind_label.lower())}</b><small>Identity, target, state, schedule and block-list assignments</small></span><span class="editor-chevron">⌄</span></summary>
             <div class="scope-edit-body">
               <form method="post" action="/admin/scopes/{int(scope["id"])}/edit" class="form-grid scope-edit-form">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                 <label>Name<input name="name" value="{esc(scope["name"])}" required></label>
-                <label>Type<select name="kind"><option value="network"{kind_network_selected}>Network</option><option value="client"{kind_client_selected}>Endpoint</option></select></label>
-                <label class="full">Address / CIDR<input name="target" value="{esc(scope["target"])}" required></label>
+                <label>Type<select name="kind"><option value="network"{kind_network_selected}>Network</option><option value="client"{kind_client_selected}>Endpoint</option><option value="hostname"{kind_hostname_selected}>Reverse-DNS Hostname</option></select></label>
+                <label class="full">Address / CIDR / PTR hostname<input name="target" value="{esc(scope["target"])}" required></label>
                 <label>Blocking state<select name="state"><option value="active"{state_active_selected}>Active</option><option value="paused"{state_paused_selected}>Paused</option></select></label>
-                <div class="scope-edit-note"><b>{"CIDR network" if scope["kind"] == "network" else "Exact client address"}</b><span>Changing the type also changes address validation when you save.</span></div>
+                <div class="scope-edit-note"><b>{esc(scope_target_note[0])}</b><span>{esc(scope_target_note[1])}</span></div>
 
                 <div class="form-section full schedule-section">
-                  <div class="form-section-head"><div><b>Enforcement schedule</b><p>Leave scheduling off for this network/endpoint to participate in policy at all times.</p></div></div>
+                  <div class="form-section-head"><div><b>Enforcement schedule</b><p>Leave scheduling off for this policy target to participate at all times.</p></div></div>
                   {scope_schedule_fields}
                 </div>
 
@@ -1405,30 +1438,30 @@ def scopes_page(request: Request):
         </article>'''
 
     if not cards:
-        cards = '<div class="empty-card">No managed networks or endpoints yet. Add one to start scoping policy.</div>'
+        cards = '<div class="empty-card">No managed policy targets yet. Add a network, endpoint, or reverse-DNS hostname to start scoping policy.</div>'
 
     new_list_editor = blocklist_editor(set())
     new_scope_schedule_fields = schedule_fields_html(default_timezone=os.getenv("TZ", "UTC"))
     body = f'''<div class="split-grid scopes-layout">
       <section class="panel">
         <div class="panel-head">
-          <div><div class="panel-kicker">Policy targets</div><h3>Networks & endpoints</h3><p>Edit addresses, schedules, pause/resume enforcement, and block-list assignments without leaving this page.</p></div>
+          <div><div class="panel-kicker">Policy targets</div><h3>Networks, endpoints & hostnames</h3><p>Edit targets, schedules, pause/resume enforcement, and block-list assignments without leaving this page.</p></div>
           <span class="result-count">{len(scopes)} scopes</span>
         </div>
         <div class="scope-card-list">{cards}</div>
       </section>
 
       <section class="panel action-panel" id="add-scope">
-        <div class="panel-kicker">New policy target</div><h3>Add network or endpoint</h3>
-        <p class="panel-help">Use a CIDR for a network or an exact IPv4/IPv6 address for a single endpoint. Assign block lists now or edit them later.</p>
+        <div class="panel-kicker">New policy target</div><h3>Add network, endpoint, or hostname</h3>
+        <p class="panel-help">Use a CIDR, an exact IPv4/IPv6 address, an exact PTR hostname, or a wildcard suffix such as *.kids.home.arpa.</p>
         <form method="post" action="/admin/scopes" class="form-grid">
           <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
           <label>Name<input name="name" required></label>
-          <label>Type<select name="kind"><option value="network">Network</option><option value="client">Endpoint</option></select></label>
-          <label class="full">Address / CIDR<input name="target" placeholder="192.168.20.0/24 or 192.168.20.44" required></label>
+          <label>Type<select name="kind"><option value="network">Network</option><option value="client">Endpoint</option><option value="hostname">Reverse-DNS Hostname</option></select></label>
+          <label class="full">Address / CIDR / PTR hostname<input name="target" placeholder="192.168.20.0/24, 192.168.20.44, or *.kids.home.arpa" required></label>
           <label>Initial state<select name="state"><option value="active">Active</option><option value="paused">Paused</option></select></label>
           <div class="form-section full schedule-section">
-            <div class="form-section-head"><div><b>Enforcement schedule</b><p>Optional. Limit when this network or endpoint participates in policy.</p></div></div>
+            <div class="form-section-head"><div><b>Enforcement schedule</b><p>Optional. Limit when this policy target participates in policy.</p></div></div>
             {new_scope_schedule_fields}
           </div>
           <div class="form-section full">
@@ -1439,7 +1472,7 @@ def scopes_page(request: Request):
         </form>
       </section>
     </div>'''
-    return page(request, "Networks & Endpoints", "scopes", body, s)
+    return page(request, "Policy Targets", "scopes", body, s)
 
 
 def _blocklist_ids_from_form(form) -> list[int]:
@@ -1475,7 +1508,14 @@ def _normalize_scope_target(kind: str, target: str) -> str:
         return str(ipaddress.ip_address(target))
     if kind == "network":
         return str(ipaddress.ip_network(target, strict=False))
-    raise ValueError("Scope type must be network or endpoint")
+    if kind == "hostname":
+        normalized = normalize_hostname_pattern(target)
+        if normalized is None:
+            raise ValueError(
+                "Enter a valid PTR hostname or wildcard suffix such as *.kids.home.arpa"
+            )
+        return normalized
+    raise ValueError("Scope type must be Network, Endpoint, or Reverse-DNS Hostname")
 
 
 @app.post("/admin/scopes")
@@ -1487,7 +1527,7 @@ async def add_scope(request: Request):
     state = str(form.get("state", "active")).strip().lower()
     try:
         schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
-            form, "network or endpoint"
+            form, "policy target"
         )
     except ValueError as e:
         return redirect("/scopes", error=str(e))
@@ -1495,14 +1535,18 @@ async def add_scope(request: Request):
 
     if not name:
         return redirect("/scopes", error="Scope name is required")
-    if kind not in {"network", "client"}:
-        return redirect("/scopes", error="Scope type must be Network or Endpoint")
+    if kind not in {"network", "client", "hostname"}:
+        return redirect("/scopes", error="Scope type must be Network, Endpoint, or Reverse-DNS Hostname")
     if state not in {"active", "paused"}:
         return redirect("/scopes", error="Scope state must be active or paused")
     try:
         target = _normalize_scope_target(kind, target_raw)
     except ValueError as e:
-        label = "endpoint IP address" if kind == "client" else "network CIDR"
+        label = {
+            "client": "endpoint IP address",
+            "network": "network CIDR",
+            "hostname": "PTR hostname pattern",
+        }.get(kind, "policy target")
         return redirect("/scopes", error=f"Invalid {label}: {e}")
 
     try:
@@ -1543,7 +1587,7 @@ async def edit_scope(scope_id: int, request: Request):
     state = str(form.get("state", "active")).strip().lower()
     try:
         schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
-            form, "network or endpoint"
+            form, "policy target"
         )
     except ValueError as e:
         return redirect(f"/scopes#edit-scope-{scope_id}", error=str(e))
@@ -1551,20 +1595,24 @@ async def edit_scope(scope_id: int, request: Request):
 
     if not name:
         return redirect(f"/scopes#edit-scope-{scope_id}", error="Scope name is required")
-    if kind not in {"network", "client"}:
-        return redirect(f"/scopes#edit-scope-{scope_id}", error="Scope type must be Network or Endpoint")
+    if kind not in {"network", "client", "hostname"}:
+        return redirect(f"/scopes#edit-scope-{scope_id}", error="Scope type must be Network, Endpoint, or Reverse-DNS Hostname")
     if state not in {"active", "paused"}:
         return redirect(f"/scopes#edit-scope-{scope_id}", error="Scope state must be active or paused")
     try:
         target = _normalize_scope_target(kind, target_raw)
     except ValueError as e:
-        label = "endpoint IP address" if kind == "client" else "network CIDR"
+        label = {
+            "client": "endpoint IP address",
+            "network": "network CIDR",
+            "hostname": "PTR hostname pattern",
+        }.get(kind, "policy target")
         return redirect(f"/scopes#edit-scope-{scope_id}", error=f"Invalid {label}: {e}")
 
     with db.connect() as con:
         existing = con.execute("SELECT id FROM scopes WHERE id=?", (scope_id,)).fetchone()
         if not existing:
-            return redirect("/scopes", error="Network or endpoint not found")
+            return redirect("/scopes", error="Policy target not found")
         try:
             con.execute("BEGIN")
             con.execute(
