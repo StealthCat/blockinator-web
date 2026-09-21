@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.8.1 — Global assignment lockout
+
+- Shaded and disabled network/endpoint assignment checkboxes whenever a block list is globally assigned.
+- Block Lists editors now disable scope assignment controls dynamically while **Apply globally** is checked.
+- Unchecking **Apply globally** immediately restores the network and endpoint assignment controls.
+- Networks & Endpoints now renders Global block lists as read-only assignment choices.
+- Added server-side validation so Global lists cannot be stored as redundant per-scope mappings.
+- Updated the application version to 1.8.1.
+
 ## 1.8.0 — Manual list domain editor
 
 - Added a dedicated **Manage domains** page for manual block lists.
