@@ -69,7 +69,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS scopes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
-                    kind TEXT NOT NULL CHECK(kind IN ('network','client')),
+                    kind TEXT NOT NULL CHECK(kind IN ('network','client','hostname')),
                     target TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','paused')),
                     schedule_enabled INTEGER NOT NULL DEFAULT 0,
@@ -108,6 +108,14 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_query_log_ts ON query_log(ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_client ON query_log(client_ip, ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_qname ON query_log(qname, ts DESC);
+
+                CREATE TABLE IF NOT EXISTS client_identities (
+                    client_ip TEXT PRIMARY KEY,
+                    client_name TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_client_identities_name
+                    ON client_identities(client_name);
 
                 CREATE TABLE IF NOT EXISTS admin_users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,6 +176,73 @@ class Database:
                         f"ALTER TABLE scopes ADD COLUMN {column_name} {definition}"
                     )
 
+            scope_table_row = con.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='scopes'"
+            ).fetchone()
+            scope_table_sql = (scope_table_row["sql"] or "") if scope_table_row else ""
+            if "'hostname'" not in scope_table_sql:
+                con.execute("PRAGMA foreign_keys=OFF")
+                try:
+                    con.execute("BEGIN")
+                    con.execute(
+                        "ALTER TABLE scope_blocklists RENAME TO scope_blocklists_legacy"
+                    )
+                    con.execute("ALTER TABLE scopes RENAME TO scopes_legacy")
+                    con.execute(
+                        """
+                        CREATE TABLE scopes (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            name TEXT NOT NULL UNIQUE,
+                            kind TEXT NOT NULL CHECK(kind IN ('network','client','hostname')),
+                            target TEXT NOT NULL,
+                            state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','paused')),
+                            schedule_enabled INTEGER NOT NULL DEFAULT 0,
+                            schedule_days TEXT NOT NULL DEFAULT '0,1,2,3,4,5,6',
+                            schedule_start TEXT NOT NULL DEFAULT '00:00',
+                            schedule_end TEXT NOT NULL DEFAULT '00:00',
+                            schedule_timezone TEXT NOT NULL DEFAULT 'UTC',
+                            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                    con.execute(
+                        """
+                        INSERT INTO scopes(
+                            id,name,kind,target,state,schedule_enabled,schedule_days,
+                            schedule_start,schedule_end,schedule_timezone,created_at
+                        )
+                        SELECT
+                            id,name,kind,target,state,schedule_enabled,schedule_days,
+                            schedule_start,schedule_end,schedule_timezone,created_at
+                        FROM scopes_legacy
+                        """
+                    )
+                    con.execute(
+                        """
+                        CREATE TABLE scope_blocklists (
+                            scope_id INTEGER NOT NULL,
+                            blocklist_id INTEGER NOT NULL,
+                            PRIMARY KEY (scope_id, blocklist_id),
+                            FOREIGN KEY (scope_id) REFERENCES scopes(id) ON DELETE CASCADE,
+                            FOREIGN KEY (blocklist_id) REFERENCES blocklists(id) ON DELETE CASCADE
+                        ) WITHOUT ROWID
+                        """
+                    )
+                    con.execute(
+                        """
+                        INSERT INTO scope_blocklists(scope_id,blocklist_id)
+                        SELECT scope_id,blocklist_id FROM scope_blocklists_legacy
+                        """
+                    )
+                    con.execute("DROP TABLE scope_blocklists_legacy")
+                    con.execute("DROP TABLE scopes_legacy")
+                    con.execute("COMMIT")
+                except Exception:
+                    con.execute("ROLLBACK")
+                    raise
+                finally:
+                    con.execute("PRAGMA foreign_keys=ON")
+
             query_log_columns = {
                 row["name"] for row in con.execute("PRAGMA table_info(query_log)")
             }
@@ -177,6 +252,25 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_query_log_client_name "
                 "ON query_log(client_name, ts DESC)"
             )
+
+            for row in con.execute(
+                """
+                SELECT client_ip, client_name, MAX(id) AS latest_id
+                FROM query_log
+                WHERE client_name IS NOT NULL AND TRIM(client_name) <> ''
+                GROUP BY client_ip
+                """
+            ):
+                con.execute(
+                    """
+                    INSERT INTO client_identities(client_ip,client_name,updated_at)
+                    VALUES(?,?,CURRENT_TIMESTAMP)
+                    ON CONFLICT(client_ip) DO UPDATE SET
+                        client_name=excluded.client_name,
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (row["client_ip"], row["client_name"]),
+                )
 
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('global_blocking','1')")
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('block_response','nxdomain')")
