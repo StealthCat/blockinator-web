@@ -89,9 +89,13 @@ def redirect(path: str, notice: str | None = None, error: str | None = None):
         parts.append("notice=" + quote(notice))
     if error:
         parts.append("error=" + quote(error))
+
+    base, marker, fragment = path.partition("#")
     if parts:
-        path += ("&" if "?" in path else "?") + "&".join(parts)
-    return RedirectResponse(path, status_code=303)
+        base += ("&" if "?" in base else "?") + "&".join(parts)
+    if marker:
+        base += "#" + fragment
+    return RedirectResponse(base, status_code=303)
 
 def session_for(request: Request):
     return auth.get_session(request.cookies.get(SESSION_COOKIE))
@@ -218,6 +222,22 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
     </div>
   </main>
 </div>
+<script>
+(function () {
+  function openHashDetails() {
+    if (!location.hash) return;
+    var target = document.getElementById(location.hash.slice(1));
+    if (target && target.tagName === "DETAILS") {
+      target.open = true;
+      requestAnimationFrame(function () {
+        target.scrollIntoView({behavior: "smooth", block: "nearest"});
+      });
+    }
+  }
+  window.addEventListener("hashchange", openHashDetails);
+  openHashDetails();
+})();
+</script>
 </body>
 </html>""")
 
@@ -426,8 +446,8 @@ def lists_page(request: Request):
             "Uploaded list" if r["source_type"] == "upload" else "Manual list"
         )
         refresh_button = (
-            '<button class="small-button" type="submit" name="action" value="refresh">Save & refresh URL</button>'
-            if r["source_url"] else ""
+            '<button class="small-button" type="submit" name="action" value="refresh">'
+            'Save & refresh URL</button>'
         )
 
         cards += f'''<article class="list-card editable-list-card" id="list-{int(r["id"])}">
@@ -481,7 +501,7 @@ def lists_page(request: Request):
                 <div class="editor-actions full">
                   <button class="primary-button" type="submit" name="action" value="save">Save changes</button>
                   {refresh_button}
-                  <a class="small-button" href="#list-{int(r["id"])}">Close editor</a>
+                  <button class="small-button" type="button" onclick="this.closest('details').open=false">Close editor</button>
                 </div>
               </form>
             </div>
