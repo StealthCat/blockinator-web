@@ -38,5 +38,9 @@ def format_timestamp_for_timezone(
         tz = timezone.utc
 
     local = parsed.astimezone(tz)
-    # Example: 2026-09-21 4:43:34 PM EDT
-    return local.strftime("%Y-%m-%d %-I:%M:%S %p %Z")
+    # Keep the display portable across platforms while avoiding a leading zero
+    # in the 12-hour clock.
+    date_part = local.strftime("%Y-%m-%d")
+    hour = str(int(local.strftime("%I")))
+    time_part = local.strftime(":%M:%S %p %Z")
+    return f"{date_part} {hour}{time_part}"
