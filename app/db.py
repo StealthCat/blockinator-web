@@ -72,6 +72,11 @@ class Database:
                     kind TEXT NOT NULL CHECK(kind IN ('network','client')),
                     target TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','paused')),
+                    schedule_enabled INTEGER NOT NULL DEFAULT 0,
+                    schedule_days TEXT NOT NULL DEFAULT '0,1,2,3,4,5,6',
+                    schedule_start TEXT NOT NULL DEFAULT '00:00',
+                    schedule_end TEXT NOT NULL DEFAULT '00:00',
+                    schedule_timezone TEXT NOT NULL DEFAULT 'UTC',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -151,6 +156,15 @@ class Database:
                 if column_name not in blocklist_columns:
                     con.execute(
                         f"ALTER TABLE blocklists ADD COLUMN {column_name} {definition}"
+                    )
+
+            scope_columns = {
+                row["name"] for row in con.execute("PRAGMA table_info(scopes)")
+            }
+            for column_name, definition in schedule_columns.items():
+                if column_name not in scope_columns:
+                    con.execute(
+                        f"ALTER TABLE scopes ADD COLUMN {column_name} {definition}"
                     )
 
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('global_blocking','1')")
