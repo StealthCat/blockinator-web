@@ -1573,3 +1573,44 @@ input[type=file]{padding:8px}
     text-align:center;
   }
 }
+
+
+/* =========================================================
+   Blockinator 1.8.1 — global assignment lockout
+   ========================================================= */
+.scope-assignment-grid.is-global-disabled{
+  opacity:.52;
+  filter:saturate(.55);
+}
+.scope-option.global-disabled,
+.scope-list-option.global-disabled{
+  cursor:not-allowed;
+  opacity:.50;
+  background:rgba(72,91,103,.06);
+  border-color:rgba(104,128,142,.12);
+}
+.scope-option.global-disabled:hover,
+.scope-list-option.global-disabled:hover{
+  background:rgba(72,91,103,.06);
+  border-color:rgba(104,128,142,.12);
+}
+.scope-option.global-disabled input,
+.scope-list-option.global-disabled input{
+  cursor:not-allowed;
+  accent-color:#607584;
+}
+.scope-option.global-disabled .scope-option-title b,
+.scope-list-option.global-disabled .scope-list-title b{
+  color:#78909f;
+}
+.scope-option.global-disabled .client-name,
+.scope-option.global-disabled .client-address,
+.scope-option.global-disabled .scope-target,
+.scope-list-option.global-disabled small{
+  color:#5f7480;
+}
+.scope-list-option.global-disabled:has(input:checked){
+  box-shadow:none;
+  background:rgba(72,91,103,.06);
+  border-color:rgba(104,128,142,.12);
+}
