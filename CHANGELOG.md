@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.0 — Editable networks, endpoints, and list assignments
+
+- Reworked the Networks & Endpoints page into editable scope cards.
+- Networks and endpoints can now be renamed and have their address/CIDR edited in place.
+- A scope can be converted between Network and Endpoint with type-specific IP/CIDR validation.
+- Active/paused policy state can be edited alongside the scope identity.
+- Block lists can now be assigned or unassigned directly from each network/endpoint editor.
+- Added enabled, global, entry-count, and format context to the block-list assignment picker.
+- Added block-list assignment during network/endpoint creation.
+- Preserved reverse-DNS hostname display for exact endpoint scopes.
+- Policy-engine state reloads immediately after scope or assignment changes.
+- Added regression coverage for changing a network into an endpoint while changing its assigned list.
+- Updated the application version to 1.7.0.
+
 ## 1.6.0 — Editable block lists and scope assignments
 
 - Added an expandable editor to every block list on the Block Lists page.
