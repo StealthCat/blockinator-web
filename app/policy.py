@@ -6,8 +6,9 @@ import queue
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .db import Database
 
@@ -30,6 +31,42 @@ class BlockListCache:
     enabled: bool
     use_globally: bool
     domains: frozenset[str]
+    schedule_enabled: bool = False
+    schedule_days: frozenset[int] = frozenset(range(7))
+    schedule_start: str = "00:00"
+    schedule_end: str = "23:59"
+    schedule_timezone: str = "UTC"
+
+    def schedule_is_active(self, now_utc: datetime | None = None) -> bool:
+        if not self.schedule_enabled:
+            return True
+        if not self.schedule_days:
+            return False
+
+        try:
+            tz = ZoneInfo(self.schedule_timezone)
+            start = time.fromisoformat(self.schedule_start)
+            end = time.fromisoformat(self.schedule_end)
+        except (ValueError, ZoneInfoNotFoundError):
+            return False
+
+        current = (now_utc or datetime.now(timezone.utc)).astimezone(tz)
+        current_time = current.time().replace(tzinfo=None)
+        weekday = current.weekday()
+
+        # Equal start/end means the entire selected day.
+        if start == end:
+            return weekday in self.schedule_days
+
+        if start < end:
+            return weekday in self.schedule_days and start <= current_time < end
+
+        # Overnight window: a selected day owns the interval beginning on that
+        # day and ending the following morning.
+        if weekday in self.schedule_days and current_time >= start:
+            return True
+        previous_weekday = (weekday - 1) % 7
+        return previous_weekday in self.schedule_days and current_time < end
 
 
 @dataclass(slots=True)
@@ -131,9 +168,22 @@ class PolicyEngine:
                         "SELECT domain FROM block_entries WHERE blocklist_id=?", (r["id"],)
                     )
                 ) if r["enabled"] else frozenset()
+                schedule_days: set[int] = set()
+                for value in str(r["schedule_days"] or "").split(","):
+                    try:
+                        day = int(value)
+                    except ValueError:
+                        continue
+                    if 0 <= day <= 6:
+                        schedule_days.add(day)
                 new_lists[r["id"]] = BlockListCache(
                     id=r["id"], name=r["name"], enabled=bool(r["enabled"]),
                     use_globally=bool(r["use_globally"]), domains=domains,
+                    schedule_enabled=bool(r["schedule_enabled"]),
+                    schedule_days=frozenset(schedule_days),
+                    schedule_start=str(r["schedule_start"] or "00:00"),
+                    schedule_end=str(r["schedule_end"] or "23:59"),
+                    schedule_timezone=str(r["schedule_timezone"] or "UTC"),
                 )
             clients: list[Scope] = []
             networks: list[Scope] = []
@@ -173,7 +223,7 @@ class PolicyEngine:
         network = next((s for s in self.network_scopes if ip.version == s.network.version and ip in s.network), None)
         return client, network
 
-    def decide(self, client_ip: str, qname: str) -> Decision:
+    def decide(self, client_ip: str, qname: str, now_utc: datetime | None = None) -> Decision:
         try:
             ip = ipaddress.ip_address(client_ip)
         except ValueError:
@@ -197,13 +247,21 @@ class PolicyEngine:
                 effective_scope = None
 
             active_ids = {
-                lid for lid, bl in self.blocklists.items() if bl.enabled and bl.use_globally
+                lid
+                for lid, bl in self.blocklists.items()
+                if bl.enabled and bl.use_globally and bl.schedule_is_active(now_utc)
             }
             if network_scope is not None:
                 active_ids.update(network_scope.blocklist_ids)
             if client_scope is not None:
                 active_ids.update(client_scope.blocklist_ids)
-            active_ids = {lid for lid in active_ids if lid in self.blocklists and self.blocklists[lid].enabled}
+            active_ids = {
+                lid
+                for lid in active_ids
+                if lid in self.blocklists
+                and self.blocklists[lid].enabled
+                and self.blocklists[lid].schedule_is_active(now_utc)
+            }
 
             if not active_ids:
                 return Decision(False, "no_active_lists", effective_scope, response_mode=self.response_mode)
