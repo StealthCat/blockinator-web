@@ -22,7 +22,7 @@ from .policy import PolicyEngine
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.10.0"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -114,7 +114,7 @@ DAY_LABELS = [
 ]
 
 
-def parse_schedule_form(form) -> tuple[bool, str, str, str, str]:
+def parse_schedule_form(form, label: str = "block list") -> tuple[bool, str, str, str, str]:
     enabled = str(form.get("schedule_enabled", "")) == "1"
     days: list[int] = []
     for raw in form.getlist("schedule_day"):
@@ -143,7 +143,7 @@ def parse_schedule_form(form) -> tuple[bool, str, str, str, str]:
         ) from exc
 
     if enabled and not days:
-        raise ValueError("Select at least one day for a scheduled block list")
+        raise ValueError(f"Select at least one day for the scheduled {label}")
 
     if not days:
         days = list(range(7))
@@ -1261,6 +1261,13 @@ def scopes_page(request: Request):
         kind_client_selected = " selected" if scope["kind"] == "client" else ""
         state_active_selected = " selected" if scope["state"] == "active" else ""
         state_paused_selected = " selected" if scope["state"] == "paused" else ""
+        scope_schedule_summary = schedule_summary(scope)
+        scope_schedule_fields = schedule_fields_html(scope)
+        scope_schedule_badge = (
+            '<span class="scope-list-scheduled">Scheduled</span>'
+            if scope["schedule_enabled"]
+            else ""
+        )
 
         cards += f'''<article class="scope-card editable-scope-card" id="scope-{int(scope["id"])}">
           <div class="scope-card-summary">
@@ -1271,9 +1278,11 @@ def scopes_page(request: Request):
                   <h3>{esc(scope["name"])}</h3>
                   <span class="pill">{ "Network" if scope["kind"] == "network" else "Endpoint" }</span>
                   <span class="pill {"green" if scope["state"] == "active" else "amber"}">{esc(scope["state"])}</span>
+                  {scope_schedule_badge}
                 </div>
                 <div class="scope-summary-target">{target_html}</div>
                 <p class="scope-assignment-summary">{esc(assigned_summary)}</p>
+                <p class="scope-schedule-summary {"scheduled" if scope["schedule_enabled"] else ""}">{esc(scope_schedule_summary)}</p>
               </div>
             </div>
             <div class="actions scope-card-actions">
@@ -1299,6 +1308,11 @@ def scopes_page(request: Request):
                 <label>Blocking state<select name="state"><option value="active"{state_active_selected}>Active</option><option value="paused"{state_paused_selected}>Paused</option></select></label>
                 <div class="scope-edit-note"><b>{"CIDR network" if scope["kind"] == "network" else "Exact client address"}</b><span>Changing the type also changes address validation when you save.</span></div>
 
+                <div class="form-section full schedule-section">
+                  <div class="form-section-head"><div><b>Enforcement schedule</b><p>Leave scheduling off for this network/endpoint to participate in policy at all times.</p></div></div>
+                  {scope_schedule_fields}
+                </div>
+
                 <div class="form-section full">
                   <div class="form-section-head">
                     <div><b>Block-list assignments</b><p>Select lists that should explicitly apply to this scope. Lists marked Global already apply everywhere, but can also remain explicitly assigned for future policy changes.</p></div>
@@ -1320,6 +1334,7 @@ def scopes_page(request: Request):
         cards = '<div class="empty-card">No managed networks or endpoints yet. Add one to start scoping policy.</div>'
 
     new_list_editor = blocklist_editor(set())
+    new_scope_schedule_fields = schedule_fields_html(default_timezone=os.getenv("TZ", "UTC"))
     body = f'''<div class="split-grid scopes-layout">
       <section class="panel">
         <div class="panel-head">
@@ -1338,6 +1353,10 @@ def scopes_page(request: Request):
           <label>Type<select name="kind"><option value="network">Network</option><option value="client">Endpoint</option></select></label>
           <label class="full">Address / CIDR<input name="target" placeholder="192.168.20.0/24 or 192.168.20.44" required></label>
           <label>Initial state<select name="state"><option value="active">Active</option><option value="paused">Paused</option></select></label>
+          <div class="form-section full schedule-section">
+            <div class="form-section-head"><div><b>Enforcement schedule</b><p>Optional. Limit when this network or endpoint participates in policy.</p></div></div>
+            {new_scope_schedule_fields}
+          </div>
           <div class="form-section full">
             <div class="form-section-head"><div><b>Initial block-list assignments</b><p>Optional. Global lists apply automatically even when they are not explicitly selected.</p></div></div>
             {new_list_editor}
@@ -1392,6 +1411,12 @@ async def add_scope(request: Request):
     kind = str(form.get("kind", "")).strip().lower()
     target_raw = str(form.get("target", ""))
     state = str(form.get("state", "active")).strip().lower()
+    try:
+        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
+            form, "network or endpoint"
+        )
+    except ValueError as e:
+        return redirect("/scopes", error=str(e))
     blocklist_ids = _blocklist_ids_from_form(form)
 
     if not name:
@@ -1410,8 +1435,17 @@ async def add_scope(request: Request):
         with db.connect() as con:
             con.execute("BEGIN")
             cur = con.execute(
-                "INSERT INTO scopes(name,kind,target,state) VALUES(?,?,?,?)",
-                (name, kind, target, state),
+                """
+                INSERT INTO scopes(
+                    name,kind,target,state,schedule_enabled,schedule_days,
+                    schedule_start,schedule_end,schedule_timezone
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    name, kind, target, state,
+                    1 if schedule_enabled else 0, schedule_days,
+                    schedule_start, schedule_end, schedule_timezone,
+                ),
             )
             scope_id = int(cur.lastrowid)
             assigned = _save_scope_blocklist_assignments(con, scope_id, blocklist_ids)
@@ -1433,6 +1467,12 @@ async def edit_scope(scope_id: int, request: Request):
     kind = str(form.get("kind", "")).strip().lower()
     target_raw = str(form.get("target", ""))
     state = str(form.get("state", "active")).strip().lower()
+    try:
+        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
+            form, "network or endpoint"
+        )
+    except ValueError as e:
+        return redirect(f"/scopes#edit-scope-{scope_id}", error=str(e))
     blocklist_ids = _blocklist_ids_from_form(form)
 
     if not name:
@@ -1454,8 +1494,18 @@ async def edit_scope(scope_id: int, request: Request):
         try:
             con.execute("BEGIN")
             con.execute(
-                "UPDATE scopes SET name=?,kind=?,target=?,state=? WHERE id=?",
-                (name, kind, target, state, scope_id),
+                """
+                UPDATE scopes
+                SET name=?,kind=?,target=?,state=?,schedule_enabled=?,schedule_days=?,
+                    schedule_start=?,schedule_end=?,schedule_timezone=?
+                WHERE id=?
+                """,
+                (
+                    name, kind, target, state,
+                    1 if schedule_enabled else 0, schedule_days,
+                    schedule_start, schedule_end, schedule_timezone,
+                    scope_id,
+                ),
             )
             assigned = _save_scope_blocklist_assignments(con, scope_id, blocklist_ids)
             con.execute("COMMIT")
