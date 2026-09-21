@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.1 — Query log Match cleanup
+
+- Allowed DNS queries now display a blank value in the Query Log **Match** column.
+- Blocked queries continue to show the matched block list or blocking reason.
+- Updated the application version to 1.10.1.
+
 ## 1.10.0 — Scheduled networks and endpoints
 
 - Added optional recurring weekly schedules to networks and exact endpoints.
