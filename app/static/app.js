@@ -61,8 +61,38 @@
     });
   }
 
+  function syncScopeKindFields(form) {
+    var select = form.querySelector("[data-scope-kind-select]");
+    var networkFields = form.querySelector("[data-scope-network-fields]");
+    var singleTarget = form.querySelector("[data-scope-single-target]");
+    if (!select || !networkFields || !singleTarget) return;
+
+    var isNetwork = select.value === "network";
+    networkFields.hidden = !isNetwork;
+    singleTarget.hidden = isNetwork;
+
+    networkFields.querySelectorAll("input").forEach(function (input) {
+      input.disabled = !isNetwork;
+    });
+    singleTarget.querySelectorAll("input").forEach(function (input) {
+      input.disabled = isNetwork;
+    });
+  }
+
+  function initializeScopeKindFields() {
+    document.querySelectorAll("form").forEach(function (form) {
+      var select = form.querySelector("[data-scope-kind-select]");
+      if (!select) return;
+      syncScopeKindFields(form);
+      select.addEventListener("change", function () {
+        syncScopeKindFields(form);
+      });
+    });
+  }
+
   window.addEventListener("hashchange", openHashDetails);
   openHashDetails();
   initializeGlobalAssignmentControls();
   initializeScheduleControls();
+  initializeScopeKindFields();
 })();
