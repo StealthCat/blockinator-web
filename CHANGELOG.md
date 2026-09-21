@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.13.0 — Dual-stack network targets
+
+- A single Network policy target can now hold IPv4 and IPv6 CIDRs concurrently.
+- Added separate IPv4 CIDR and IPv6 CIDR controls to Network creation and editing.
+- Network state, schedules, and block-list assignments apply identically to both address families.
+- Added normalized `scope_network_targets` storage keyed by scope and address family.
+- Existing single-stack Network targets are migrated automatically.
+- Policy matching now selects the most-specific matching Network independently for IPv4 and IPv6.
+- Added regression coverage for dual-stack blocking, dual-stack pause behavior, family-specific specificity, and single-stack migration.
+- Updated the application version to 1.13.0.
+
 ## 1.12.0 — Reverse-DNS hostname policy targets
 
 - Added **Reverse-DNS Hostname** as a third policy-target type alongside Network and Endpoint.
