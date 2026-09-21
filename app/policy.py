@@ -22,6 +22,21 @@ class Scope:
     state: str
     network: ipaddress._BaseNetwork
     blocklist_ids: frozenset[int]
+    schedule_enabled: bool = False
+    schedule_days: frozenset[int] = frozenset(range(7))
+    schedule_start: str = "00:00"
+    schedule_end: str = "00:00"
+    schedule_timezone: str = "UTC"
+
+    def schedule_is_active(self, now_utc: datetime | None = None) -> bool:
+        return schedule_is_active(
+            self.schedule_enabled,
+            self.schedule_days,
+            self.schedule_start,
+            self.schedule_end,
+            self.schedule_timezone,
+            now_utc,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,35 +53,14 @@ class BlockListCache:
     schedule_timezone: str = "UTC"
 
     def schedule_is_active(self, now_utc: datetime | None = None) -> bool:
-        if not self.schedule_enabled:
-            return True
-        if not self.schedule_days:
-            return False
-
-        try:
-            tz = ZoneInfo(self.schedule_timezone)
-            start = time.fromisoformat(self.schedule_start)
-            end = time.fromisoformat(self.schedule_end)
-        except (ValueError, ZoneInfoNotFoundError):
-            return False
-
-        current = (now_utc or datetime.now(timezone.utc)).astimezone(tz)
-        current_time = current.time().replace(tzinfo=None)
-        weekday = current.weekday()
-
-        # Equal start/end means the entire selected day.
-        if start == end:
-            return weekday in self.schedule_days
-
-        if start < end:
-            return weekday in self.schedule_days and start <= current_time < end
-
-        # Overnight window: a selected day owns the interval beginning on that
-        # day and ending the following morning.
-        if weekday in self.schedule_days and current_time >= start:
-            return True
-        previous_weekday = (weekday - 1) % 7
-        return previous_weekday in self.schedule_days and current_time < end
+        return schedule_is_active(
+            self.schedule_enabled,
+            self.schedule_days,
+            self.schedule_start,
+            self.schedule_end,
+            self.schedule_timezone,
+            now_utc,
+        )
 
 
 @dataclass(slots=True)
@@ -196,10 +190,23 @@ class PolicyEngine:
                         net = ipaddress.ip_network(r["target"], strict=False)
                 except ValueError:
                     continue
+                scope_days: set[int] = set()
+                for value in str(r["schedule_days"] or "").split(","):
+                    try:
+                        day = int(value)
+                    except ValueError:
+                        continue
+                    if 0 <= day <= 6:
+                        scope_days.add(day)
                 s = Scope(
                     id=r["id"], name=r["name"], kind=r["kind"], target=r["target"],
                     state=r["state"], network=net,
                     blocklist_ids=frozenset(memberships.get(r["id"], set())),
+                    schedule_enabled=bool(r["schedule_enabled"]),
+                    schedule_days=frozenset(scope_days),
+                    schedule_start=str(r["schedule_start"] or "00:00"),
+                    schedule_end=str(r["schedule_end"] or "00:00"),
+                    schedule_timezone=str(r["schedule_timezone"] or "UTC"),
                 )
                 (clients if s.kind == "client" else networks).append(s)
             networks.sort(key=lambda s: s.network.prefixlen, reverse=True)
@@ -218,9 +225,29 @@ class PolicyEngine:
         # Avoid matching a top-level domain as an imported entry.
         return [".".join(parts[i:]) for i in range(max(1, len(parts) - 1))]
 
-    def _matching_scopes(self, ip: ipaddress._BaseAddress) -> tuple[Scope | None, Scope | None]:
-        client = next((s for s in self.client_scopes if ip in s.network), None)
-        network = next((s for s in self.network_scopes if ip.version == s.network.version and ip in s.network), None)
+    def _matching_scopes(
+        self,
+        ip: ipaddress._BaseAddress,
+        now_utc: datetime | None = None,
+    ) -> tuple[Scope | None, Scope | None]:
+        client = next(
+            (
+                s
+                for s in self.client_scopes
+                if ip in s.network and s.schedule_is_active(now_utc)
+            ),
+            None,
+        )
+        network = next(
+            (
+                s
+                for s in self.network_scopes
+                if ip.version == s.network.version
+                and ip in s.network
+                and s.schedule_is_active(now_utc)
+            ),
+            None,
+        )
         return client, network
 
     def decide(self, client_ip: str, qname: str, now_utc: datetime | None = None) -> Decision:
@@ -234,7 +261,7 @@ class PolicyEngine:
             if not self.global_blocking:
                 return Decision(False, "global_paused", response_mode=self.response_mode)
 
-            client_scope, network_scope = self._matching_scopes(ip)
+            client_scope, network_scope = self._matching_scopes(ip, now_utc)
             if client_scope is not None:
                 if client_scope.state == "paused":
                     return Decision(False, "client_paused", client_scope.name, response_mode=self.response_mode)
