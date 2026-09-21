@@ -7,11 +7,42 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .db import Database
 from .rdns import ReverseDnsResolver
+
+
+def normalize_hostname(value: str | None) -> str | None:
+    raw = str(value or "").strip().rstrip(".").lower()
+    if not raw or any(ch.isspace() for ch in raw):
+        return None
+    labels = raw.split(".")
+    if any(not label for label in labels):
+        return None
+    normalized: list[str] = []
+    try:
+        for label in labels:
+            ascii_label = label.encode("idna").decode("ascii").lower()
+            if not ascii_label or len(ascii_label) > 63:
+                return None
+            normalized.append(ascii_label)
+    except UnicodeError:
+        return None
+    hostname = ".".join(normalized)
+    return hostname if len(hostname) <= 253 else None
+
+
+def normalize_hostname_pattern(value: str | None) -> str | None:
+    raw = str(value or "").strip()
+    wildcard = raw.startswith("*.")
+    if "*" in raw[2 if wildcard else 0:]:
+        return None
+    hostname = normalize_hostname(raw[2:] if wildcard else raw)
+    if hostname is None:
+        return None
+    return f"*.{hostname}" if wildcard else hostname
 
 
 def _schedule_window_is_active(
@@ -89,7 +120,7 @@ class Scope:
     kind: str
     target: str
     state: str
-    network: ipaddress._BaseNetwork
+    network: ipaddress._BaseNetwork | None
     blocklist_ids: frozenset[int]
     schedule_enabled: bool = False
     schedule_days: frozenset[int] = frozenset(range(7))
@@ -106,6 +137,17 @@ class Scope:
             self.schedule_timezone,
             now_utc,
         )
+
+    def hostname_matches(self, hostname: str | None) -> bool:
+        if self.kind != "hostname" or not hostname:
+            return False
+        normalized = normalize_hostname(hostname)
+        if normalized is None:
+            return False
+        if self.target.startswith("*."):
+            suffix = self.target[2:]
+            return normalized.endswith("." + suffix)
+        return normalized == self.target
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,8 +185,13 @@ class Decision:
 
 
 class QueryLogger:
-    def __init__(self, db: Database) -> None:
+    def __init__(
+        self,
+        db: Database,
+        identity_callback: Callable[[dict[str, str]], None] | None = None,
+    ) -> None:
         self.db = db
+        self.identity_callback = identity_callback
         self.rdns = ReverseDnsResolver()
         self.q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=10000)
         self.stop_event = threading.Event()
@@ -183,7 +230,12 @@ class QueryLogger:
                 except queue.Empty:
                     break
             try:
-                client_names = self.rdns.resolve_many(r["client_ip"] for r in batch)
+                resolved_names = self.rdns.resolve_many(r["client_ip"] for r in batch)
+                client_names = {
+                    address: normalized
+                    for address, hostname in resolved_names.items()
+                    if (normalized := normalize_hostname(hostname)) is not None
+                }
                 with self.db.connect() as con:
                     con.execute("BEGIN")
                     con.executemany(
@@ -205,19 +257,30 @@ class QueryLogger:
                         ],
                     )
                     for client_ip, client_name in client_names.items():
-                        if client_name:
-                            con.execute(
-                                """
-                                UPDATE query_log
-                                SET client_name=?
-                                WHERE client_ip=? AND (client_name IS NULL OR client_name='')
-                                """,
-                                (client_name, client_ip),
-                            )
+                        con.execute(
+                            """
+                            UPDATE query_log
+                            SET client_name=?
+                            WHERE client_ip=? AND (client_name IS NULL OR client_name='')
+                            """,
+                            (client_name, client_ip),
+                        )
+                        con.execute(
+                            """
+                            INSERT INTO client_identities(client_ip,client_name,updated_at)
+                            VALUES(?,?,CURRENT_TIMESTAMP)
+                            ON CONFLICT(client_ip) DO UPDATE SET
+                                client_name=excluded.client_name,
+                                updated_at=CURRENT_TIMESTAMP
+                            """,
+                            (client_ip, client_name),
+                        )
                     max_rows = int(self.db.get_setting("max_query_logs", "25000"))
                     max_age_days = int(self.db.get_setting("max_query_log_age_days", "0"))
                     _prune_query_logs(con, max_rows, max_age_days)
                     con.execute("COMMIT")
+                if client_names and self.identity_callback is not None:
+                    self.identity_callback(client_names)
             except Exception:
                 # Logging must never interfere with DNS decisions.
                 pass
@@ -229,14 +292,20 @@ class PolicyEngine:
         self.lock = threading.RLock()
         self.blocklists: dict[int, BlockListCache] = {}
         self.client_scopes: list[Scope] = []
+        self.hostname_scopes: list[Scope] = []
         self.network_scopes: list[Scope] = []
+        self.client_identities: dict[str, str] = {}
         self.global_blocking = True
         self.response_mode = "nxdomain"
-        self.logger = QueryLogger(db)
+        self.logger = QueryLogger(db, self._remember_client_identities)
         self.reload()
 
     def close(self) -> None:
         self.logger.close()
+
+    def _remember_client_identities(self, identities: dict[str, str]) -> None:
+        with self.lock:
+            self.client_identities.update(identities)
 
     def reload(self) -> None:
         with self.db.connect() as con:
@@ -270,14 +339,23 @@ class PolicyEngine:
                     schedule_timezone=str(r["schedule_timezone"] or "UTC"),
                 )
             clients: list[Scope] = []
+            hostnames: list[Scope] = []
             networks: list[Scope] = []
             for r in con.execute("SELECT * FROM scopes"):
                 try:
                     if r["kind"] == "client":
                         ip = ipaddress.ip_address(r["target"])
-                        net = ipaddress.ip_network(f"{ip}/{ip.max_prefixlen}", strict=False)
-                    else:
+                        net: ipaddress._BaseNetwork | None = ipaddress.ip_network(
+                            f"{ip}/{ip.max_prefixlen}", strict=False
+                        )
+                    elif r["kind"] == "network":
                         net = ipaddress.ip_network(r["target"], strict=False)
+                    elif r["kind"] == "hostname":
+                        net = None
+                        if normalize_hostname_pattern(r["target"]) is None:
+                            continue
+                    else:
+                        continue
                 except ValueError:
                     continue
                 scope_days: set[int] = set()
@@ -298,13 +376,36 @@ class PolicyEngine:
                     schedule_end=str(r["schedule_end"] or "00:00"),
                     schedule_timezone=str(r["schedule_timezone"] or "UTC"),
                 )
-                (clients if s.kind == "client" else networks).append(s)
-            networks.sort(key=lambda s: s.network.prefixlen, reverse=True)
+                if s.kind == "client":
+                    clients.append(s)
+                elif s.kind == "hostname":
+                    hostnames.append(s)
+                else:
+                    networks.append(s)
+            networks.sort(
+                key=lambda s: s.network.prefixlen if s.network is not None else -1,
+                reverse=True,
+            )
+            hostnames.sort(
+                key=lambda s: (
+                    1 if s.target.startswith("*.") else 0,
+                    -len(s.target),
+                    s.id,
+                )
+            )
+            identities = {
+                str(r["client_ip"]): str(r["client_name"])
+                for r in con.execute(
+                    "SELECT client_ip,client_name FROM client_identities"
+                )
+            }
 
         with self.lock:
             self.blocklists = new_lists
             self.client_scopes = clients
+            self.hostname_scopes = hostnames
             self.network_scopes = networks
+            self.client_identities = identities
             self.global_blocking = settings.get("global_blocking", "1") == "1"
             self.response_mode = settings.get("block_response", "nxdomain")
 
@@ -319,12 +420,24 @@ class PolicyEngine:
         self,
         ip: ipaddress._BaseAddress,
         now_utc: datetime | None = None,
-    ) -> tuple[Scope | None, Scope | None]:
+    ) -> tuple[Scope | None, Scope | None, Scope | None]:
         client = next(
             (
                 s
                 for s in self.client_scopes
-                if ip in s.network and s.schedule_is_active(now_utc)
+                if s.network is not None
+                and ip in s.network
+                and s.schedule_is_active(now_utc)
+            ),
+            None,
+        )
+        client_name = self.client_identities.get(str(ip))
+        hostname = next(
+            (
+                s
+                for s in self.hostname_scopes
+                if s.schedule_is_active(now_utc)
+                and s.hostname_matches(client_name)
             ),
             None,
         )
@@ -332,13 +445,14 @@ class PolicyEngine:
             (
                 s
                 for s in self.network_scopes
-                if ip.version == s.network.version
+                if s.network is not None
+                and ip.version == s.network.version
                 and ip in s.network
                 and s.schedule_is_active(now_utc)
             ),
             None,
         )
-        return client, network
+        return client, hostname, network
 
     def decide(self, client_ip: str, qname: str, now_utc: datetime | None = None) -> Decision:
         try:
@@ -351,11 +465,15 @@ class PolicyEngine:
             if not self.global_blocking:
                 return Decision(False, "global_paused", response_mode=self.response_mode)
 
-            client_scope, network_scope = self._matching_scopes(ip, now_utc)
+            client_scope, hostname_scope, network_scope = self._matching_scopes(ip, now_utc)
             if client_scope is not None:
                 if client_scope.state == "paused":
                     return Decision(False, "client_paused", client_scope.name, response_mode=self.response_mode)
                 effective_scope = client_scope.name
+            elif hostname_scope is not None:
+                if hostname_scope.state == "paused":
+                    return Decision(False, "hostname_paused", hostname_scope.name, response_mode=self.response_mode)
+                effective_scope = hostname_scope.name
             elif network_scope is not None:
                 if network_scope.state == "paused":
                     return Decision(False, "network_paused", network_scope.name, response_mode=self.response_mode)
@@ -370,6 +488,8 @@ class PolicyEngine:
             }
             if network_scope is not None:
                 active_ids.update(network_scope.blocklist_ids)
+            if hostname_scope is not None:
+                active_ids.update(hostname_scope.blocklist_ids)
             if client_scope is not None:
                 active_ids.update(client_scope.blocklist_ids)
             active_ids = {
