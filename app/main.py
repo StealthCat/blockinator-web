@@ -21,7 +21,7 @@ from .policy import PolicyEngine
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -749,41 +749,272 @@ def scopes_page(request: Request):
     s = require_session(request)
     with db.connect() as con:
         scopes = con.execute("SELECT * FROM scopes ORDER BY kind,name COLLATE NOCASE").fetchall()
+        blocklists = con.execute("SELECT * FROM blocklists ORDER BY name COLLATE NOCASE").fetchall()
+        membership_rows = con.execute(
+            "SELECT scope_id,blocklist_id FROM scope_blocklists"
+        ).fetchall()
+
+    memberships: dict[int, set[int]] = {}
+    for membership in membership_rows:
+        memberships.setdefault(int(membership["scope_id"]), set()).add(int(membership["blocklist_id"]))
+
     scope_client_names = rdns.resolve_many(
-        r["target"] for r in scopes if r["kind"] == "client"
+        scope["target"] for scope in scopes if scope["kind"] == "client"
     )
-    row_parts = []
-    for r in scopes:
+
+    def blocklist_option(blocklist, selected: set[int]) -> str:
+        checked = " checked" if int(blocklist["id"]) in selected else ""
+        status_class = "green" if blocklist["enabled"] else "gray"
+        global_badge = '<span class="scope-list-global">Global</span>' if blocklist["use_globally"] else ""
+        return (
+            f'<label class="scope-list-option">'
+            f'<input type="checkbox" name="blocklist_id" value="{int(blocklist["id"])}"{checked}>'
+            f'<span class="scope-list-copy"><span class="scope-list-title">'
+            f'<b>{esc(blocklist["name"])}</b>'
+            f'<span class="pill {status_class}">{"Enabled" if blocklist["enabled"] else "Disabled"}</span>'
+            f'{global_badge}</span>'
+            f'<small>{int(blocklist["entry_count"]):,} entries · {esc(blocklist["format"])}</small>'
+            f'</span></label>'
+        )
+
+    def blocklist_editor(selected: set[int]) -> str:
+        if not blocklists:
+            return (
+                '<div class="scope-empty">No block lists exist yet. '
+                '<a href="/lists#add-list">Import one first →</a></div>'
+            )
+        return (
+            '<div class="scope-list-grid">'
+            + "".join(blocklist_option(blocklist, selected) for blocklist in blocklists)
+            + '</div>'
+        )
+
+    cards = ""
+    for scope in scopes:
+        selected = memberships.get(int(scope["id"]), set())
         target_html = (
-            client_identity_html(r["target"], scope_client_names)
-            if r["kind"] == "client"
-            else f'<span class="mono">{esc(r["target"])}</span>'
+            client_identity_html(scope["target"], scope_client_names)
+            if scope["kind"] == "client"
+            else f'<span class="mono">{esc(scope["target"])}</span>'
         )
-        row_parts.append(
-            f'''<tr><td><b>{esc(r["name"])}</b></td><td><span class="pill">{esc(r["kind"])}</span></td><td>{target_html}</td><td><span class="pill {"green" if r["state"]=="active" else "amber"}">{esc(r["state"])}</span></td><td><div class="actions"><form method="post" action="/admin/scopes/{r["id"]}/toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button">Toggle</button></form><form method="post" action="/admin/scopes/{r["id"]}/delete"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button danger">Delete</button></form></div></td></tr>'''
+        assigned_names = [
+            str(blocklist["name"])
+            for blocklist in blocklists
+            if int(blocklist["id"]) in selected
+        ]
+        assigned_summary = (
+            ", ".join(assigned_names[:3])
+            + (f" +{len(assigned_names) - 3} more" if len(assigned_names) > 3 else "")
+            if assigned_names else "No explicit list assignments"
         )
-    rows = "".join(row_parts) or '<tr><td colspan="5" class="empty">No managed networks or clients yet.</td></tr>'
-    body = f'''<section class="panel"><div class="panel-head"><div><h3>Networks & endpoints</h3><p>Pause or resume blocking for CIDR networks and exact client addresses.</p></div></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Target</th><th>State</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></section>
-    <section class="panel narrow action-panel" id="add-scope"><div class="panel-kicker">Policy target</div><h3>Add network or client</h3><p class="panel-help">Use a CIDR for an entire network or an exact IP address for a single endpoint.</p><form method="post" action="/admin/scopes" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
-    <label>Name<input name="name" required></label><label>Type<select name="kind"><option value="network">Network</option><option value="client">Client</option></select></label>
-    <label class="full">Address / CIDR<input name="target" placeholder="192.168.20.0/24 or 192.168.20.44" required></label><label>Initial state<select name="state"><option value="active">Active</option><option value="paused">Paused</option></select></label>
-    <button class="primary-button" type="submit">Add scope</button></form></section>'''
+        kind_network_selected = " selected" if scope["kind"] == "network" else ""
+        kind_client_selected = " selected" if scope["kind"] == "client" else ""
+        state_active_selected = " selected" if scope["state"] == "active" else ""
+        state_paused_selected = " selected" if scope["state"] == "paused" else ""
+
+        cards += f'''<article class="scope-card editable-scope-card" id="scope-{int(scope["id"])}">
+          <div class="scope-card-summary">
+            <div class="scope-summary-main">
+              <div class="scope-icon {"network" if scope["kind"] == "network" else "client"}">{"◎" if scope["kind"] == "network" else "◆"}</div>
+              <div class="scope-summary-copy">
+                <div class="scope-summary-title">
+                  <h3>{esc(scope["name"])}</h3>
+                  <span class="pill">{ "Network" if scope["kind"] == "network" else "Endpoint" }</span>
+                  <span class="pill {"green" if scope["state"] == "active" else "amber"}">{esc(scope["state"])}</span>
+                </div>
+                <div class="scope-summary-target">{target_html}</div>
+                <p class="scope-assignment-summary">{esc(assigned_summary)}</p>
+              </div>
+            </div>
+            <div class="actions scope-card-actions">
+              <form method="post" action="/admin/scopes/{int(scope["id"])}/toggle">
+                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+                <button class="small-button">{"Pause" if scope["state"] == "active" else "Resume"}</button>
+              </form>
+              <a class="small-button edit-link" href="#edit-scope-{int(scope["id"])}">Edit & assign</a>
+              <form method="post" action="/admin/scopes/{int(scope["id"])}/delete" onsubmit="return confirm('Delete this scope and its block-list assignments?')">
+                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+                <button class="small-button danger">Delete</button>
+              </form>
+            </div>
+          </div>
+          <details class="scope-editor" id="edit-scope-{int(scope["id"])}">
+            <summary><span><b>Edit {"network" if scope["kind"] == "network" else "endpoint"}</b><small>Identity, address, state and block-list assignments</small></span><span class="editor-chevron">⌄</span></summary>
+            <div class="scope-edit-body">
+              <form method="post" action="/admin/scopes/{int(scope["id"])}/edit" class="form-grid scope-edit-form">
+                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+                <label>Name<input name="name" value="{esc(scope["name"])}" required></label>
+                <label>Type<select name="kind"><option value="network"{kind_network_selected}>Network</option><option value="client"{kind_client_selected}>Endpoint</option></select></label>
+                <label class="full">Address / CIDR<input name="target" value="{esc(scope["target"])}" required></label>
+                <label>Blocking state<select name="state"><option value="active"{state_active_selected}>Active</option><option value="paused"{state_paused_selected}>Paused</option></select></label>
+                <div class="scope-edit-note"><b>{"CIDR network" if scope["kind"] == "network" else "Exact client address"}</b><span>Changing the type also changes address validation when you save.</span></div>
+
+                <div class="form-section full">
+                  <div class="form-section-head">
+                    <div><b>Block-list assignments</b><p>Select lists that should explicitly apply to this scope. Lists marked Global already apply everywhere, but can also remain explicitly assigned for future policy changes.</p></div>
+                    <span>{len(selected)} selected</span>
+                  </div>
+                  {blocklist_editor(selected)}
+                </div>
+
+                <div class="editor-actions full">
+                  <button class="primary-button" type="submit">Save changes</button>
+                  <button class="small-button" type="button" onclick="this.closest('details').open=false">Close editor</button>
+                </div>
+              </form>
+            </div>
+          </details>
+        </article>'''
+
+    if not cards:
+        cards = '<div class="empty-card">No managed networks or endpoints yet. Add one to start scoping policy.</div>'
+
+    new_list_editor = blocklist_editor(set())
+    body = f'''<div class="split-grid scopes-layout">
+      <section class="panel">
+        <div class="panel-head">
+          <div><div class="panel-kicker">Policy targets</div><h3>Networks & endpoints</h3><p>Edit addresses, pause/resume enforcement, and assign block lists without leaving this page.</p></div>
+          <span class="result-count">{len(scopes)} scopes</span>
+        </div>
+        <div class="scope-card-list">{cards}</div>
+      </section>
+
+      <section class="panel action-panel" id="add-scope">
+        <div class="panel-kicker">New policy target</div><h3>Add network or endpoint</h3>
+        <p class="panel-help">Use a CIDR for a network or an exact IPv4/IPv6 address for a single endpoint. Assign block lists now or edit them later.</p>
+        <form method="post" action="/admin/scopes" class="form-grid">
+          <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+          <label>Name<input name="name" required></label>
+          <label>Type<select name="kind"><option value="network">Network</option><option value="client">Endpoint</option></select></label>
+          <label class="full">Address / CIDR<input name="target" placeholder="192.168.20.0/24 or 192.168.20.44" required></label>
+          <label>Initial state<select name="state"><option value="active">Active</option><option value="paused">Paused</option></select></label>
+          <div class="form-section full">
+            <div class="form-section-head"><div><b>Initial block-list assignments</b><p>Optional. Global lists apply automatically even when they are not explicitly selected.</p></div></div>
+            {new_list_editor}
+          </div>
+          <button class="primary-button full" type="submit">Add scope</button>
+        </form>
+      </section>
+    </div>'''
     return page(request, "Networks & Endpoints", "scopes", body, s)
 
+
+def _blocklist_ids_from_form(form) -> list[int]:
+    blocklist_ids: list[int] = []
+    for raw in form.getlist("blocklist_id"):
+        try:
+            blocklist_ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    return list(dict.fromkeys(blocklist_ids))
+
+
+def _save_scope_blocklist_assignments(con, scope_id: int, blocklist_ids: list[int]) -> int:
+    con.execute("DELETE FROM scope_blocklists WHERE scope_id=?", (scope_id,))
+    if not blocklist_ids:
+        return 0
+    placeholders = ",".join("?" for _ in blocklist_ids)
+    valid_rows = con.execute(
+        f"SELECT id FROM blocklists WHERE id IN ({placeholders})",
+        blocklist_ids,
+    ).fetchall()
+    valid_ids = [int(row["id"]) for row in valid_rows]
+    con.executemany(
+        "INSERT OR IGNORE INTO scope_blocklists(scope_id,blocklist_id) VALUES(?,?)",
+        [(scope_id, blocklist_id) for blocklist_id in valid_ids],
+    )
+    return len(valid_ids)
+
+
+def _normalize_scope_target(kind: str, target: str) -> str:
+    target = target.strip()
+    if kind == "client":
+        return str(ipaddress.ip_address(target))
+    if kind == "network":
+        return str(ipaddress.ip_network(target, strict=False))
+    raise ValueError("Scope type must be network or endpoint")
+
+
 @app.post("/admin/scopes")
-async def add_scope(request: Request, name: str = Form(...), kind: str = Form(...), target: str = Form(...), state: str = Form("active")):
-    await require_post_session(request)
+async def add_scope(request: Request):
+    _, form = await require_post_session(request)
+    name = str(form.get("name", "")).strip()
+    kind = str(form.get("kind", "")).strip().lower()
+    target_raw = str(form.get("target", ""))
+    state = str(form.get("state", "active")).strip().lower()
+    blocklist_ids = _blocklist_ids_from_form(form)
+
+    if not name:
+        return redirect("/scopes", error="Scope name is required")
+    if state not in {"active", "paused"}:
+        return redirect("/scopes", error="Scope state must be active or paused")
     try:
-        if kind == "client":
-            target = str(ipaddress.ip_address(target.strip()))
-        else:
-            target = str(ipaddress.ip_network(target.strip(), strict=False))
+        target = _normalize_scope_target(kind, target_raw)
+    except ValueError as e:
+        label = "endpoint IP address" if kind == "client" else "network CIDR"
+        return redirect("/scopes", error=f"Invalid {label}: {e}")
+
+    try:
         with db.connect() as con:
-            con.execute("INSERT INTO scopes(name,kind,target,state) VALUES(?,?,?,?)", (name.strip(), kind, target, state))
-        engine.reload()
-        return redirect("/scopes", notice="Scope added")
+            con.execute("BEGIN")
+            cur = con.execute(
+                "INSERT INTO scopes(name,kind,target,state) VALUES(?,?,?,?)",
+                (name, kind, target, state),
+            )
+            scope_id = int(cur.lastrowid)
+            assigned = _save_scope_blocklist_assignments(con, scope_id, blocklist_ids)
+            con.execute("COMMIT")
     except Exception as e:
         return redirect("/scopes", error=str(e))
+
+    engine.reload()
+    return redirect(
+        f"/scopes#scope-{scope_id}",
+        notice=f"Added {name} with {assigned} block-list assignment{'s' if assigned != 1 else ''}",
+    )
+
+
+@app.post("/admin/scopes/{scope_id}/edit")
+async def edit_scope(scope_id: int, request: Request):
+    _, form = await require_post_session(request)
+    name = str(form.get("name", "")).strip()
+    kind = str(form.get("kind", "")).strip().lower()
+    target_raw = str(form.get("target", ""))
+    state = str(form.get("state", "active")).strip().lower()
+    blocklist_ids = _blocklist_ids_from_form(form)
+
+    if not name:
+        return redirect(f"/scopes#edit-scope-{scope_id}", error="Scope name is required")
+    if state not in {"active", "paused"}:
+        return redirect(f"/scopes#edit-scope-{scope_id}", error="Scope state must be active or paused")
+    try:
+        target = _normalize_scope_target(kind, target_raw)
+    except ValueError as e:
+        label = "endpoint IP address" if kind == "client" else "network CIDR"
+        return redirect(f"/scopes#edit-scope-{scope_id}", error=f"Invalid {label}: {e}")
+
+    with db.connect() as con:
+        existing = con.execute("SELECT id FROM scopes WHERE id=?", (scope_id,)).fetchone()
+        if not existing:
+            return redirect("/scopes", error="Network or endpoint not found")
+        try:
+            con.execute("BEGIN")
+            con.execute(
+                "UPDATE scopes SET name=?,kind=?,target=?,state=? WHERE id=?",
+                (name, kind, target, state, scope_id),
+            )
+            assigned = _save_scope_blocklist_assignments(con, scope_id, blocklist_ids)
+            con.execute("COMMIT")
+        except Exception as e:
+            con.execute("ROLLBACK")
+            return redirect(f"/scopes#edit-scope-{scope_id}", error=f"Could not save scope: {e}")
+
+    engine.reload()
+    return redirect(
+        f"/scopes#scope-{scope_id}",
+        notice=f"Saved {name}; {assigned} block-list assignment{'s' if assigned != 1 else ''}",
+    )
+
 
 @app.post("/admin/scopes/{scope_id}/toggle")
 async def toggle_scope(scope_id: int, request: Request):
@@ -791,7 +1022,8 @@ async def toggle_scope(scope_id: int, request: Request):
     with db.connect() as con:
         con.execute("UPDATE scopes SET state=CASE state WHEN 'active' THEN 'paused' ELSE 'active' END WHERE id=?", (scope_id,))
     engine.reload()
-    return redirect("/scopes", notice="Scope state updated")
+    return redirect(f"/scopes#scope-{scope_id}", notice="Scope state updated")
+
 
 @app.post("/admin/scopes/{scope_id}/delete")
 async def delete_scope(scope_id: int, request: Request):
