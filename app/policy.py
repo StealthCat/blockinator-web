@@ -120,7 +120,7 @@ class Scope:
     kind: str
     target: str
     state: str
-    network: ipaddress._BaseNetwork | None
+    networks: tuple[ipaddress._BaseNetwork, ...]
     blocklist_ids: frozenset[int]
     schedule_enabled: bool = False
     schedule_days: frozenset[int] = frozenset(range(7))
@@ -137,6 +137,20 @@ class Scope:
             self.schedule_timezone,
             now_utc,
         )
+
+    def matches_ip(self, ip: ipaddress._BaseAddress) -> bool:
+        return any(
+            ip.version == network.version and ip in network
+            for network in self.networks
+        )
+
+    def matching_prefixlen(self, ip: ipaddress._BaseAddress) -> int | None:
+        matches = [
+            network.prefixlen
+            for network in self.networks
+            if ip.version == network.version and ip in network
+        ]
+        return max(matches) if matches else None
 
     def hostname_matches(self, hostname: str | None) -> bool:
         if self.kind != "hostname" or not hostname:
@@ -338,6 +352,14 @@ class PolicyEngine:
                     schedule_end=str(r["schedule_end"] or "00:00"),
                     schedule_timezone=str(r["schedule_timezone"] or "UTC"),
                 )
+            network_targets: dict[int, list[str]] = {}
+            for target_row in con.execute(
+                "SELECT scope_id,family,target FROM scope_network_targets ORDER BY family"
+            ):
+                network_targets.setdefault(int(target_row["scope_id"]), []).append(
+                    str(target_row["target"])
+                )
+
             clients: list[Scope] = []
             hostnames: list[Scope] = []
             networks: list[Scope] = []
@@ -347,14 +369,27 @@ class PolicyEngine:
                     if r["kind"] == "client":
                         ip = ipaddress.ip_address(scope_target)
                         scope_target = str(ip)
-                        net: ipaddress._BaseNetwork | None = ipaddress.ip_network(
-                            f"{ip}/{ip.max_prefixlen}", strict=False
+                        scope_networks: tuple[ipaddress._BaseNetwork, ...] = (
+                            ipaddress.ip_network(
+                                f"{ip}/{ip.max_prefixlen}", strict=False
+                            ),
                         )
                     elif r["kind"] == "network":
-                        net = ipaddress.ip_network(scope_target, strict=False)
-                        scope_target = str(net)
+                        raw_targets = network_targets.get(int(r["id"])) or [scope_target]
+                        parsed_networks: list[ipaddress._BaseNetwork] = []
+                        for raw_target in raw_targets:
+                            try:
+                                parsed_networks.append(
+                                    ipaddress.ip_network(raw_target, strict=False)
+                                )
+                            except ValueError:
+                                continue
+                        if not parsed_networks:
+                            continue
+                        scope_networks = tuple(parsed_networks)
+                        scope_target = " · ".join(str(network) for network in scope_networks)
                     elif r["kind"] == "hostname":
-                        net = None
+                        scope_networks = ()
                         normalized_pattern = normalize_hostname_pattern(scope_target)
                         if normalized_pattern is None:
                             continue
@@ -373,7 +408,7 @@ class PolicyEngine:
                         scope_days.add(day)
                 s = Scope(
                     id=r["id"], name=r["name"], kind=r["kind"], target=scope_target,
-                    state=r["state"], network=net,
+                    state=r["state"], networks=scope_networks,
                     blocklist_ids=frozenset(memberships.get(r["id"], set())),
                     schedule_enabled=bool(r["schedule_enabled"]),
                     schedule_days=frozenset(scope_days),
@@ -387,10 +422,6 @@ class PolicyEngine:
                     hostnames.append(s)
                 else:
                     networks.append(s)
-            networks.sort(
-                key=lambda s: s.network.prefixlen if s.network is not None else -1,
-                reverse=True,
-            )
             hostnames.sort(
                 key=lambda s: (
                     1 if s.target.startswith("*.") else 0,
@@ -430,9 +461,7 @@ class PolicyEngine:
             (
                 s
                 for s in self.client_scopes
-                if s.network is not None
-                and ip in s.network
-                and s.schedule_is_active(now_utc)
+                if s.matches_ip(ip) and s.schedule_is_active(now_utc)
             ),
             None,
         )
@@ -446,16 +475,17 @@ class PolicyEngine:
             ),
             None,
         )
-        network = next(
-            (
-                s
-                for s in self.network_scopes
-                if s.network is not None
-                and ip.version == s.network.version
-                and ip in s.network
-                and s.schedule_is_active(now_utc)
-            ),
-            None,
+        network_candidates: list[tuple[int, int, Scope]] = []
+        for scope in self.network_scopes:
+            if not scope.schedule_is_active(now_utc):
+                continue
+            prefixlen = scope.matching_prefixlen(ip)
+            if prefixlen is not None:
+                network_candidates.append((prefixlen, -scope.id, scope))
+        network = (
+            max(network_candidates, key=lambda item: (item[0], item[1]))[2]
+            if network_candidates
+            else None
         )
         return client, hostname, network
 
