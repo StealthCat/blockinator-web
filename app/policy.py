@@ -11,6 +11,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .db import Database
+from .rdns import ReverseDnsResolver
 
 
 def _schedule_window_is_active(
@@ -144,6 +145,7 @@ class Decision:
 class QueryLogger:
     def __init__(self, db: Database) -> None:
         self.db = db
+        self.rdns = ReverseDnsResolver()
         self.q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=10000)
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, name="query-log-writer", daemon=True)
@@ -181,24 +183,37 @@ class QueryLogger:
                 except queue.Empty:
                     break
             try:
+                client_names = self.rdns.resolve_many(r["client_ip"] for r in batch)
                 with self.db.connect() as con:
                     con.execute("BEGIN")
                     con.executemany(
                         """
                         INSERT INTO query_log(
-                          ts,server_id,client_ip,client_port,protocol,qname,qtype,qclass,
+                          ts,server_id,client_ip,client_name,client_port,protocol,qname,qtype,qclass,
                           blocked,reason,matched_scope,matched_list,request_json
-                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         [
                             (
-                                r["ts"], r.get("server_id"), r["client_ip"], r.get("client_port"),
-                                r.get("protocol"), r.get("qname"), r.get("qtype"), r.get("qclass"),
-                                1 if r["blocked"] else 0, r.get("reason"), r.get("matched_scope"),
-                                r.get("matched_list"), r.get("request_json"),
+                                r["ts"], r.get("server_id"), r["client_ip"],
+                                client_names.get(str(r["client_ip"])),
+                                r.get("client_port"), r.get("protocol"), r.get("qname"),
+                                r.get("qtype"), r.get("qclass"), 1 if r["blocked"] else 0,
+                                r.get("reason"), r.get("matched_scope"), r.get("matched_list"),
+                                r.get("request_json"),
                             ) for r in batch
                         ],
                     )
+                    for client_ip, client_name in client_names.items():
+                        if client_name:
+                            con.execute(
+                                """
+                                UPDATE query_log
+                                SET client_name=?
+                                WHERE client_ip=? AND (client_name IS NULL OR client_name='')
+                                """,
+                                (client_name, client_ip),
+                            )
                     max_rows = int(self.db.get_setting("max_query_logs", "25000"))
                     max_age_days = int(self.db.get_setting("max_query_log_age_days", "0"))
                     _prune_query_logs(con, max_rows, max_age_days)
