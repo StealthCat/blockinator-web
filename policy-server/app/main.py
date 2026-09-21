@@ -119,7 +119,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)} · Blockinator</title>
-<link rel="icon" href="/static/favicon.png">
+<link rel="icon" href="/static/blockinator-mark.webp">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -189,7 +189,7 @@ def login_page(request: Request):
         return RedirectResponse("/", status_code=303)
     error = request.query_params.get("error", "")
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign in · Blockinator</title><link rel="icon" href="/static/favicon.png"><link rel="stylesheet" href="/static/style.css"></head>
+<title>Sign in · Blockinator</title><link rel="icon" href="/static/blockinator-mark.webp"><link rel="stylesheet" href="/static/style.css"></head>
 <body class="login-body"><section class="login-visual"><div class="login-shade"></div><div class="login-copy"><img src="/static/blockinator-mark.webp" alt=""><p>DNS POLICY CONTROL</p><h1>Bad traffic<br>stops here.</h1><span>Block · Filter · Protect</span></div></section>
 <section class="login-panel"><form method="post" action="/login" class="login-card"><div class="mini-brand"><img src="/static/blockinator-mark.webp" alt=""><b>Blockinator</b></div><h2>Welcome back</h2><p>Sign in to manage DNS policy, endpoints, block lists and access keys.</p>
 {"<div class='flash bad'>" + esc(error) + "</div>" if error else ""}
