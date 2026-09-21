@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.2 — Sidebar navigation cleanup
+
+- Fixed sidebar menu labels inheriting the icon span width.
+- Every selectable navigation item now stays on a single line.
+- Long labels use the available sidebar width without wrapping.
+- Mobile navigation switches to a single-column menu to preserve one-line labels.
+- Updated the application version to 1.7.2.
+
 ## 1.7.1 — Querying server identity in logs
 
 - Added the querying DNS server to every current log-data view.
