@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 
 from app.db import Database
-from app.policy import PolicyEngine
+from app.policy import PolicyEngine, _prune_query_logs
 
 
 def setup_engine():
@@ -416,4 +416,69 @@ def test_scheduled_paused_endpoint_only_pauses_during_window():
     assert e.decide("192.168.1.55", "ads.example.com", inside).block is False
     assert e.decide("192.168.1.55", "ads.example.com", outside).block is True
     e.close()
+    td.cleanup()
+
+
+def test_query_log_time_retention_prunes_old_rows():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+
+    with db.connect() as con:
+        con.executemany(
+            "INSERT INTO query_log(ts,client_ip,qname,blocked) VALUES(?,?,?,?)",
+            [
+                ("2026-08-01T12:00:00+00:00", "192.168.1.10", "old.example.com", 0),
+                ("2026-09-20T12:00:00+00:00", "192.168.1.10", "recent.example.com", 0),
+            ],
+        )
+        age_deleted, row_deleted = _prune_query_logs(
+            con,
+            max_rows=1000,
+            max_age_days=30,
+            now_utc=now,
+        )
+        rows = con.execute(
+            "SELECT qname FROM query_log ORDER BY id"
+        ).fetchall()
+
+    assert age_deleted == 1
+    assert row_deleted == 0
+    assert [row["qname"] for row in rows] == ["recent.example.com"]
+    td.cleanup()
+
+
+def test_query_log_retention_combines_age_and_row_caps():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+
+    with db.connect() as con:
+        con.executemany(
+            "INSERT INTO query_log(ts,client_ip,qname,blocked) VALUES(?,?,?,?)",
+            [
+                ("2026-01-01T00:00:00+00:00", "192.168.1.10", "expired.example.com", 0),
+                ("2026-09-21T08:00:00+00:00", "192.168.1.10", "one.example.com", 0),
+                ("2026-09-21T09:00:00+00:00", "192.168.1.10", "two.example.com", 0),
+                ("2026-09-21T10:00:00+00:00", "192.168.1.10", "three.example.com", 0),
+                ("2026-09-21T11:00:00+00:00", "192.168.1.10", "four.example.com", 0),
+            ],
+        )
+        age_deleted, row_deleted = _prune_query_logs(
+            con,
+            max_rows=3,
+            max_age_days=30,
+            now_utc=now,
+        )
+        rows = con.execute(
+            "SELECT qname FROM query_log ORDER BY id"
+        ).fetchall()
+
+    assert age_deleted == 1
+    assert row_deleted == 1
+    assert [row["qname"] for row in rows] == [
+        "two.example.com",
+        "three.example.com",
+        "four.example.com",
+    ]
     td.cleanup()
