@@ -1830,3 +1830,59 @@ input[type=file]{padding:8px}
     grid-template-columns:1fr;
   }
 }
+
+
+/* =========================================================
+   Blockinator 1.13 — dual-stack network scopes
+   ========================================================= */
+.network-target-fields{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:11px;
+}
+.network-target-fields[hidden],
+[data-scope-single-target][hidden]{
+  display:none!important;
+}
+.network-target-stack{
+  display:grid;
+  gap:4px;
+  min-width:0;
+}
+.network-family-target{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  min-width:0;
+}
+.network-family-target b{
+  flex:0 0 auto;
+  min-width:30px;
+  color:#6d91a6;
+  font-size:8px;
+  font-weight:850;
+  letter-spacing:.05em;
+  text-transform:uppercase;
+}
+.network-family-target .mono{
+  overflow:hidden;
+  color:#9ab9ca;
+  font-size:10px;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+@media(max-width:760px){
+  .network-target-fields{
+    grid-template-columns:1fr;
+  }
+  .network-family-target{
+    align-items:flex-start;
+    flex-direction:column;
+    gap:2px;
+  }
+  .network-family-target .mono{
+    max-width:100%;
+    white-space:normal;
+    overflow-wrap:anywhere;
+  }
+}
