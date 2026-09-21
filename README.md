@@ -27,6 +27,7 @@ The application is packaged as a Docker service and includes a responsive, multi
 - API keys stored only as SHA-256 hashes.
 - In-memory API-key cache keeps the DNS decision path lightweight.
 - Query audit log with filtering and full request-detail inspection, including the querying DNS server on every log row.
+- Client filter accepts either an IP address or reverse-DNS hostname, including partial hostname matches.
 - Configurable row-count and time-based query-log retention, enforced together with immediate pruning when settings change.
 - Reverse-DNS client names displayed alongside client IP addresses, with bounded lookups and caching.
 - SQLite persistence and automatic schema migration.
@@ -243,6 +244,13 @@ Blocking state is evaluated in this order:
 The active block-list set is the union of enabled global lists, lists assigned to the most-specific matching network, and lists assigned to the exact client.
 
 
+
+
+### Reverse-DNS log filtering
+
+The **Query Log → Client** filter matches either the client IP address or its persisted PTR/reverse-DNS hostname. Full or partial hostname searches work, so both `desktop-01` and `desktop-01.home.arpa` can match the same client.
+
+PTR lookups remain outside the DNS decision path. New query-log rows are enriched asynchronously by the log writer, and older retained rows are backfilled opportunistically as their client identities are displayed or searched.
 
 ### Querying server identity
 
