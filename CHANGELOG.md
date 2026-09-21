@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.8.0 — Manual list domain editor
+
+- Added a dedicated **Manage domains** page for manual block lists.
+- Manual lists can now add or remove one domain at a time without replacing the entire list.
+- Added searchable, alphabetically sorted domain browsing with 100 entries per page.
+- Added pagination and preserved search/page position after individual removals.
+- Added domain normalization and duplicate-safe insertion.
+- Updated manual-list entry counts and timestamps after each single-domain edit.
+- Policy-engine state reloads immediately after add/remove operations.
+- Added regression coverage proving single-domain add/remove changes blocking behavior without affecting unrelated entries.
+- Updated the application version to 1.8.0.
+
 ## 1.7.3 — Startup syntax fix
 
 - Fixed a Python syntax error caused by inline JavaScript being embedded inside the shared HTML f-string.
