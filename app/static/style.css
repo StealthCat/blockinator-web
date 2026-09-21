@@ -1241,3 +1241,76 @@ input[type=file]{padding:8px}
     white-space:normal;
   }
 }
+
+
+/* =========================================================
+   Blockinator 1.7.1 — querying DNS server in log views
+   ========================================================= */
+.query-server{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+  vertical-align:middle;
+}
+.query-server-icon{
+  width:27px;
+  height:27px;
+  display:grid;
+  place-items:center;
+  flex:0 0 auto;
+  border:1px solid rgba(71,192,215,.20);
+  border-radius:8px;
+  color:#67ddea;
+  background:linear-gradient(145deg,rgba(34,159,185,.13),rgba(42,91,167,.08));
+  font-size:9px;
+  box-shadow:0 5px 14px rgba(0,0,0,.10);
+}
+.query-server>span:last-child{
+  display:grid;
+  gap:2px;
+  min-width:0;
+}
+.query-server b{
+  display:block;
+  max-width:190px;
+  overflow:hidden;
+  color:#dceef7;
+  font-size:11px;
+  font-weight:750;
+  line-height:1.2;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.query-server small{
+  display:block;
+  color:#55788c;
+  font-size:9px;
+  line-height:1.2;
+  text-transform:uppercase;
+  letter-spacing:.06em;
+}
+.query-server.unknown .query-server-icon{
+  color:#718b9b;
+  border-color:rgba(105,137,155,.16);
+  background:rgba(80,111,128,.06);
+}
+.query-server.unknown b{
+  color:#849dac;
+}
+.query-filter-bar{
+  grid-template-columns:minmax(180px,2fr) minmax(150px,1fr) minmax(140px,1fr) minmax(130px,.85fr) 100px auto;
+}
+@media(max-width:1180px){
+  .query-filter-bar{
+    grid-template-columns:repeat(3,minmax(0,1fr));
+  }
+}
+@media(max-width:760px){
+  .query-filter-bar{
+    grid-template-columns:1fr;
+  }
+  .query-server b{
+    max-width:145px;
+  }
+}
