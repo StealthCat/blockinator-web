@@ -22,7 +22,7 @@ from .policy import PolicyEngine
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.10.1"
+APP_VERSION = "1.11.0"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -1697,8 +1697,62 @@ def settings_page(request: Request):
     s = require_session(request)
     mode = db.get_setting("block_response", "nxdomain")
     retention = db.get_setting("max_query_logs", "25000")
-    body = f'''<div class="split-grid"><section class="panel action-panel"><div class="panel-kicker">DNS behavior</div><h3>Blocked response</h3><p class="panel-help">Choose how Blockinator instructs the DNS server to answer blocked requests.</p><form method="post" action="/admin/settings" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><label class="full">Response mode<select name="block_response"><option value="nxdomain" {"selected" if mode=="nxdomain" else ""}>NXDOMAIN</option><option value="refused" {"selected" if mode=="refused" else ""}>REFUSED</option><option value="nodata" {"selected" if mode=="nodata" else ""}>NODATA</option><option value="zero" {"selected" if mode=="zero" else ""}>0.0.0.0 / ::</option></select></label><label class="full">Maximum query log rows<input type="number" min="1000" max="5000000" name="max_query_logs" value="{esc(retention)}"></label><button class="primary-button">Save settings</button></form></section>
-    <section class="panel"><div class="panel-kicker">Service details</div><h3>Runtime</h3><p class="panel-help">Current application and storage information for this Blockinator instance.</p><div class="info-grid"><div><span>Version</span><b>{APP_VERSION}</b></div><div><span>Database</span><b class="mono">{esc(db.path)}</b></div><div><span>Decision API</span><b class="mono">/api/v1/decision</b></div><div><span>Service</span><b>Blockinator</b></div></div></section></div>'''
+    retention_days = db.get_setting("max_query_log_age_days", "0")
+    age_summary = (
+        "Disabled"
+        if str(retention_days) == "0"
+        else f'{esc(retention_days)} day{"s" if str(retention_days) != "1" else ""}'
+    )
+    body = f'''<div class="split-grid">
+      <section class="panel action-panel">
+        <div class="panel-kicker">DNS behavior</div>
+        <h3>Blocked response & logging</h3>
+        <p class="panel-help">Configure blocked DNS responses and how long query history is retained.</p>
+        <form method="post" action="/admin/settings" class="form-grid">
+          <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+          <label class="full">Response mode
+            <select name="block_response">
+              <option value="nxdomain" {"selected" if mode=="nxdomain" else ""}>NXDOMAIN</option>
+              <option value="refused" {"selected" if mode=="refused" else ""}>REFUSED</option>
+              <option value="nodata" {"selected" if mode=="nodata" else ""}>NODATA</option>
+              <option value="zero" {"selected" if mode=="zero" else ""}>0.0.0.0 / ::</option>
+            </select>
+          </label>
+
+          <div class="form-section full log-retention-section">
+            <div class="form-section-head">
+              <div><b>Query log retention</b><p>Both limits apply. Blockinator removes a row when it exceeds either the age limit or the row-count limit.</p></div>
+              <span>{age_summary}</span>
+            </div>
+            <div class="retention-grid">
+              <label>Maximum age (days)
+                <input type="number" min="0" max="3650" name="max_query_log_age_days" value="{esc(retention_days)}">
+                <small>0 disables time-based retention.</small>
+              </label>
+              <label>Maximum rows
+                <input type="number" min="1000" max="5000000" name="max_query_logs" value="{esc(retention)}">
+                <small>Oldest rows are removed when this cap is exceeded.</small>
+              </label>
+            </div>
+          </div>
+
+          <button class="primary-button full">Save settings & prune logs</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-kicker">Service details</div><h3>Runtime</h3>
+        <p class="panel-help">Current application and storage information for this Blockinator instance.</p>
+        <div class="info-grid">
+          <div><span>Version</span><b>{APP_VERSION}</b></div>
+          <div><span>Database</span><b class="mono">{esc(db.path)}</b></div>
+          <div><span>Decision API</span><b class="mono">/api/v1/decision</b></div>
+          <div><span>Service</span><b>Blockinator</b></div>
+          <div><span>Log age limit</span><b>{age_summary}</b></div>
+          <div><span>Log row limit</span><b>{int(retention):,}</b></div>
+        </div>
+      </section>
+    </div>'''
     return page(request, "System Settings", "settings", body, s)
 
 @app.post("/admin/settings")
@@ -1709,9 +1763,27 @@ async def save_settings(request: Request):
         mode = "nxdomain"
     try:
         retention = max(1000, min(int(form.get("max_query_logs","25000")), 5_000_000))
-    except ValueError:
+    except (TypeError, ValueError):
         retention = 25000
+    try:
+        retention_days = max(0, min(int(form.get("max_query_log_age_days","0")), 3650))
+    except (TypeError, ValueError):
+        retention_days = 0
+
     db.set_setting("block_response", mode)
     db.set_setting("max_query_logs", str(retention))
+    db.set_setting("max_query_log_age_days", str(retention_days))
     engine.reload()
-    return redirect("/settings", notice="Settings saved")
+
+    try:
+        age_deleted, row_deleted = engine.logger.prune_now()
+        removed = age_deleted + row_deleted
+        notice = (
+            f"Settings saved; pruned {removed:,} query log row{'s' if removed != 1 else ''}"
+            if removed
+            else "Settings saved; no query log rows needed pruning"
+        )
+    except Exception:
+        notice = "Settings saved; automatic retention will apply on the next logged query"
+
+    return redirect("/settings", notice=notice)
