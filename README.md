@@ -27,6 +27,7 @@ The application is packaged as a Docker service and includes a responsive, multi
 - API keys stored only as SHA-256 hashes.
 - In-memory API-key cache keeps the DNS decision path lightweight.
 - Query audit log with filtering and full request-detail inspection, including the querying DNS server on every log row.
+- Configurable row-count and time-based query-log retention, enforced together with immediate pruning when settings change.
 - Reverse-DNS client names displayed alongside client IP addresses, with bounded lookups and caching.
 - SQLite persistence and automatic schema migration.
 
@@ -249,6 +250,20 @@ Every DNS log view includes the `server_id` supplied by the Technitium plugin, s
 
 If an older or custom client submits a request without `server_id`, Blockinator displays **Unknown server** rather than hiding the field.
 
+
+## Query log retention
+
+Blockinator supports two independent query-log retention limits under **System Settings**:
+
+- **Maximum age (days)** — removes query-log rows older than the configured age. Set this to `0` to disable time-based retention.
+- **Maximum rows** — retains only the newest configured number of query-log rows.
+
+When both limits are enabled, **both apply**. A row is removed as soon as it exceeds either threshold. For example, with a 30-day age limit and a 250,000-row cap, Blockinator retains no more than 30 days and no more than 250,000 rows.
+
+Changing retention settings triggers an immediate prune of existing log history. The same retention rules are also applied automatically as new query-log batches are written.
+
+Existing installations preserve their prior behavior after upgrade because time-based retention defaults to `0` (disabled) until you choose an age limit.
+
 ## Reverse DNS client names
 
 Blockinator performs PTR lookups for client IP addresses shown in the administration UI. Resolved names appear above the original IP address on the Dashboard, Query Log, and exact client scopes.
@@ -301,7 +316,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **17 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **19 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
