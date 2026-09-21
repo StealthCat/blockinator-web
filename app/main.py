@@ -21,7 +21,7 @@ from .policy import PolicyEngine
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.7.2"
+APP_VERSION = "1.7.3"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -240,22 +240,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
     </div>
   </main>
 </div>
-<script>
-(function () {
-  function openHashDetails() {
-    if (!location.hash) return;
-    var target = document.getElementById(location.hash.slice(1));
-    if (target && target.tagName === "DETAILS") {
-      target.open = true;
-      requestAnimationFrame(function () {
-        target.scrollIntoView({behavior: "smooth", block: "nearest"});
-      });
-    }
-  }
-  window.addEventListener("hashchange", openHashDetails);
-  openHashDetails();
-})();
-</script>
+<script src="/static/app.js"></script>
 </body>
 </html>""")
 
