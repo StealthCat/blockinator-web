@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.12.0 — Reverse-DNS hostname policy targets
+
+- Added **Reverse-DNS Hostname** as a third policy-target type alongside Network and Endpoint.
+- Added exact PTR hostname matching and wildcard suffix matching such as `*.kids.home.arpa`.
+- Added policy precedence of exact IP endpoint → reverse-DNS hostname → most-specific network → global policy.
+- Added block-list assignment to hostname targets from both Policy Targets and Block Lists.
+- Added Active/Paused state and recurring schedules to hostname targets.
+- Added a persistent `client_identities` IP→PTR cache populated by the asynchronous query logger.
+- Hostname matching remains off the PTR lookup path; newly learned identities update the in-memory policy cache without restarting Blockinator.
+- Added automatic migration of existing SQLite scope tables to allow the new hostname target type.
+- Added regression coverage for exact matching, wildcard matching, precedence, schedules, and legacy-schema migration.
+- Updated the application version to 1.12.0.
+
 ## 1.10.2 — Reverse-DNS client filtering
 
 - Added persisted reverse-DNS client names to query-log records.
