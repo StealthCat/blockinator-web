@@ -107,7 +107,6 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_query_log_ts ON query_log(ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_client ON query_log(client_ip, ts DESC);
-                CREATE INDEX IF NOT EXISTS idx_query_log_client_name ON query_log(client_name, ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_qname ON query_log(qname, ts DESC);
 
                 CREATE TABLE IF NOT EXISTS admin_users (
