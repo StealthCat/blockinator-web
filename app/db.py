@@ -93,6 +93,7 @@ class Database:
                     ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     server_id TEXT,
                     client_ip TEXT NOT NULL,
+                    client_name TEXT,
                     client_port INTEGER,
                     protocol TEXT,
                     qname TEXT,
@@ -106,6 +107,7 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_query_log_ts ON query_log(ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_client ON query_log(client_ip, ts DESC);
+                CREATE INDEX IF NOT EXISTS idx_query_log_client_name ON query_log(client_name, ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_qname ON query_log(qname, ts DESC);
 
                 CREATE TABLE IF NOT EXISTS admin_users (
@@ -166,6 +168,16 @@ class Database:
                     con.execute(
                         f"ALTER TABLE scopes ADD COLUMN {column_name} {definition}"
                     )
+
+            query_log_columns = {
+                row["name"] for row in con.execute("PRAGMA table_info(query_log)")
+            }
+            if "client_name" not in query_log_columns:
+                con.execute("ALTER TABLE query_log ADD COLUMN client_name TEXT")
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_log_client_name "
+                "ON query_log(client_name, ts DESC)"
+            )
 
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('global_blocking','1')")
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('block_response','nxdomain')")
