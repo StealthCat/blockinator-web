@@ -1298,7 +1298,7 @@ def scopes_page(request: Request):
             </div>
           </div>
           <details class="scope-editor" id="edit-scope-{int(scope["id"])}">
-            <summary><span><b>Edit {"network" if scope["kind"] == "network" else "endpoint"}</b><small>Identity, address, state and block-list assignments</small></span><span class="editor-chevron">⌄</span></summary>
+            <summary><span><b>Edit {"network" if scope["kind"] == "network" else "endpoint"}</b><small>Identity, address, state, schedule and block-list assignments</small></span><span class="editor-chevron">⌄</span></summary>
             <div class="scope-edit-body">
               <form method="post" action="/admin/scopes/{int(scope["id"])}/edit" class="form-grid scope-edit-form">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
@@ -1338,7 +1338,7 @@ def scopes_page(request: Request):
     body = f'''<div class="split-grid scopes-layout">
       <section class="panel">
         <div class="panel-head">
-          <div><div class="panel-kicker">Policy targets</div><h3>Networks & endpoints</h3><p>Edit addresses, pause/resume enforcement, and assign block lists without leaving this page.</p></div>
+          <div><div class="panel-kicker">Policy targets</div><h3>Networks & endpoints</h3><p>Edit addresses, schedules, pause/resume enforcement, and block-list assignments without leaving this page.</p></div>
           <span class="result-count">{len(scopes)} scopes</span>
         </div>
         <div class="scope-card-list">{cards}</div>
