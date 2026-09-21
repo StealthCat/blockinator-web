@@ -13,6 +13,7 @@ The application is packaged as a Docker service and includes a responsive, multi
 - Polished Blockinator web console with dashboard, block-list, scope, query-log, security, and settings pages.
 - Global pause/resume for DNS blocking.
 - Editable IPv4/IPv6 CIDR network scopes and exact client-IP endpoint scopes, with block-list assignment directly from the Networks & Endpoints page.
+- Networks and exact endpoints can also have recurring weekly schedules with selectable days, times, overnight windows, and IANA timezones.
 - Client rules can override network pause/resume state.
 - Multiple independent block lists with URL, upload, and pasted-text imports.
 - Block lists are editable directly from the Block Lists page, including name, source URL, format, refresh interval, enabled state, and optional content replacement.
@@ -123,6 +124,28 @@ Example response:
 ```
 
 
+
+
+## Network and endpoint schedules
+
+Networks and endpoints support the same recurring weekly schedule model as block lists.
+
+Open **Networks & Endpoints → Edit & assign → Enforcement schedule** to configure:
+
+- one or more days of the week;
+- start and end times;
+- an IANA timezone such as `America/New_York`; and
+- whether scheduling is enabled.
+
+When scheduling is off, the scope participates in policy at all times. When scheduling is on, the scope only participates during its active window.
+
+This is important for precedence:
+
+- an endpoint outside its schedule is ignored, so its containing network can apply;
+- a network outside its schedule is ignored, allowing a broader matching network or global policy to apply;
+- a **Paused** scope with a schedule only pauses blocking during that schedule; outside the window, normal fallback policy applies.
+
+Overnight behavior matches block-list schedules: selected days are the days the window begins. A Monday `22:00–06:00` schedule remains active until Tuesday 06:00. Equal start/end times cover the full selected day.
 
 ## Editing networks and endpoints
 
@@ -278,7 +301,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **14 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **17 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
