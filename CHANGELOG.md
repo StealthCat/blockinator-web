@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.6.0 — Editable block lists and scope assignments
+
+- Added an expandable editor to every block list on the Block Lists page.
+- List name, format, source URL, refresh interval, enabled state, and global-assignment state can now be edited in place.
+- Network and exact-client/endpoint assignments can now be changed directly from each block-list editor.
+- Added initial scope assignments when importing a new block list.
+- Added optional block-list content replacement by file upload or pasted rules.
+- Added **Save & refresh URL** for immediate re-import of URL-backed lists.
+- Added reverse-DNS client identities to endpoint assignment choices.
+- Policy-engine cache reloads immediately after assignment changes.
+- Improved fragment-aware redirects so validation errors reopen the correct editor.
+- Added a policy regression test covering list reassignment from a network to an exact client.
+- Updated the application version to 1.6.0.
+
 ## 1.5.1 — Client reverse DNS
 
 - Added PTR lookups for client IP addresses displayed in the administration UI.
