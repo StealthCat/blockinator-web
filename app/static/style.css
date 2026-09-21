@@ -969,3 +969,275 @@ input[type=file]{padding:8px}
     text-align:center;
   }
 }
+
+
+/* =========================================================
+   Blockinator 1.7 — editable networks/endpoints
+   ========================================================= */
+.scopes-layout{
+  grid-template-columns:minmax(0,1.5fr) minmax(340px,.72fr);
+  align-items:start;
+}
+.scope-card-list{
+  display:grid;
+  gap:12px;
+}
+.scope-card{
+  overflow:hidden;
+  border:1px solid var(--border-soft);
+  border-radius:12px;
+  background:linear-gradient(145deg,#0b1c29,#091722);
+  box-shadow:0 8px 24px rgba(0,0,0,.10);
+}
+.scope-card-summary{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:18px;
+  padding:16px;
+}
+.scope-summary-main{
+  display:flex;
+  align-items:flex-start;
+  gap:12px;
+  min-width:0;
+}
+.scope-icon{
+  width:38px;
+  height:38px;
+  display:grid;
+  place-items:center;
+  flex:0 0 auto;
+  border:1px solid rgba(72,172,204,.22);
+  border-radius:11px;
+  color:#6be2ef;
+  background:linear-gradient(145deg,rgba(38,181,207,.13),rgba(38,95,174,.08));
+  font-size:15px;
+}
+.scope-icon.client{
+  color:#8ec4ff;
+  border-color:rgba(76,135,230,.20);
+  background:linear-gradient(145deg,rgba(60,121,218,.13),rgba(36,73,143,.08));
+}
+.scope-summary-copy{
+  min-width:0;
+}
+.scope-summary-title{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  flex-wrap:wrap;
+}
+.scope-summary-title h3{
+  margin:0 2px 0 0;
+}
+.scope-summary-target{
+  margin-top:5px;
+  color:#8aa7b9;
+  font-size:11px;
+}
+.scope-assignment-summary{
+  max-width:620px;
+  margin:6px 0 0!important;
+  overflow:hidden;
+  color:#607f92!important;
+  font-size:10.5px!important;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.scope-card-actions{
+  flex:0 0 auto;
+  justify-content:flex-end;
+}
+.scope-editor{
+  border-top:1px solid var(--border-soft);
+  background:linear-gradient(180deg,rgba(8,23,34,.72),rgba(7,19,29,.92));
+}
+.scope-editor>summary{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:12px 16px;
+  list-style:none;
+  cursor:pointer;
+  color:#91afc1;
+  background:rgba(12,31,44,.58);
+  transition:background .15s ease,color .15s ease;
+}
+.scope-editor>summary::-webkit-details-marker{display:none}
+.scope-editor>summary:hover{
+  color:#dff7ff;
+  background:rgba(16,40,55,.82);
+}
+.scope-editor>summary>span:first-child{
+  display:grid;
+  gap:2px;
+}
+.scope-editor>summary b{
+  color:inherit;
+  font-size:11px;
+}
+.scope-editor>summary small{
+  color:#5f7f93;
+  font-size:10px;
+}
+.scope-editor[open]>summary{
+  color:#dff9ff;
+  background:rgba(19,48,65,.72);
+}
+.scope-editor[open] .editor-chevron{
+  transform:rotate(180deg);
+}
+.scope-edit-body{
+  padding:4px 16px 18px;
+}
+.scope-edit-form{
+  margin-top:12px;
+}
+.scope-edit-note{
+  display:grid;
+  align-self:end;
+  gap:2px;
+  min-height:42px;
+  padding:8px 10px;
+  border:1px solid rgba(76,139,169,.13);
+  border-radius:9px;
+  background:#091b27;
+}
+.scope-edit-note b{
+  color:#89a9bb;
+  font-size:10px;
+}
+.scope-edit-note span{
+  color:#506f82;
+  font-size:9.5px;
+  line-height:1.35;
+}
+.scope-list-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:8px;
+}
+.scope-list-option{
+  display:flex!important;
+  align-items:flex-start!important;
+  gap:9px!important;
+  min-height:66px!important;
+  margin:0!important;
+  padding:10px!important;
+  border:1px solid rgba(76,136,166,.13);
+  border-radius:9px;
+  color:inherit!important;
+  background:#081923;
+  cursor:pointer;
+  transition:border-color .13s ease,background .13s ease;
+}
+.scope-list-option:hover{
+  border-color:rgba(70,184,207,.25);
+  background:#0a1e2b;
+}
+.scope-list-option:has(input:checked){
+  border-color:rgba(51,210,231,.28);
+  background:rgba(24,77,94,.20);
+  box-shadow:inset 2px 0 rgba(51,210,231,.65);
+}
+.scope-list-option input{
+  width:15px!important;
+  height:15px!important;
+  min-height:0!important;
+  flex:0 0 auto;
+  margin:2px 0 0!important;
+  padding:0!important;
+  accent-color:var(--accent);
+}
+.scope-list-copy{
+  display:grid;
+  gap:5px;
+  min-width:0;
+}
+.scope-list-title{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  min-width:0;
+  flex-wrap:wrap;
+}
+.scope-list-title b{
+  max-width:220px;
+  overflow:hidden;
+  color:#dcecf5;
+  font-size:11px;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.scope-list-title .pill{
+  min-height:19px;
+  padding:2px 6px;
+  font-size:8px;
+}
+.scope-list-global{
+  padding:2px 6px;
+  border:1px solid rgba(75,158,214,.20);
+  border-radius:999px;
+  color:#79bde6;
+  background:rgba(52,124,182,.08);
+  font-size:8px;
+  font-weight:800;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+}
+.scope-list-copy>small{
+  color:#58788c;
+  font-size:9.5px;
+}
+.scopes-layout>.action-panel{
+  position:sticky;
+  top:148px;
+}
+.scopes-layout>.action-panel .scope-list-grid{
+  grid-template-columns:1fr;
+  max-height:420px;
+  overflow:auto;
+  padding-right:2px;
+}
+
+@media(max-width:1240px){
+  .scopes-layout{
+    grid-template-columns:1fr;
+  }
+  .scopes-layout>.action-panel{
+    position:relative;
+    top:auto;
+  }
+  .scopes-layout>.action-panel .scope-list-grid{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    max-height:none;
+  }
+}
+@media(max-width:840px){
+  .scope-card-summary{
+    align-items:flex-start;
+    flex-direction:column;
+  }
+  .scope-card-actions{
+    width:100%;
+    justify-content:flex-start;
+  }
+}
+@media(max-width:760px){
+  .scope-list-grid,
+  .scopes-layout>.action-panel .scope-list-grid{
+    grid-template-columns:1fr;
+  }
+  .scope-edit-body{
+    padding-left:14px;
+    padding-right:14px;
+  }
+  .scope-summary-main{
+    width:100%;
+  }
+  .scope-assignment-summary{
+    white-space:normal;
+  }
+}
