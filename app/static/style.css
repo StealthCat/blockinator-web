@@ -1807,3 +1807,26 @@ input[type=file]{padding:8px}
     grid-template-columns:1fr;
   }
 }
+
+
+/* =========================================================
+   Blockinator 1.12 — reverse-DNS hostname policy targets
+   ========================================================= */
+.scope-icon.hostname{
+  color:#d7a8ff;
+  border-color:rgba(180,112,232,.22);
+  background:linear-gradient(145deg,rgba(151,83,211,.14),rgba(82,45,146,.08));
+}
+.scope-assignment-grid{
+  grid-template-columns:repeat(3,minmax(0,1fr));
+}
+@media(max-width:1180px){
+  .scope-assignment-grid{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+}
+@media(max-width:760px){
+  .scope-assignment-grid{
+    grid-template-columns:1fr;
+  }
+}
