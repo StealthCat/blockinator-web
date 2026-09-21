@@ -20,9 +20,10 @@ from .blocklists import fetch_url, normalize_domain, parse_blocklist
 from .db import Database
 from .policy import PolicyEngine, normalize_hostname_pattern
 from .rdns import ReverseDnsResolver
+from .timeutil import format_timestamp_for_timezone
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.13.1"
+APP_VERSION = "1.13.2"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -549,8 +550,9 @@ def dashboard(request: Request):
         recent = con.execute("SELECT ts,server_id,client_ip,client_name,qname,blocked,reason FROM query_log ORDER BY id DESC LIMIT 8").fetchall()
     global_on = db.get_setting("global_blocking", "1") == "1"
     recent_client_names = log_client_names(recent)
+    display_timezone = system_default_timezone()
     rows = "".join(
-        f'<tr><td>{esc(r["ts"])}</td><td>{querying_server_html(r["server_id"])}</td><td>{client_identity_html(r["client_ip"], recent_client_names)}</td><td>{esc(r["qname"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["reason"])}</td></tr>'
+        f'<tr><td title="Stored in UTC">{esc(format_timestamp_for_timezone(r["ts"], display_timezone))}</td><td>{querying_server_html(r["server_id"])}</td><td>{client_identity_html(r["client_ip"], recent_client_names)}</td><td>{esc(r["qname"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["reason"])}</td></tr>'
         for r in recent
     ) or '<tr><td colspan="6" class="empty">No DNS decisions recorded yet.</td></tr>'
     body = f'''
@@ -1835,8 +1837,9 @@ def queries_page(
         ).fetchall()
 
     query_client_names = log_client_names(rows)
+    display_timezone = system_default_timezone()
     trs = "".join(
-        f'<tr><td>{esc(r["ts"])}</td>'
+        f'<tr><td title="Stored in UTC">{esc(format_timestamp_for_timezone(r["ts"], display_timezone))}</td>'
         f'<td>{querying_server_html(r["server_id"])}</td>'
         f'<td>{client_identity_html(r["client_ip"], query_client_names)}</td>'
         f'<td>{esc(r["qname"])}</td>'
@@ -1993,12 +1996,12 @@ def settings_page(request: Request):
 
           <div class="form-section full">
             <div class="form-section-head">
-              <div><b>Default schedule timezone</b><p>Used when creating new block-list and policy-target schedules. Existing schedules keep their saved timezone.</p></div>
+              <div><b>Default timezone</b><p>Used to display log timestamps and as the default for new schedules. Existing schedules keep their saved timezone.</p></div>
               <span>{esc(default_timezone)}</span>
             </div>
             <label class="full">IANA timezone
               <input name="default_timezone" value="{esc(default_timezone)}" list="timezone-options" placeholder="America/New_York" required>
-              <small>Examples: UTC, America/New_York, America/Chicago, America/Denver, America/Los_Angeles.</small>
+              <small>Log timestamps are converted from stored UTC into this timezone. Examples: UTC, America/New_York, America/Chicago, America/Denver, America/Los_Angeles.</small>
             </label>
             <datalist id="timezone-options">
               <option value="UTC"></option>
