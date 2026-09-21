@@ -312,6 +312,11 @@ class Database:
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('block_response','nxdomain')")
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('max_query_logs','25000')")
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('max_query_log_age_days','0')")
+            bootstrap_timezone = os.getenv("TZ", "UTC").strip() or "UTC"
+            con.execute(
+                "INSERT OR IGNORE INTO settings(key,value) VALUES('default_timezone',?)",
+                (bootstrap_timezone,),
+            )
 
     def get_setting(self, key: str, default: str = "") -> str:
         with self.connect() as con:
