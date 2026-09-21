@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.1 — Client reverse DNS
+
+- Added PTR lookups for client IP addresses displayed in the administration UI.
+- Dashboard activity, Query Log rows, and exact client scopes now show both the reverse-DNS hostname and original IP address.
+- Added bounded concurrent lookups so slow or missing PTR records do not stall the UI or DNS decision path.
+- Added positive and negative reverse-DNS caches.
+- Added optional `RDNS_NAMESERVERS` configuration for internal/local reverse DNS zones.
+- Added configurable reverse-DNS timeout, page budget, and cache TTL settings.
+
 ## 1.5.0 — Control-panel polish
 
 - Rebuilt the shared application header with breadcrumbs, page descriptions, protection status, signed-in administrator identity, contextual primary actions, and compact sign-out control.
