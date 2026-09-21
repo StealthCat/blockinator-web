@@ -157,3 +157,54 @@ def test_scope_edit_changes_target_and_blocklist_assignment():
     assert e.decide("192.168.50.20", "b.example.com").block is True
     e.close()
     td.cleanup()
+
+
+def test_manual_list_single_domain_add_and_remove():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    with db.connect() as con:
+        list_id = con.execute(
+            "INSERT INTO blocklists(name,source_type,use_globally) VALUES('manual','manual',1)"
+        ).lastrowid
+        con.execute(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (list_id, "keep.example.com"),
+        )
+        con.execute(
+            "UPDATE blocklists SET entry_count=1 WHERE id=?",
+            (list_id,),
+        )
+
+    e = PolicyEngine(db)
+    assert e.decide("192.168.1.10", "keep.example.com").block is True
+    assert e.decide("192.168.1.10", "new.example.com").block is False
+
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (list_id, "new.example.com"),
+        )
+        con.execute(
+            "UPDATE blocklists SET entry_count=2 WHERE id=?",
+            (list_id,),
+        )
+    e.reload()
+
+    assert e.decide("192.168.1.10", "new.example.com").block is True
+    assert e.decide("192.168.1.10", "x.new.example.com").block is True
+
+    with db.connect() as con:
+        con.execute(
+            "DELETE FROM block_entries WHERE blocklist_id=? AND domain=?",
+            (list_id, "new.example.com"),
+        )
+        con.execute(
+            "UPDATE blocklists SET entry_count=1 WHERE id=?",
+            (list_id,),
+        )
+    e.reload()
+
+    assert e.decide("192.168.1.10", "new.example.com").block is False
+    assert e.decide("192.168.1.10", "keep.example.com").block is True
+    e.close()
+    td.cleanup()
