@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 import sqlite3
 import threading
@@ -86,6 +87,14 @@ class Database:
                     PRIMARY KEY (scope_id, blocklist_id),
                     FOREIGN KEY (scope_id) REFERENCES scopes(id) ON DELETE CASCADE,
                     FOREIGN KEY (blocklist_id) REFERENCES blocklists(id) ON DELETE CASCADE
+                ) WITHOUT ROWID;
+
+                CREATE TABLE IF NOT EXISTS scope_network_targets (
+                    scope_id INTEGER NOT NULL,
+                    family INTEGER NOT NULL CHECK(family IN (4,6)),
+                    target TEXT NOT NULL,
+                    PRIMARY KEY (scope_id, family),
+                    FOREIGN KEY (scope_id) REFERENCES scopes(id) ON DELETE CASCADE
                 ) WITHOUT ROWID;
 
                 CREATE TABLE IF NOT EXISTS query_log (
@@ -242,6 +251,41 @@ class Database:
                     raise
                 finally:
                     con.execute("PRAGMA foreign_keys=ON")
+
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scope_network_targets (
+                    scope_id INTEGER NOT NULL,
+                    family INTEGER NOT NULL CHECK(family IN (4,6)),
+                    target TEXT NOT NULL,
+                    PRIMARY KEY (scope_id, family),
+                    FOREIGN KEY (scope_id) REFERENCES scopes(id) ON DELETE CASCADE
+                ) WITHOUT ROWID
+                """
+            )
+
+            # Backfill the address-family table from legacy single-target networks.
+            for row in con.execute(
+                """
+                SELECT s.id,s.target
+                FROM scopes s
+                WHERE s.kind='network'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM scope_network_targets n WHERE n.scope_id=s.id
+                  )
+                """
+            ):
+                try:
+                    network = ipaddress.ip_network(row["target"], strict=False)
+                except ValueError:
+                    continue
+                con.execute(
+                    """
+                    INSERT OR REPLACE INTO scope_network_targets(scope_id,family,target)
+                    VALUES(?,?,?)
+                    """,
+                    (row["id"], network.version, str(network)),
+                )
 
             query_log_columns = {
                 row["name"] for row in con.execute("PRAGMA table_info(query_log)")
