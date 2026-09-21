@@ -13,6 +13,41 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .db import Database
 
 
+def _schedule_window_is_active(
+    enabled: bool,
+    days: frozenset[int],
+    start_text: str,
+    end_text: str,
+    timezone_name: str,
+    now_utc: datetime | None = None,
+) -> bool:
+    if not enabled:
+        return True
+    if not days:
+        return False
+
+    try:
+        tz = ZoneInfo(timezone_name)
+        start = time.fromisoformat(start_text)
+        end = time.fromisoformat(end_text)
+    except (ValueError, ZoneInfoNotFoundError):
+        return False
+
+    current = (now_utc or datetime.now(timezone.utc)).astimezone(tz)
+    current_time = current.time().replace(tzinfo=None)
+    weekday = current.weekday()
+
+    if start == end:
+        return weekday in days
+    if start < end:
+        return weekday in days and start <= current_time < end
+
+    if weekday in days and current_time >= start:
+        return True
+    previous_weekday = (weekday - 1) % 7
+    return previous_weekday in days and current_time < end
+
+
 @dataclass(frozen=True, slots=True)
 class Scope:
     id: int
@@ -29,7 +64,7 @@ class Scope:
     schedule_timezone: str = "UTC"
 
     def schedule_is_active(self, now_utc: datetime | None = None) -> bool:
-        return schedule_is_active(
+        return _schedule_window_is_active(
             self.schedule_enabled,
             self.schedule_days,
             self.schedule_start,
@@ -53,7 +88,7 @@ class BlockListCache:
     schedule_timezone: str = "UTC"
 
     def schedule_is_active(self, now_utc: datetime | None = None) -> bool:
-        return schedule_is_active(
+        return _schedule_window_is_active(
             self.schedule_enabled,
             self.schedule_days,
             self.schedule_start,
