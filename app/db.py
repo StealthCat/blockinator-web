@@ -89,14 +89,6 @@ class Database:
                     FOREIGN KEY (blocklist_id) REFERENCES blocklists(id) ON DELETE CASCADE
                 ) WITHOUT ROWID;
 
-                CREATE TABLE IF NOT EXISTS scope_network_targets (
-                    scope_id INTEGER NOT NULL,
-                    family INTEGER NOT NULL CHECK(family IN (4,6)),
-                    target TEXT NOT NULL,
-                    PRIMARY KEY (scope_id, family),
-                    FOREIGN KEY (scope_id) REFERENCES scopes(id) ON DELETE CASCADE
-                ) WITHOUT ROWID;
-
                 CREATE TABLE IF NOT EXISTS query_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
