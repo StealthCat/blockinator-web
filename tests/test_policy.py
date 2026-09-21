@@ -667,3 +667,116 @@ def test_scheduled_hostname_scope_only_applies_inside_window():
     assert e.decide("192.168.1.60", "school.example.com", outside).block is False
     e.close()
     td.cleanup()
+
+
+def test_dual_stack_network_scope_blocks_ipv4_and_ipv6():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    with db.connect() as con:
+        list_id = con.execute(
+            "INSERT INTO blocklists(name,use_globally) VALUES('dual-stack-list',0)"
+        ).lastrowid
+        con.execute(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (list_id, "dual.example.com"),
+        )
+        con.execute(
+            "UPDATE blocklists SET entry_count=1 WHERE id=?",
+            (list_id,),
+        )
+        scope_id = con.execute(
+            """
+            INSERT INTO scopes(name,kind,target,state)
+            VALUES('dual-lan','network','192.168.50.0/24','active')
+            """
+        ).lastrowid
+        con.executemany(
+            """
+            INSERT INTO scope_network_targets(scope_id,family,target)
+            VALUES(?,?,?)
+            """,
+            [
+                (scope_id, 4, "192.168.50.0/24"),
+                (scope_id, 6, "2001:db8:50::/64"),
+            ],
+        )
+        con.execute(
+            "INSERT INTO scope_blocklists(scope_id,blocklist_id) VALUES(?,?)",
+            (scope_id, list_id),
+        )
+
+    e = PolicyEngine(db)
+    assert e.decide("192.168.50.25", "dual.example.com").block is True
+    assert e.decide("2001:db8:50::25", "dual.example.com").block is True
+    assert e.decide("192.168.51.25", "dual.example.com").block is False
+    assert e.decide("2001:db8:51::25", "dual.example.com").block is False
+    e.close()
+    td.cleanup()
+
+
+def test_dual_stack_paused_network_pauses_both_address_families():
+    td, db, e = setup_engine()
+    with db.connect() as con:
+        scope_id = con.execute(
+            """
+            INSERT INTO scopes(name,kind,target,state)
+            VALUES('paused-dual','network','10.40.0.0/16','paused')
+            """
+        ).lastrowid
+        con.executemany(
+            """
+            INSERT INTO scope_network_targets(scope_id,family,target)
+            VALUES(?,?,?)
+            """,
+            [
+                (scope_id, 4, "10.40.0.0/16"),
+                (scope_id, 6, "2001:db8:40::/48"),
+            ],
+        )
+    e.reload()
+
+    assert e.decide("10.40.2.3", "ads.example.com").block is False
+    assert e.decide("2001:db8:40::23", "ads.example.com").block is False
+    assert e.decide("10.41.2.3", "ads.example.com").block is True
+    e.close()
+    td.cleanup()
+
+
+def test_dual_stack_network_uses_family_specific_most_specific_match():
+    td, db, e = setup_engine()
+    with db.connect() as con:
+        broad_id = con.execute(
+            """
+            INSERT INTO scopes(name,kind,target,state)
+            VALUES('broad-dual','network','10.0.0.0/8','paused')
+            """
+        ).lastrowid
+        con.executemany(
+            """
+            INSERT INTO scope_network_targets(scope_id,family,target)
+            VALUES(?,?,?)
+            """,
+            [
+                (broad_id, 4, "10.0.0.0/8"),
+                (broad_id, 6, "2001:db8::/32"),
+            ],
+        )
+        specific_id = con.execute(
+            """
+            INSERT INTO scopes(name,kind,target,state)
+            VALUES('specific-v6','network','2001:db8:1234::/48','active')
+            """
+        ).lastrowid
+        con.execute(
+            """
+            INSERT INTO scope_network_targets(scope_id,family,target)
+            VALUES(?,?,?)
+            """,
+            (specific_id, 6, "2001:db8:1234::/48"),
+        )
+    e.reload()
+
+    assert e.decide("2001:db8:1234::10", "ads.example.com").block is True
+    assert e.decide("2001:db8:9999::10", "ads.example.com").block is False
+    e.close()
+    td.cleanup()
