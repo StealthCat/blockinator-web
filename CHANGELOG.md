@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.9.0 — Scheduled block-list enforcement
+
+- Added optional recurring weekly enforcement schedules to every block list.
+- Added selectable weekdays, start/end times, and per-list IANA timezone configuration.
+- Scheduled lists are excluded from DNS policy decisions outside their active window.
+- Added overnight-window handling, where a selected day owns the interval beginning that evening and ending the following morning.
+- Equal start/end times represent a full selected day.
+- Added automatic SQLite migration for schedule fields on existing databases.
+- Added schedule summaries to Block Lists, manual-list management, and Networks & Endpoints assignment pickers.
+- Added `tzdata` to the container runtime for reliable IANA timezone support.
+- Added `TZ` environment configuration as the default timezone for newly created schedules.
+- Added deterministic regression tests for normal weekly windows, overnight schedules, and `America/New_York` timezone conversion.
+- Updated the application version to 1.9.0.
+
 ## 1.8.1 — Global assignment lockout
 
 - Shaded and disabled network/endpoint assignment checkboxes whenever a block list is globally assigned.
