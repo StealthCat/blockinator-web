@@ -137,7 +137,7 @@ def parse_schedule_form(form) -> tuple[bool, str, str, str, str]:
 
     try:
         ZoneInfo(tz_name)
-    except ZoneInfoNotFoundError as exc:
+    except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ValueError(
             "Schedule timezone must be a valid IANA timezone such as America/New_York"
         ) from exc
@@ -192,6 +192,11 @@ def schedule_fields_html(row=None, default_timezone: str = "UTC") -> str:
         if row is not None
         else default_timezone
     )
+    if row is None:
+        try:
+            ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            tz_name = "UTC"
     day_buttons = "".join(
         f'<label class="schedule-day">'
         f'<input type="checkbox" name="schedule_day" value="{day}"'
