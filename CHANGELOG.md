@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.10.2 — Reverse-DNS client filtering
+
+- Added persisted reverse-DNS client names to query-log records.
+- Query Log **Client** filtering now matches either client IP or PTR hostname.
+- Partial hostname searches are supported.
+- PTR enrichment runs asynchronously in the query-log writer and remains off the DNS decision path.
+- Existing log rows are backfilled opportunistically when client identities are displayed or searched.
+- Added an automatic SQLite migration and hostname index for existing databases.
+- Added regression coverage for upgrading the legacy query-log schema and filtering by hostname.
+- Updated the application version to 1.10.2.
+
 ## 1.11.0 — Time-based query log retention
 
 - Added configurable query-log retention by age in days.
