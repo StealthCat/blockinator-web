@@ -6,7 +6,7 @@ import queue
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -46,6 +46,39 @@ def _schedule_window_is_active(
         return True
     previous_weekday = (weekday - 1) % 7
     return previous_weekday in days and current_time < end
+
+
+def _prune_query_logs(
+    con: sqlite3.Connection,
+    max_rows: int,
+    max_age_days: int,
+    now_utc: datetime | None = None,
+) -> tuple[int, int]:
+    """Prune query logs by age and row count.
+
+    Both limits apply when enabled. A max_age_days value of 0 disables
+    time-based retention while preserving the row cap.
+    """
+    age_deleted = 0
+    row_deleted = 0
+
+    if max_age_days > 0:
+        cutoff = (now_utc or datetime.now(timezone.utc)) - timedelta(days=max_age_days)
+        cur = con.execute(
+            "DELETE FROM query_log WHERE datetime(ts) < datetime(?)",
+            (cutoff.isoformat(),),
+        )
+        age_deleted = max(0, cur.rowcount)
+
+    if max_rows > 0:
+        cur = con.execute(
+            "DELETE FROM query_log "
+            "WHERE id <= (SELECT COALESCE(MAX(id),0)-? FROM query_log)",
+            (max_rows,),
+        )
+        row_deleted = max(0, cur.rowcount)
+
+    return age_deleted, row_deleted
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +159,15 @@ class QueryLogger:
         self.stop_event.set()
         self.thread.join(timeout=2.0)
 
+    def prune_now(self, now_utc: datetime | None = None) -> tuple[int, int]:
+        max_rows = int(self.db.get_setting("max_query_logs", "25000"))
+        max_age_days = int(self.db.get_setting("max_query_log_age_days", "0"))
+        with self.db.connect() as con:
+            con.execute("BEGIN")
+            result = _prune_query_logs(con, max_rows, max_age_days, now_utc)
+            con.execute("COMMIT")
+        return result
+
     def _run(self) -> None:
         while not self.stop_event.is_set():
             batch: list[dict[str, Any]] = []
@@ -158,10 +200,8 @@ class QueryLogger:
                         ],
                     )
                     max_rows = int(self.db.get_setting("max_query_logs", "25000"))
-                    con.execute(
-                        "DELETE FROM query_log WHERE id <= (SELECT COALESCE(MAX(id),0)-? FROM query_log)",
-                        (max_rows,),
-                    )
+                    max_age_days = int(self.db.get_setting("max_query_log_age_days", "0"))
+                    _prune_query_logs(con, max_rows, max_age_days)
                     con.execute("COMMIT")
             except Exception:
                 # Logging must never interfere with DNS decisions.
