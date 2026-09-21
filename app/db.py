@@ -47,6 +47,11 @@ class Database:
                     enabled INTEGER NOT NULL DEFAULT 1,
                     use_globally INTEGER NOT NULL DEFAULT 1,
                     refresh_minutes INTEGER NOT NULL DEFAULT 1440,
+                    schedule_enabled INTEGER NOT NULL DEFAULT 0,
+                    schedule_days TEXT NOT NULL DEFAULT '0,1,2,3,4,5,6',
+                    schedule_start TEXT NOT NULL DEFAULT '00:00',
+                    schedule_end TEXT NOT NULL DEFAULT '23:59',
+                    schedule_timezone TEXT NOT NULL DEFAULT 'UTC',
                     last_updated TEXT,
                     last_error TEXT,
                     entry_count INTEGER NOT NULL DEFAULT 0,
@@ -131,6 +136,23 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_api_keys_enabled ON api_keys(enabled);
                 """
             )
+            # Lightweight forward migration for databases created by older Blockinator releases.
+            blocklist_columns = {
+                row["name"] for row in con.execute("PRAGMA table_info(blocklists)")
+            }
+            schedule_columns = {
+                "schedule_enabled": "INTEGER NOT NULL DEFAULT 0",
+                "schedule_days": "TEXT NOT NULL DEFAULT '0,1,2,3,4,5,6'",
+                "schedule_start": "TEXT NOT NULL DEFAULT '00:00'",
+                "schedule_end": "TEXT NOT NULL DEFAULT '23:59'",
+                "schedule_timezone": "TEXT NOT NULL DEFAULT 'UTC'",
+            }
+            for column_name, definition in schedule_columns.items():
+                if column_name not in blocklist_columns:
+                    con.execute(
+                        f"ALTER TABLE blocklists ADD COLUMN {column_name} {definition}"
+                    )
+
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('global_blocking','1')")
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('block_response','nxdomain')")
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('max_query_logs','25000')")
