@@ -946,6 +946,8 @@ async def add_scope(request: Request):
 
     if not name:
         return redirect("/scopes", error="Scope name is required")
+    if kind not in {"network", "client"}:
+        return redirect("/scopes", error="Scope type must be Network or Endpoint")
     if state not in {"active", "paused"}:
         return redirect("/scopes", error="Scope state must be active or paused")
     try:
@@ -985,6 +987,8 @@ async def edit_scope(scope_id: int, request: Request):
 
     if not name:
         return redirect(f"/scopes#edit-scope-{scope_id}", error="Scope name is required")
+    if kind not in {"network", "client"}:
+        return redirect(f"/scopes#edit-scope-{scope_id}", error="Scope type must be Network or Endpoint")
     if state not in {"active", "paused"}:
         return redirect(f"/scopes#edit-scope-{scope_id}", error="Scope state must be active or paused")
     try:
