@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 
@@ -206,5 +207,104 @@ def test_manual_list_single_domain_add_and_remove():
 
     assert e.decide("192.168.1.10", "new.example.com").block is False
     assert e.decide("192.168.1.10", "keep.example.com").block is True
+    e.close()
+    td.cleanup()
+
+
+def test_scheduled_list_enforces_only_inside_window():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    with db.connect() as con:
+        list_id = con.execute(
+            """
+            INSERT INTO blocklists(
+                name,use_globally,schedule_enabled,schedule_days,
+                schedule_start,schedule_end,schedule_timezone
+            ) VALUES('scheduled',1,1,'0','12:00','14:00','UTC')
+            """
+        ).lastrowid
+        con.execute(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (list_id, "scheduled.example.com"),
+        )
+        con.execute(
+            "UPDATE blocklists SET entry_count=1 WHERE id=?",
+            (list_id,),
+        )
+
+    e = PolicyEngine(db)
+    monday_inside = datetime(2026, 9, 21, 13, 0, tzinfo=timezone.utc)
+    monday_after = datetime(2026, 9, 21, 15, 0, tzinfo=timezone.utc)
+    tuesday_same_time = datetime(2026, 9, 22, 13, 0, tzinfo=timezone.utc)
+
+    assert e.decide("192.168.1.10", "scheduled.example.com", monday_inside).block is True
+    assert e.decide("192.168.1.10", "scheduled.example.com", monday_after).block is False
+    assert e.decide("192.168.1.10", "scheduled.example.com", tuesday_same_time).block is False
+    e.close()
+    td.cleanup()
+
+
+def test_overnight_schedule_continues_into_following_morning():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    with db.connect() as con:
+        list_id = con.execute(
+            """
+            INSERT INTO blocklists(
+                name,use_globally,schedule_enabled,schedule_days,
+                schedule_start,schedule_end,schedule_timezone
+            ) VALUES('overnight',1,1,'0','22:00','06:00','UTC')
+            """
+        ).lastrowid
+        con.execute(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (list_id, "bedtime.example.com"),
+        )
+        con.execute(
+            "UPDATE blocklists SET entry_count=1 WHERE id=?",
+            (list_id,),
+        )
+
+    e = PolicyEngine(db)
+    monday_late = datetime(2026, 9, 21, 23, 0, tzinfo=timezone.utc)
+    tuesday_early = datetime(2026, 9, 22, 5, 30, tzinfo=timezone.utc)
+    tuesday_after = datetime(2026, 9, 22, 6, 30, tzinfo=timezone.utc)
+
+    assert e.decide("192.168.1.10", "bedtime.example.com", monday_late).block is True
+    assert e.decide("192.168.1.10", "bedtime.example.com", tuesday_early).block is True
+    assert e.decide("192.168.1.10", "bedtime.example.com", tuesday_after).block is False
+    e.close()
+    td.cleanup()
+
+
+def test_schedule_honors_iana_timezone():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    with db.connect() as con:
+        list_id = con.execute(
+            """
+            INSERT INTO blocklists(
+                name,use_globally,schedule_enabled,schedule_days,
+                schedule_start,schedule_end,schedule_timezone
+            ) VALUES('eastern',1,1,'0','22:00','06:00','America/New_York')
+            """
+        ).lastrowid
+        con.execute(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (list_id, "eastern.example.com"),
+        )
+        con.execute(
+            "UPDATE blocklists SET entry_count=1 WHERE id=?",
+            (list_id,),
+        )
+
+    e = PolicyEngine(db)
+    # 01:00 Tuesday EDT belongs to Monday's 22:00-06:00 window.
+    inside = datetime(2026, 9, 22, 5, 0, tzinfo=timezone.utc)
+    # 07:00 Tuesday EDT is outside that window.
+    outside = datetime(2026, 9, 22, 11, 0, tzinfo=timezone.utc)
+
+    assert e.decide("192.168.1.10", "eastern.example.com", inside).block is True
+    assert e.decide("192.168.1.10", "eastern.example.com", outside).block is False
     e.close()
     td.cleanup()
