@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13.2 — Timezone-aware query log display
+
+- Query-log timestamps remain stored in UTC but are now converted for display using the configured System Settings timezone.
+- Updated both Dashboard recent activity and the full Query Log.
+- Displayed timestamps now include the active timezone abbreviation and follow DST rules automatically.
+- Legacy SQLite `CURRENT_TIMESTAMP` rows are treated as UTC before conversion.
+- System Settings now describes the timezone as the display timezone for logs as well as the default for new schedules.
+- Added regression coverage for ISO UTC timestamps, legacy SQLite timestamps, DST-aware conversion, and invalid-timezone fallback.
+- Updated the application version to 1.13.2.
+
 ## 1.13.1 — Configurable default timezone
 
 - Added **Default schedule timezone** to System Settings.
