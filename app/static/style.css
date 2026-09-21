@@ -1778,3 +1778,32 @@ input[type=file]{padding:8px}
 .scope-schedule-summary.scheduled{
   color:#b7985e!important;
 }
+
+
+/* =========================================================
+   Blockinator 1.11 — query log retention controls
+   ========================================================= */
+.log-retention-section{
+  margin-top:2px;
+}
+.retention-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:12px;
+}
+.retention-grid label{
+  display:grid;
+  gap:6px;
+  min-width:0;
+}
+.retention-grid label>small{
+  color:#5d7d90;
+  font-size:9.5px;
+  line-height:1.4;
+  font-weight:500;
+}
+@media(max-width:760px){
+  .retention-grid{
+    grid-template-columns:1fr;
+  }
+}
