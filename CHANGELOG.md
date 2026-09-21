@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.0 — Control-panel polish
+
+- Rebuilt the shared application header with breadcrumbs, page descriptions, protection status, signed-in administrator identity, contextual primary actions, and compact sign-out control.
+- Grouped sidebar navigation into policy and administration sections with clearer active-state styling.
+- Refined dashboard cards, panels, tables, forms, filters, buttons, status indicators, and empty states.
+- Added clearer guidance to block-list imports, endpoint creation, API-key creation, administrator credentials, query history, and settings.
+- Improved responsive layouts for tablet and mobile use.
+- Updated the application version to 1.5.0.
+
 ## 1.4.1 — Repository layout
 
 - Moved the Docker application contents from `policy-server/` to the repository root.
