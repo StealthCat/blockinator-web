@@ -452,6 +452,12 @@ def lists_page(request: Request):
             '<button class="small-button" type="submit" name="action" value="refresh">'
             'Save & refresh URL</button>'
         )
+        manual_manage_link = (
+            f'<a class="small-button domain-manage-link" href="/lists/{int(r["id"])}/domains">'
+            'Manage domains</a>'
+            if r["source_type"] == "manual"
+            else ""
+        )
 
         cards += f'''<article class="list-card editable-list-card" id="list-{int(r["id"])}">
           <div class="list-card-summary">
@@ -472,7 +478,7 @@ def lists_page(request: Request):
                 <button class="small-button">{"Disable" if r["enabled"] else "Enable"}</button>
               </form>
               <a class="small-button edit-link" href="#edit-list-{int(r["id"])}">Edit & assign</a>
-              {f'<a class="small-button domain-manage-link" href="/lists/{int(r["id"])}/domains">Manage domains</a>' if r["source_type"] == "manual" else ""}
+              {manual_manage_link}
               <form method="post" action="/admin/lists/{int(r["id"])}/delete" onsubmit="return confirm('Delete this list and its scope assignments?')">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                 <button class="small-button danger">Delete</button>
@@ -651,6 +657,11 @@ def manual_list_domains_page(
     )
 
     assignment_label = "Global" if blocklist["use_globally"] else "Scoped only"
+    clear_search_link = (
+        f'<a class="small-button" href="/lists/{list_id}/domains">Clear</a>'
+        if q
+        else ""
+    )
     body = f'''<div class="manual-domain-page">
       <section class="manual-domain-heading">
         <a class="back-link" href="/lists#list-{list_id}">← Back to Block Lists</a>
@@ -699,7 +710,7 @@ def manual_list_domains_page(
           <form class="manual-domain-search" method="get">
             <input name="q" value="{esc(q)}" placeholder="Search domains…">
             <button class="small-button" type="submit">Search</button>
-            {f'<a class="small-button" href="/lists/{list_id}/domains">Clear</a>' if q else ""}
+            {clear_search_link}
           </form>
 
           <div class="table-wrap manual-domain-table-wrap">
