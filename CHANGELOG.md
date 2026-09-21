@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.11.0 — Time-based query log retention
+
+- Added configurable query-log retention by age in days.
+- Time-based retention defaults to disabled (`0` days) to preserve existing installations.
+- Existing maximum-row retention remains available and both limits are enforced together.
+- Saving System Settings immediately prunes existing query logs against the new limits.
+- Query logging continues to enforce retention automatically as new batches are written.
+- Added retention status to the System Settings runtime summary.
+- Added regression coverage for age-based pruning and combined age/row limits.
+- Updated the application version to 1.11.0.
+
 ## 1.10.1 — Query log Match cleanup
 
 - Allowed DNS queries now display a blank value in the Query Log **Match** column.
