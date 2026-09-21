@@ -20,7 +20,7 @@ from .db import Database
 from .policy import PolicyEngine
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -90,34 +90,70 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
     error = request.query_params.get("error")
     if session is None:
         session = session_for(request)
+
+    page_descriptions = {
+        "dashboard": "Monitor DNS enforcement, request activity, and policy health at a glance.",
+        "lists": "Import, organize, and control the domain intelligence that powers your blocking policy.",
+        "scopes": "Define exactly where filtering applies and pause or resume protection by network or endpoint.",
+        "queries": "Inspect DNS decisions, troubleshoot policy matches, and follow activity across your clients.",
+        "security": "Manage administrator access and the API credentials used by connected DNS resolvers.",
+        "settings": "Tune Blockinator's response behavior, retention, and core service preferences.",
+    }
+    page_actions = {
+        "dashboard": ('/queries', 'View activity', 'arrow'),
+        "lists": ('#add-list', 'Import a list', 'plus'),
+        "scopes": ('#add-scope', 'Add endpoint', 'plus'),
+        "queries": ('/queries', 'Reset filters', 'refresh'),
+        "security": ('#create-key', 'Create API key', 'plus'),
+        "settings": (None, None, None),
+    }
+
     nav = [
         ("/", "dashboard", "Dashboard", "⌂"),
         ("/lists", "lists", "Block Lists", "☷"),
         ("/scopes", "scopes", "Networks & Endpoints", "◎"),
         ("/queries", "queries", "Query Log", "≡"),
+    ]
+    admin_nav = [
         ("/security", "security", "Access & Security", "◈"),
         ("/settings", "settings", "System Settings", "⚙"),
     ]
-    nav_html = "".join(
-        f'<a class="nav-link {"active" if key == active else ""}" href="{href}"><span>{icon}</span>{label}</a>'
-        for href, key, label, icon in nav
-    )
+
+    def render_nav(items):
+        return "".join(
+            f'<a class="nav-link {"active" if key == active else ""}" href="{href}"><span class="nav-icon">{icon}</span><span>{label}</span></a>'
+            for href, key, label, icon in items
+        )
+
     flash = ""
     if notice:
-        flash += f'<div class="flash ok">{esc(notice)}</div>'
+        flash += f'<div class="flash ok"><span class="flash-icon">✓</span><div><b>Success</b><span>{esc(notice)}</span></div></div>'
     if error:
-        flash += f'<div class="flash bad">{esc(error)}</div>'
+        flash += f'<div class="flash bad"><span class="flash-icon">!</span><div><b>Something needs attention</b><span>{esc(error)}</span></div></div>'
+
+    global_on = db.get_setting("global_blocking", "1") == "1"
+    status_label = "Protection active" if global_on else "Protection paused"
+    status_detail = "DNS policy is being enforced" if global_on else "Requests are currently allowed"
+    action_href, action_label, action_icon = page_actions.get(active, (None, None, None))
+    header_action = (
+        f'<a class="primary-button header-primary" href="{action_href}"><span>{"+" if action_icon == "plus" else "↗" if action_icon == "arrow" else "↻"}</span>{esc(action_label)}</a>'
+        if action_href and action_label else ""
+    )
+    user_initial = esc(session.username[:1].upper()) if session else "A"
+    username = esc(session.username) if session else "Administrator"
     logout = ""
     if session:
-        logout = f'''
+        logout = f"""
         <form method="post" action="/logout" class="logout-form">
           <input type="hidden" name="csrf_token" value="{esc(session.csrf_token)}">
-          <button class="ghost-button" type="submit">Sign out</button>
-        </form>'''
+          <button class="icon-button" type="submit" title="Sign out" aria-label="Sign out">↪</button>
+        </form>"""
+
     return HTMLResponse(f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#071018">
 <title>{esc(title)} · Blockinator</title>
 <link rel="icon" href="/static/blockinator-mark.webp">
 <link rel="stylesheet" href="/static/style.css">
@@ -125,14 +161,36 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
 <body>
 <div class="app-shell">
   <aside class="sidebar">
-    <a class="brand" href="/"><img src="/static/blockinator-mark.webp" alt=""><div><b>Blockinator</b><small>DNS Policy Control</small></div></a>
-    <nav>{nav_html}</nav>
-    <div class="sidebar-foot"><span class="status-dot"></span>Policy service online<small>v{APP_VERSION}</small></div>
+    <a class="brand" href="/"><span class="brand-mark"><img src="/static/blockinator-mark.webp" alt=""></span><div><b>Blockinator</b><small>DNS Policy Control</small></div></a>
+    <div class="nav-section-label">Policy</div>
+    <nav>{render_nav(nav)}</nav>
+    <div class="nav-section-label nav-section-spacer">Administration</div>
+    <nav>{render_nav(admin_nav)}</nav>
+    <div class="sidebar-foot">
+      <div class="sidebar-status"><span class="status-dot"></span><div><b>Service online</b><small>Blockinator v{APP_VERSION}</small></div></div>
+    </div>
   </aside>
   <main class="main">
-    <header class="topbar"><div><p class="eyebrow">Blockinator Control Plane</p><h1>{esc(title)}</h1></div>{logout}</header>
-    {flash}
-    {body}
+    <header class="workspace-header">
+      <div class="header-copy">
+        <div class="breadcrumb"><span>Blockinator</span><i>›</i><b>{esc(title)}</b></div>
+        <h1>{esc(title)}</h1>
+        <p>{esc(page_descriptions.get(active, ""))}</p>
+      </div>
+      <div class="header-tools">
+        <a class="protection-chip {"active" if global_on else "paused"}" href="/">
+          <span class="protection-icon">◆</span>
+          <span><small>{esc(status_label)}</small><b>{esc(status_detail)}</b></span>
+        </a>
+        {header_action}
+        <div class="user-chip"><span class="avatar">{user_initial}</span><span><b>{username}</b><small>Administrator</small></span></div>
+        {logout}
+      </div>
+    </header>
+    <div class="content-wrap">
+      {flash}
+      {body}
+    </div>
   </main>
 </div>
 </body>
@@ -277,7 +335,7 @@ def lists_page(request: Request):
     if not cards:
         cards = '<div class="empty-card">No block lists yet. Add one below.</div>'
     body = f'''<div class="split-grid"><section class="panel"><div class="panel-head"><div><h3>Managed block lists</h3><p>Multiple independent lists can be enabled globally or attached to individual scopes.</p></div></div><div class="card-grid">{cards}</div></section>
-    <section class="panel"><h3>Add block list</h3><form method="post" action="/admin/lists" enctype="multipart/form-data" class="form-grid">
+    <section class="panel action-panel" id="add-list"><div class="panel-kicker">New source</div><h3>Add block list</h3><p class="panel-help">Import from a URL, upload a file, or paste rules directly. Blockinator will normalize supported formats automatically.</p><form method="post" action="/admin/lists" enctype="multipart/form-data" class="form-grid">
       <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
       <label>Name<input name="name" required></label><label>Format<select name="format"><option>auto</option><option>hosts</option><option>adblock</option><option>domains</option></select></label>
       <label class="full">Source URL (optional)<input name="source_url" placeholder="https://example.com/list.txt"></label>
@@ -341,7 +399,7 @@ def scopes_page(request: Request):
         for r in scopes
     ) or '<tr><td colspan="5" class="empty">No managed networks or clients yet.</td></tr>'
     body = f'''<section class="panel"><div class="panel-head"><div><h3>Networks & endpoints</h3><p>Pause or resume blocking for CIDR networks and exact client addresses.</p></div></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Target</th><th>State</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></section>
-    <section class="panel narrow"><h3>Add network or client</h3><form method="post" action="/admin/scopes" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+    <section class="panel narrow action-panel" id="add-scope"><div class="panel-kicker">Policy target</div><h3>Add network or client</h3><p class="panel-help">Use a CIDR for an entire network or an exact IP address for a single endpoint.</p><form method="post" action="/admin/scopes" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
     <label>Name<input name="name" required></label><label>Type<select name="kind"><option value="network">Network</option><option value="client">Client</option></select></label>
     <label class="full">Address / CIDR<input name="target" placeholder="192.168.20.0/24 or 192.168.20.44" required></label><label>Initial state<select name="state"><option value="active">Active</option><option value="paused">Paused</option></select></label>
     <button class="primary-button" type="submit">Add scope</button></form></section>'''
@@ -397,7 +455,7 @@ def queries_page(request: Request, q: str = "", client: str = "", decision: str 
         f'<tr><td>{esc(r["ts"])}</td><td class="mono">{esc(r["client_ip"])}</td><td>{esc(r["qname"])}</td><td>{esc(r["qtype"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["matched_list"] or r["reason"])}</td></tr>'
         for r in rows
     ) or '<tr><td colspan="6" class="empty">No matching queries.</td></tr>'
-    body = f'''<section class="panel"><form class="filter-bar" method="get"><input name="q" value="{esc(q)}" placeholder="Domain contains…"><input name="client" value="{esc(client)}" placeholder="Client IP…"><select name="decision"><option value="">All decisions</option><option value="blocked" {"selected" if decision=="blocked" else ""}>Blocked</option><option value="allowed" {"selected" if decision=="allowed" else ""}>Allowed</option></select><select name="limit"><option>{limit}</option><option>50</option><option>100</option><option>250</option><option>500</option></select><button class="primary-button">Filter</button></form>
+    body = f'''<section class="panel"><div class="panel-head query-head"><div><div class="panel-kicker">DNS activity</div><h3>Decision history</h3><p>Showing {len(rows)} most recent matching requests. Use filters to narrow by domain, client, or action.</p></div><span class="result-count">{len(rows)} results</span></div><form class="filter-bar" method="get"><input name="q" value="{esc(q)}" placeholder="Domain contains…"><input name="client" value="{esc(client)}" placeholder="Client IP…"><select name="decision"><option value="">All decisions</option><option value="blocked" {"selected" if decision=="blocked" else ""}>Blocked</option><option value="allowed" {"selected" if decision=="allowed" else ""}>Allowed</option></select><select name="limit"><option>{limit}</option><option>50</option><option>100</option><option>250</option><option>500</option></select><button class="primary-button">Filter</button></form>
     <div class="table-wrap"><table><thead><tr><th>Time</th><th>Client</th><th>Domain</th><th>Type</th><th>Decision</th><th>Match</th></tr></thead><tbody>{trs}</tbody></table></div></section>'''
     return page(request, "Query Log", "queries", body, s)
 
@@ -411,8 +469,8 @@ def security_page(request: Request):
         <div class="actions"><form method="post" action="/admin/api-keys/{k["id"]}/toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button">{"Disable" if k["enabled"] else "Enable"}</button></form><form method="post" action="/admin/api-keys/{k["id"]}/delete"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button danger">Delete</button></form></div></article>'''
     reveal = request.query_params.get("reveal")
     reveal_box = f'<div class="secret-box"><b>Copy this API key now</b><code>{esc(reveal)}</code><p>It will not be shown again.</p></div>' if reveal else ""
-    body = f'''{reveal_box}<div class="split-grid"><section class="panel"><h3>Administrator credentials</h3><form method="post" action="/admin/credentials" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><label>Username<input name="username" value="{esc(s.username)}" required></label><label>Current password<input type="password" name="current_password" required></label><label>New password<input type="password" name="new_password"></label><label>Confirm new password<input type="password" name="confirm_password"></label><button class="primary-button">Update credentials</button></form></section>
-    <section class="panel"><h3>Create API key</h3><form method="post" action="/admin/api-keys" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><label class="full">Key name<input name="name" placeholder="Primary Technitium" required></label><button class="primary-button">Generate key</button></form></section></div>
+    body = f'''{reveal_box}<div class="split-grid"><section class="panel action-panel"><div class="panel-kicker">Console access</div><h3>Administrator credentials</h3><p class="panel-help">Update the account used to sign in to this Blockinator console.</p><form method="post" action="/admin/credentials" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><label>Username<input name="username" value="{esc(s.username)}" required></label><label>Current password<input type="password" name="current_password" required></label><label>New password<input type="password" name="new_password"></label><label>Confirm new password<input type="password" name="confirm_password"></label><button class="primary-button">Update credentials</button></form></section>
+    <section class="panel action-panel" id="create-key"><div class="panel-kicker">Resolver access</div><h3>Create API key</h3><p class="panel-help">Give each DNS server its own named credential so keys can be rotated or revoked independently.</p><form method="post" action="/admin/api-keys" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><label class="full">Key name<input name="name" placeholder="Primary Technitium" required></label><button class="primary-button">Generate key</button></form></section></div>
     <section class="panel"><div class="panel-head"><div><h3>API keys</h3><p>Multiple resolvers can authenticate independently. Secrets are stored only as hashes.</p></div></div><div class="card-grid">{cards or '<div class="empty-card">No API keys.</div>'}</div></section>'''
     return page(request, "Access & Security", "security", body, s)
 
@@ -470,8 +528,8 @@ def settings_page(request: Request):
     s = require_session(request)
     mode = db.get_setting("block_response", "nxdomain")
     retention = db.get_setting("max_query_logs", "25000")
-    body = f'''<div class="split-grid"><section class="panel"><h3>Blocked response</h3><form method="post" action="/admin/settings" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><label class="full">Response mode<select name="block_response"><option value="nxdomain" {"selected" if mode=="nxdomain" else ""}>NXDOMAIN</option><option value="refused" {"selected" if mode=="refused" else ""}>REFUSED</option><option value="nodata" {"selected" if mode=="nodata" else ""}>NODATA</option><option value="zero" {"selected" if mode=="zero" else ""}>0.0.0.0 / ::</option></select></label><label class="full">Maximum query log rows<input type="number" min="1000" max="5000000" name="max_query_logs" value="{esc(retention)}"></label><button class="primary-button">Save settings</button></form></section>
-    <section class="panel"><h3>Runtime</h3><div class="info-grid"><div><span>Version</span><b>{APP_VERSION}</b></div><div><span>Database</span><b class="mono">{esc(db.path)}</b></div><div><span>Decision API</span><b class="mono">/api/v1/decision</b></div><div><span>Service</span><b>Blockinator</b></div></div></section></div>'''
+    body = f'''<div class="split-grid"><section class="panel action-panel"><div class="panel-kicker">DNS behavior</div><h3>Blocked response</h3><p class="panel-help">Choose how Blockinator instructs the DNS server to answer blocked requests.</p><form method="post" action="/admin/settings" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><label class="full">Response mode<select name="block_response"><option value="nxdomain" {"selected" if mode=="nxdomain" else ""}>NXDOMAIN</option><option value="refused" {"selected" if mode=="refused" else ""}>REFUSED</option><option value="nodata" {"selected" if mode=="nodata" else ""}>NODATA</option><option value="zero" {"selected" if mode=="zero" else ""}>0.0.0.0 / ::</option></select></label><label class="full">Maximum query log rows<input type="number" min="1000" max="5000000" name="max_query_logs" value="{esc(retention)}"></label><button class="primary-button">Save settings</button></form></section>
+    <section class="panel"><div class="panel-kicker">Service details</div><h3>Runtime</h3><p class="panel-help">Current application and storage information for this Blockinator instance.</p><div class="info-grid"><div><span>Version</span><b>{APP_VERSION}</b></div><div><span>Database</span><b class="mono">{esc(db.path)}</b></div><div><span>Decision API</span><b class="mono">/api/v1/decision</b></div><div><span>Service</span><b>Blockinator</b></div></div></section></div>'''
     return page(request, "System Settings", "settings", body, s)
 
 @app.post("/admin/settings")
