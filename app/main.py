@@ -22,7 +22,7 @@ from .policy import PolicyEngine, normalize_hostname_pattern
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.12.0"
+APP_VERSION = "1.13.0"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -574,10 +574,17 @@ def lists_page(request: Request):
         membership_rows = con.execute(
             "SELECT blocklist_id,scope_id FROM scope_blocklists"
         ).fetchall()
+        network_target_rows = con.execute(
+            "SELECT scope_id,family,target FROM scope_network_targets"
+        ).fetchall()
 
     memberships: dict[int, set[int]] = {}
     for membership in membership_rows:
         memberships.setdefault(int(membership["blocklist_id"]), set()).add(int(membership["scope_id"]))
+
+    network_targets: dict[int, dict[int, str]] = {}
+    for row in network_target_rows:
+        network_targets.setdefault(int(row["scope_id"]), {})[int(row["family"])] = str(row["target"])
 
     client_names = rdns.resolve_many(
         scope["target"] for scope in scopes if scope["kind"] == "client"
@@ -597,7 +604,8 @@ def lists_page(request: Request):
             target_html = f'<span class="scope-target mono">{esc(scope["target"])}</span>'
             kind_label = "Hostname"
         else:
-            target_html = f'<span class="scope-target mono">{esc(scope["target"])}</span>'
+            ipv4, ipv6 = _scope_network_values(scope, network_targets)
+            target_html = _network_target_html(ipv4, ipv6)
             kind_label = "Network"
         return (
             f'<label class="scope-option{disabled_class}">'
@@ -1261,6 +1269,80 @@ async def delete_list(list_id: int, request: Request):
     engine.reload()
     return redirect("/lists", notice="Block list deleted")
 
+
+def _scope_network_values(scope, network_targets: dict[int, dict[int, str]]) -> tuple[str, str]:
+    values = network_targets.get(int(scope["id"]), {})
+    ipv4 = str(values.get(4, "") or "")
+    ipv6 = str(values.get(6, "") or "")
+    if scope["kind"] == "network" and not ipv4 and not ipv6:
+        try:
+            network = ipaddress.ip_network(str(scope["target"]), strict=False)
+            if network.version == 4:
+                ipv4 = str(network)
+            else:
+                ipv6 = str(network)
+        except ValueError:
+            pass
+    return ipv4, ipv6
+
+
+def _network_target_html(ipv4: str, ipv6: str) -> str:
+    parts: list[str] = []
+    if ipv4:
+        parts.append(
+            f'<span class="network-family-target"><b>IPv4</b><span class="mono">{esc(ipv4)}</span></span>'
+        )
+    if ipv6:
+        parts.append(
+            f'<span class="network-family-target"><b>IPv6</b><span class="mono">{esc(ipv6)}</span></span>'
+        )
+    return '<span class="network-target-stack">' + "".join(parts) + "</span>"
+
+
+def _normalize_network_targets(ipv4_raw: str, ipv6_raw: str) -> tuple[str, str]:
+    ipv4 = ipv4_raw.strip()
+    ipv6 = ipv6_raw.strip()
+    if not ipv4 and not ipv6:
+        raise ValueError("Enter an IPv4 CIDR, an IPv6 CIDR, or both")
+
+    normalized_v4 = ""
+    normalized_v6 = ""
+    if ipv4:
+        network4 = ipaddress.ip_network(ipv4, strict=False)
+        if network4.version != 4:
+            raise ValueError("IPv4 CIDR must be an IPv4 network")
+        normalized_v4 = str(network4)
+    if ipv6:
+        network6 = ipaddress.ip_network(ipv6, strict=False)
+        if network6.version != 6:
+            raise ValueError("IPv6 CIDR must be an IPv6 network")
+        normalized_v6 = str(network6)
+    return normalized_v4, normalized_v6
+
+
+def _save_scope_network_targets(
+    con,
+    scope_id: int,
+    kind: str,
+    ipv4: str,
+    ipv6: str,
+) -> None:
+    con.execute("DELETE FROM scope_network_targets WHERE scope_id=?", (scope_id,))
+    if kind != "network":
+        return
+    rows = []
+    if ipv4:
+        rows.append((scope_id, 4, ipv4))
+    if ipv6:
+        rows.append((scope_id, 6, ipv6))
+    con.executemany(
+        """
+        INSERT INTO scope_network_targets(scope_id,family,target)
+        VALUES(?,?,?)
+        """,
+        rows,
+    )
+
 @app.get("/scopes", response_class=HTMLResponse)
 def scopes_page(request: Request):
     s = require_session(request)
@@ -1270,10 +1352,17 @@ def scopes_page(request: Request):
         membership_rows = con.execute(
             "SELECT scope_id,blocklist_id FROM scope_blocklists"
         ).fetchall()
+        network_target_rows = con.execute(
+            "SELECT scope_id,family,target FROM scope_network_targets"
+        ).fetchall()
 
     memberships: dict[int, set[int]] = {}
     for membership in membership_rows:
         memberships.setdefault(int(membership["scope_id"]), set()).add(int(membership["blocklist_id"]))
+
+    network_targets: dict[int, dict[int, str]] = {}
+    for row in network_target_rows:
+        network_targets.setdefault(int(row["scope_id"]), {})[int(row["family"])] = str(row["target"])
 
     scope_client_names = rdns.resolve_many(
         scope["target"] for scope in scopes if scope["kind"] == "client"
@@ -1327,10 +1416,14 @@ def scopes_page(request: Request):
     cards = ""
     for scope in scopes:
         selected = memberships.get(int(scope["id"]), set())
+        scope_ipv4, scope_ipv6 = _scope_network_values(scope, network_targets)
         if scope["kind"] == "client":
             target_html = client_identity_html(scope["target"], scope_client_names)
+        elif scope["kind"] == "network":
+            target_html = _network_target_html(scope_ipv4, scope_ipv6)
         else:
             target_html = f'<span class="mono">{esc(scope["target"])}</span>'
+        single_target_value = "" if scope["kind"] == "network" else str(scope["target"])
         scope_kind_label = {
             "network": "Network",
             "client": "Endpoint",
@@ -1369,7 +1462,7 @@ def scopes_page(request: Request):
             else ""
         )
         scope_target_note = {
-            "network": ("CIDR network", "Matches clients contained by this IPv4/IPv6 network."),
+            "network": ("Dual-stack CIDR network", "Enter an IPv4 CIDR, an IPv6 CIDR, or both. Both families share the same policy."),
             "client": ("Exact client address", "Matches one exact IPv4/IPv6 client address."),
             "hostname": (
                 "Reverse-DNS hostname",
@@ -1411,8 +1504,12 @@ def scopes_page(request: Request):
               <form method="post" action="/admin/scopes/{int(scope["id"])}/edit" class="form-grid scope-edit-form">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                 <label>Name<input name="name" value="{esc(scope["name"])}" required></label>
-                <label>Type<select name="kind"><option value="network"{kind_network_selected}>Network</option><option value="client"{kind_client_selected}>Endpoint</option><option value="hostname"{kind_hostname_selected}>Reverse-DNS Hostname</option></select></label>
-                <label class="full">Address / CIDR / PTR hostname<input name="target" value="{esc(scope["target"])}" required></label>
+                <label>Type<select name="kind" data-scope-kind-select><option value="network"{kind_network_selected}>Network</option><option value="client"{kind_client_selected}>Endpoint</option><option value="hostname"{kind_hostname_selected}>Reverse-DNS Hostname</option></select></label>
+                <div class="network-target-fields full" data-scope-network-fields>
+                  <label>IPv4 CIDR<input name="target_v4" value="{esc(scope_ipv4)}" placeholder="192.168.20.0/24"></label>
+                  <label>IPv6 CIDR<input name="target_v6" value="{esc(scope_ipv6)}" placeholder="2001:db8:20::/64"></label>
+                </div>
+                <label class="full" data-scope-single-target>Endpoint IP / PTR hostname<input name="target" value="{esc(single_target_value)}" placeholder="192.168.20.44 or *.kids.home.arpa"></label>
                 <label>Blocking state<select name="state"><option value="active"{state_active_selected}>Active</option><option value="paused"{state_paused_selected}>Paused</option></select></label>
                 <div class="scope-edit-note"><b>{esc(scope_target_note[0])}</b><span>{esc(scope_target_note[1])}</span></div>
 
@@ -1454,12 +1551,16 @@ def scopes_page(request: Request):
 
       <section class="panel action-panel" id="add-scope">
         <div class="panel-kicker">New policy target</div><h3>Add network, endpoint, or hostname</h3>
-        <p class="panel-help">Use a CIDR, an exact IPv4/IPv6 address, an exact PTR hostname, or a wildcard suffix such as *.kids.home.arpa.</p>
+        <p class="panel-help">A Network can contain IPv4, IPv6, or both CIDRs under one shared policy. Endpoints use one exact IP; hostname targets use exact or wildcard PTR names.</p>
         <form method="post" action="/admin/scopes" class="form-grid">
           <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
           <label>Name<input name="name" required></label>
-          <label>Type<select name="kind"><option value="network">Network</option><option value="client">Endpoint</option><option value="hostname">Reverse-DNS Hostname</option></select></label>
-          <label class="full">Address / CIDR / PTR hostname<input name="target" placeholder="192.168.20.0/24, 192.168.20.44, or *.kids.home.arpa" required></label>
+          <label>Type<select name="kind" data-scope-kind-select><option value="network">Network</option><option value="client">Endpoint</option><option value="hostname">Reverse-DNS Hostname</option></select></label>
+          <div class="network-target-fields full" data-scope-network-fields>
+            <label>IPv4 CIDR<input name="target_v4" placeholder="192.168.20.0/24"></label>
+            <label>IPv6 CIDR<input name="target_v6" placeholder="2001:db8:20::/64"></label>
+          </div>
+          <label class="full" data-scope-single-target>Endpoint IP / PTR hostname<input name="target" placeholder="192.168.20.44 or *.kids.home.arpa"></label>
           <label>Initial state<select name="state"><option value="active">Active</option><option value="paused">Paused</option></select></label>
           <div class="form-section full schedule-section">
             <div class="form-section-head"><div><b>Enforcement schedule</b><p>Optional. Limit when this policy target participates in policy.</p></div></div>
@@ -1507,8 +1608,6 @@ def _normalize_scope_target(kind: str, target: str) -> str:
     target = target.strip()
     if kind == "client":
         return str(ipaddress.ip_address(target))
-    if kind == "network":
-        return str(ipaddress.ip_network(target, strict=False))
     if kind == "hostname":
         normalized = normalize_hostname_pattern(target)
         if normalized is None:
@@ -1525,6 +1624,8 @@ async def add_scope(request: Request):
     name = str(form.get("name", "")).strip()
     kind = str(form.get("kind", "")).strip().lower()
     target_raw = str(form.get("target", ""))
+    target_v4_raw = str(form.get("target_v4", ""))
+    target_v6_raw = str(form.get("target_v6", ""))
     state = str(form.get("state", "active")).strip().lower()
     try:
         schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
@@ -1541,11 +1642,17 @@ async def add_scope(request: Request):
     if state not in {"active", "paused"}:
         return redirect("/scopes", error="Scope state must be active or paused")
     try:
-        target = _normalize_scope_target(kind, target_raw)
+        if kind == "network":
+            target_v4, target_v6 = _normalize_network_targets(target_v4_raw, target_v6_raw)
+            target = target_v4 or target_v6
+        else:
+            target_v4 = ""
+            target_v6 = ""
+            target = _normalize_scope_target(kind, target_raw)
     except ValueError as e:
         label = {
             "client": "endpoint IP address",
-            "network": "network CIDR",
+            "network": "network CIDRs",
             "hostname": "PTR hostname pattern",
         }.get(kind, "policy target")
         return redirect("/scopes", error=f"Invalid {label}: {e}")
@@ -1567,6 +1674,7 @@ async def add_scope(request: Request):
                 ),
             )
             scope_id = int(cur.lastrowid)
+            _save_scope_network_targets(con, scope_id, kind, target_v4, target_v6)
             assigned = _save_scope_blocklist_assignments(con, scope_id, blocklist_ids)
             con.execute("COMMIT")
     except Exception as e:
@@ -1585,6 +1693,8 @@ async def edit_scope(scope_id: int, request: Request):
     name = str(form.get("name", "")).strip()
     kind = str(form.get("kind", "")).strip().lower()
     target_raw = str(form.get("target", ""))
+    target_v4_raw = str(form.get("target_v4", ""))
+    target_v6_raw = str(form.get("target_v6", ""))
     state = str(form.get("state", "active")).strip().lower()
     try:
         schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
@@ -1601,11 +1711,17 @@ async def edit_scope(scope_id: int, request: Request):
     if state not in {"active", "paused"}:
         return redirect(f"/scopes#edit-scope-{scope_id}", error="Scope state must be active or paused")
     try:
-        target = _normalize_scope_target(kind, target_raw)
+        if kind == "network":
+            target_v4, target_v6 = _normalize_network_targets(target_v4_raw, target_v6_raw)
+            target = target_v4 or target_v6
+        else:
+            target_v4 = ""
+            target_v6 = ""
+            target = _normalize_scope_target(kind, target_raw)
     except ValueError as e:
         label = {
             "client": "endpoint IP address",
-            "network": "network CIDR",
+            "network": "network CIDRs",
             "hostname": "PTR hostname pattern",
         }.get(kind, "policy target")
         return redirect(f"/scopes#edit-scope-{scope_id}", error=f"Invalid {label}: {e}")
@@ -1630,6 +1746,7 @@ async def edit_scope(scope_id: int, request: Request):
                     scope_id,
                 ),
             )
+            _save_scope_network_targets(con, scope_id, kind, target_v4, target_v6)
             assigned = _save_scope_blocklist_assignments(con, scope_id, blocklist_ids)
             con.execute("COMMIT")
         except Exception as e:
