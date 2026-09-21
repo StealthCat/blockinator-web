@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="policy-server/app/static/assets/blockinator-hero.webp" alt="Blockinator" width="100%">
+  <img src="policy-server/app/static/blockinator-hero.webp" alt="Blockinator" width="100%">
 </p>
 
 # Blockinator
@@ -171,4 +171,4 @@ Current suite: **8 tests** covering authentication, block-list parsing/import be
 
 ## Branding
 
-The Blockinator logo, mark, hero art, and splash art used by the application are stored under `policy-server/app/static/assets/` and are bundled into the Docker image with the rest of the web application.
+The Blockinator logo, mark, hero art, and splash art used by the application are stored under `policy-server/app/static/` and are bundled into the Docker image with the rest of the web application.
