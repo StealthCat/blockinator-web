@@ -23,6 +23,7 @@ The application is packaged as a Docker service and includes a responsive, multi
 - API keys stored only as SHA-256 hashes.
 - In-memory API-key cache keeps the DNS decision path lightweight.
 - Query audit log with filtering and full request-detail inspection.
+- Reverse-DNS client names displayed alongside client IP addresses, with bounded lookups and caching.
 - SQLite persistence and automatic schema migration.
 
 ## Quick start
@@ -128,6 +129,25 @@ Blocking state is evaluated in this order:
 4. No matching scope: blocking remains active by default.
 
 The active block-list set is the union of enabled global lists, lists assigned to the most-specific matching network, and lists assigned to the exact client.
+
+
+## Reverse DNS client names
+
+Blockinator performs PTR lookups for client IP addresses shown in the administration UI. Resolved names appear above the original IP address on the Dashboard, Query Log, and exact client scopes.
+
+By default, PTR lookups use the container's normal DNS configuration. If your local reverse zones are hosted by Technitium or another internal resolver and Docker's resolver cannot reach them directly, set one or more DNS server IPs in `.env`:
+
+```text
+RDNS_NAMESERVERS=192.168.1.2
+```
+
+Multiple resolvers can be comma-separated:
+
+```text
+RDNS_NAMESERVERS=192.168.1.2,192.168.1.3
+```
+
+Lookups are intentionally kept off the DNS decision path. The defaults use a 0.5-second lookup timeout, a 1.25-second page-render budget, a five-minute positive cache, and a one-minute negative cache. These can be adjusted with `RDNS_TIMEOUT_SECONDS`, `RDNS_PAGE_BUDGET_SECONDS`, `RDNS_CACHE_TTL_SECONDS`, and `RDNS_NEGATIVE_TTL_SECONDS`.
 
 ## Technitium integration
 
