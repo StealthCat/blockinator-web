@@ -308,3 +308,112 @@ def test_schedule_honors_iana_timezone():
     assert e.decide("192.168.1.10", "eastern.example.com", outside).block is False
     e.close()
     td.cleanup()
+
+
+def test_scheduled_network_scope_only_applies_inside_window():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    with db.connect() as con:
+        list_id = con.execute(
+            "INSERT INTO blocklists(name,use_globally) VALUES('network-only',0)"
+        ).lastrowid
+        con.execute(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (list_id, "network.example.com"),
+        )
+        con.execute(
+            "UPDATE blocklists SET entry_count=1 WHERE id=?",
+            (list_id,),
+        )
+        scope_id = con.execute(
+            """
+            INSERT INTO scopes(
+                name,kind,target,state,schedule_enabled,schedule_days,
+                schedule_start,schedule_end,schedule_timezone
+            ) VALUES('scheduled-lan','network','10.20.0.0/16','active',1,'0','12:00','14:00','UTC')
+            """
+        ).lastrowid
+        con.execute(
+            "INSERT INTO scope_blocklists(scope_id,blocklist_id) VALUES(?,?)",
+            (scope_id, list_id),
+        )
+
+    e = PolicyEngine(db)
+    inside = datetime(2026, 9, 21, 13, 0, tzinfo=timezone.utc)
+    outside = datetime(2026, 9, 21, 15, 0, tzinfo=timezone.utc)
+
+    assert e.decide("10.20.1.50", "network.example.com", inside).block is True
+    assert e.decide("10.20.1.50", "network.example.com", outside).block is False
+    e.close()
+    td.cleanup()
+
+
+def test_endpoint_schedule_falls_back_to_network_outside_window():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    with db.connect() as con:
+        network_list = con.execute(
+            "INSERT INTO blocklists(name,use_globally) VALUES('network-list',0)"
+        ).lastrowid
+        endpoint_list = con.execute(
+            "INSERT INTO blocklists(name,use_globally) VALUES('endpoint-list',0)"
+        ).lastrowid
+        con.execute(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (network_list, "network.example.com"),
+        )
+        con.execute(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (endpoint_list, "endpoint.example.com"),
+        )
+        network_scope = con.execute(
+            "INSERT INTO scopes(name,kind,target,state) VALUES('lan','network','192.168.40.0/24','active')"
+        ).lastrowid
+        endpoint_scope = con.execute(
+            """
+            INSERT INTO scopes(
+                name,kind,target,state,schedule_enabled,schedule_days,
+                schedule_start,schedule_end,schedule_timezone
+            ) VALUES('pc','client','192.168.40.25','active',1,'0','18:00','20:00','UTC')
+            """
+        ).lastrowid
+        con.execute(
+            "INSERT INTO scope_blocklists(scope_id,blocklist_id) VALUES(?,?)",
+            (network_scope, network_list),
+        )
+        con.execute(
+            "INSERT INTO scope_blocklists(scope_id,blocklist_id) VALUES(?,?)",
+            (endpoint_scope, endpoint_list),
+        )
+
+    e = PolicyEngine(db)
+    inside = datetime(2026, 9, 21, 19, 0, tzinfo=timezone.utc)
+    outside = datetime(2026, 9, 21, 21, 0, tzinfo=timezone.utc)
+
+    assert e.decide("192.168.40.25", "endpoint.example.com", inside).block is True
+    assert e.decide("192.168.40.25", "endpoint.example.com", outside).block is False
+    assert e.decide("192.168.40.25", "network.example.com", outside).block is True
+    e.close()
+    td.cleanup()
+
+
+def test_scheduled_paused_endpoint_only_pauses_during_window():
+    td, db, e = setup_engine()
+    with db.connect() as con:
+        con.execute(
+            """
+            INSERT INTO scopes(
+                name,kind,target,state,schedule_enabled,schedule_days,
+                schedule_start,schedule_end,schedule_timezone
+            ) VALUES('bedtime-pause','client','192.168.1.55','paused',1,'0','20:00','22:00','UTC')
+            """
+        )
+    e.reload()
+
+    inside = datetime(2026, 9, 21, 21, 0, tzinfo=timezone.utc)
+    outside = datetime(2026, 9, 21, 23, 0, tzinfo=timezone.utc)
+
+    assert e.decide("192.168.1.55", "ads.example.com", inside).block is False
+    assert e.decide("192.168.1.55", "ads.example.com", outside).block is True
+    e.close()
+    td.cleanup()
