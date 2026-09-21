@@ -50,7 +50,7 @@ class Database:
                     schedule_enabled INTEGER NOT NULL DEFAULT 0,
                     schedule_days TEXT NOT NULL DEFAULT '0,1,2,3,4,5,6',
                     schedule_start TEXT NOT NULL DEFAULT '00:00',
-                    schedule_end TEXT NOT NULL DEFAULT '23:59',
+                    schedule_end TEXT NOT NULL DEFAULT '00:00',
                     schedule_timezone TEXT NOT NULL DEFAULT 'UTC',
                     last_updated TEXT,
                     last_error TEXT,
@@ -144,7 +144,7 @@ class Database:
                 "schedule_enabled": "INTEGER NOT NULL DEFAULT 0",
                 "schedule_days": "TEXT NOT NULL DEFAULT '0,1,2,3,4,5,6'",
                 "schedule_start": "TEXT NOT NULL DEFAULT '00:00'",
-                "schedule_end": "TEXT NOT NULL DEFAULT '23:59'",
+                "schedule_end": "TEXT NOT NULL DEFAULT '00:00'",
                 "schedule_timezone": "TEXT NOT NULL DEFAULT 'UTC'",
             }
             for column_name, definition in schedule_columns.items():
