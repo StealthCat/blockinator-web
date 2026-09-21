@@ -22,7 +22,7 @@ from .policy import PolicyEngine
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.10.0"
+APP_VERSION = "1.10.1"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -1589,7 +1589,7 @@ def queries_page(
         f'<td>{esc(r["qtype"])}</td>'
         f'<td><span class="pill {"red" if r["blocked"] else "green"}">'
         f'{"Blocked" if r["blocked"] else "Allowed"}</span></td>'
-        f'<td>{esc(r["matched_list"] or r["reason"])}</td></tr>'
+        f'<td>{esc((r["matched_list"] or r["reason"]) if r["blocked"] else "")}</td></tr>'
         for r in rows
     ) or '<tr><td colspan="7" class="empty">No matching queries.</td></tr>'
 
