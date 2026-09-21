@@ -63,3 +63,47 @@ def test_decide_and_log_checks_every_question():
     assert d.matched_domain == "ads.example.com"
     e.close()
     td.cleanup()
+
+
+def test_scoped_list_assignment_can_move_between_network_and_client():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    with db.connect() as con:
+        list_id = con.execute(
+            "INSERT INTO blocklists(name,use_globally) VALUES('scoped',0)"
+        ).lastrowid
+        con.execute(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (list_id, "scoped.example.com"),
+        )
+        con.execute(
+            "UPDATE blocklists SET entry_count=1 WHERE id=?",
+            (list_id,),
+        )
+        network_id = con.execute(
+            "INSERT INTO scopes(name,kind,target,state) VALUES('lan','network','10.0.0.0/8','active')"
+        ).lastrowid
+        client_id = con.execute(
+            "INSERT INTO scopes(name,kind,target,state) VALUES('pc','client','192.168.1.20','active')"
+        ).lastrowid
+        con.execute(
+            "INSERT INTO scope_blocklists(scope_id,blocklist_id) VALUES(?,?)",
+            (network_id, list_id),
+        )
+
+    e = PolicyEngine(db)
+    assert e.decide("10.1.2.3", "scoped.example.com").block is True
+    assert e.decide("192.168.1.20", "scoped.example.com").block is False
+
+    with db.connect() as con:
+        con.execute("DELETE FROM scope_blocklists WHERE blocklist_id=?", (list_id,))
+        con.execute(
+            "INSERT INTO scope_blocklists(scope_id,blocklist_id) VALUES(?,?)",
+            (client_id, list_id),
+        )
+    e.reload()
+
+    assert e.decide("10.1.2.3", "scoped.example.com").block is False
+    assert e.decide("192.168.1.20", "scoped.example.com").block is True
+    e.close()
+    td.cleanup()
