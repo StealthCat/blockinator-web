@@ -18,6 +18,7 @@ from .auth import AuthManager, SESSION_COOKIE, SESSION_TTL_SECONDS
 from .blocklists import fetch_url, parse_blocklist
 from .db import Database
 from .policy import PolicyEngine
+from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
 APP_VERSION = "1.5.1"
@@ -28,6 +29,7 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 db = Database()
 auth = AuthManager(db)
 engine = PolicyEngine(db)
+rdns = ReverseDnsResolver()
 
 class Question(BaseModel):
     name: str
