@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.10.0 — Scheduled networks and endpoints
+
+- Added optional recurring weekly schedules to networks and exact endpoints.
+- Added automatic SQLite migration for scope schedule fields.
+- Networks/endpoints can now select weekdays, start/end times, and IANA timezones from the existing schedule editor.
+- Out-of-schedule endpoints fall back to their containing network policy.
+- Out-of-schedule networks fall back to broader matching networks or global policy.
+- Scheduled paused scopes only suppress blocking during their configured window.
+- Added schedule summaries and Scheduled indicators to Networks & Endpoints.
+- Added regression coverage for scheduled networks, endpoint fallback, and scheduled pause behavior.
+- Updated the application version to 1.10.0.
+
 ## 1.9.0 — Scheduled block-list enforcement
 
 - Added optional recurring weekly enforcement schedules to every block list.
