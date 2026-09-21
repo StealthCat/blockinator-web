@@ -251,6 +251,15 @@ Domains are normalized with the same Blockinator parser used for imports. For ex
 Only lists whose source type is **manual** expose this editor. URL-backed and uploaded lists remain managed through their normal source/import workflow.
 
 
+
+### Default schedule timezone
+
+**System Settings** includes a **Default schedule timezone** field. Enter any valid IANA timezone such as `America/New_York`.
+
+The saved system timezone is used to prefill the timezone for newly created block-list and policy-target schedules. Changing it does not rewrite existing schedules; each existing schedule keeps the timezone already saved with it.
+
+The `TZ` environment value remains a bootstrap/fallback value. On a new database, Blockinator seeds the persisted default timezone from `TZ`; after that, changes made in System Settings remain authoritative across restarts.
+
 ## Block-list enforcement schedules
 
 Each block list can optionally be limited to a recurring weekly schedule from **Block Lists → Edit & assign → Enforcement schedule**.
@@ -392,7 +401,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **30 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **32 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
