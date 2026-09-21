@@ -23,7 +23,7 @@ The application is packaged as a Docker service and includes a responsive, multi
 - Multiple named API keys with enable/disable, rotation, deletion, fingerprints, and last-used timestamps.
 - API keys stored only as SHA-256 hashes.
 - In-memory API-key cache keeps the DNS decision path lightweight.
-- Query audit log with filtering and full request-detail inspection.
+- Query audit log with filtering and full request-detail inspection, including the querying DNS server on every log row.
 - Reverse-DNS client names displayed alongside client IP addresses, with bounded lookups and caching.
 - SQLite persistence and automatic schema migration.
 
@@ -167,6 +167,13 @@ Blocking state is evaluated in this order:
 
 The active block-list set is the union of enabled global lists, lists assigned to the most-specific matching network, and lists assigned to the exact client.
 
+
+
+### Querying server identity
+
+Every DNS log view includes the `server_id` supplied by the Technitium plugin, so deployments with multiple DNS resolvers can immediately see which server received each client request. The Dashboard recent-activity table and full Query Log both show the originating DNS server, and the Query Log can be filtered by server.
+
+If an older or custom client submits a request without `server_id`, Blockinator displays **Unknown server** rather than hiding the field.
 
 ## Reverse DNS client names
 
