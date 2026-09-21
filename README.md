@@ -16,6 +16,7 @@ The application is packaged as a Docker service and includes a responsive, multi
 - Client rules can override network pause/resume state.
 - Multiple independent block lists with URL, upload, and pasted-text imports.
 - Block lists are editable directly from the Block Lists page, including name, source URL, format, refresh interval, enabled state, and optional content replacement.
+- Manual lists can be edited one domain at a time on a dedicated page, with search, pagination, add, and remove controls.
 - Per-list global assignment plus editable per-network/per-client assignments from the same Block Lists screen.
 - Hosts-file, one-domain-per-line, and common DNS-oriented Adblock rule parsing.
 - Database-backed administrator credentials with salted `scrypt` password hashes.
@@ -138,6 +139,24 @@ The block-list picker shows each list's enabled state, entry count, format, and 
 
 New networks/endpoints can also receive their initial block-list assignments during creation. All edits reload the in-memory policy engine immediately.
 
+
+## Manual list domain editor
+
+Manual block lists have a dedicated **Manage domains** action on the Block Lists page.
+
+The separate editor supports:
+
+- adding one domain at a time;
+- removing one domain at a time;
+- searching the current list;
+- alphabetical sorting;
+- pagination for larger manual lists; and
+- immediate policy-engine reload after every add/remove operation.
+
+Domains are normalized with the same Blockinator parser used for imports. For example, `*.example.com` is stored as `example.com`, and IDNs are stored in ASCII/punycode form.
+
+Only lists whose source type is **manual** expose this editor. URL-backed and uploaded lists remain managed through their normal source/import workflow.
+
 ## Editing block lists and scope assignments
 
 The **Block Lists** page is now the central place to manage both list settings and where each list applies.
@@ -227,7 +246,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **10 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **11 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
