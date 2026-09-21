@@ -5,9 +5,10 @@ import ipaddress
 import json
 import os
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timezone
 from pathlib import Path
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -21,7 +22,7 @@ from .policy import PolicyEngine
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.9.0"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -100,6 +101,120 @@ def querying_server_html(server_id: str | None) -> str:
         f'<span><b>{esc(label)}</b><small>DNS server</small></span>'
         f'</span>'
     )
+
+
+DAY_LABELS = [
+    (0, "Mon"),
+    (1, "Tue"),
+    (2, "Wed"),
+    (3, "Thu"),
+    (4, "Fri"),
+    (5, "Sat"),
+    (6, "Sun"),
+]
+
+
+def parse_schedule_form(form) -> tuple[bool, str, str, str, str]:
+    enabled = str(form.get("schedule_enabled", "")) == "1"
+    days: list[int] = []
+    for raw in form.getlist("schedule_day"):
+        try:
+            day = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= day <= 6 and day not in days:
+            days.append(day)
+
+    start = str(form.get("schedule_start", "00:00")).strip() or "00:00"
+    end = str(form.get("schedule_end", "00:00")).strip() or "00:00"
+    tz_name = str(form.get("schedule_timezone", "UTC")).strip() or "UTC"
+
+    try:
+        dt_time.fromisoformat(start)
+        dt_time.fromisoformat(end)
+    except ValueError as exc:
+        raise ValueError("Schedule start and end must be valid times") from exc
+
+    try:
+        ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(
+            "Schedule timezone must be a valid IANA timezone such as America/New_York"
+        ) from exc
+
+    if enabled and not days:
+        raise ValueError("Select at least one day for a scheduled block list")
+
+    if not days:
+        days = list(range(7))
+
+    return enabled, ",".join(str(day) for day in sorted(days)), start, end, tz_name
+
+
+def schedule_days_set(value: str | None) -> set[int]:
+    days: set[int] = set()
+    for raw in str(value or "").split(","):
+        try:
+            day = int(raw)
+        except ValueError:
+            continue
+        if 0 <= day <= 6:
+            days.add(day)
+    return days
+
+
+def schedule_summary(row) -> str:
+    if not row["schedule_enabled"]:
+        return "Always active"
+    selected = schedule_days_set(row["schedule_days"])
+    if selected == set(range(7)):
+        day_text = "Every day"
+    elif selected == {0, 1, 2, 3, 4}:
+        day_text = "Mon–Fri"
+    elif selected == {5, 6}:
+        day_text = "Sat–Sun"
+    else:
+        labels = dict(DAY_LABELS)
+        day_text = ", ".join(labels[d] for d in sorted(selected)) or "No days"
+    return (
+        f'{day_text} · {row["schedule_start"]}–{row["schedule_end"]} · '
+        f'{row["schedule_timezone"]}'
+    )
+
+
+def schedule_fields_html(row=None, default_timezone: str = "UTC") -> str:
+    enabled = bool(row["schedule_enabled"]) if row is not None else False
+    days = schedule_days_set(row["schedule_days"]) if row is not None else set(range(7))
+    start = str(row["schedule_start"] or "00:00") if row is not None else "00:00"
+    end = str(row["schedule_end"] or "00:00") if row is not None else "00:00"
+    tz_name = (
+        str(row["schedule_timezone"] or default_timezone)
+        if row is not None
+        else default_timezone
+    )
+    day_buttons = "".join(
+        f'<label class="schedule-day">'
+        f'<input type="checkbox" name="schedule_day" value="{day}"'
+        f'{" checked" if day in days else ""}>'
+        f'<span>{label}</span></label>'
+        for day, label in DAY_LABELS
+    )
+    return f'''<div class="schedule-editor full" data-schedule-editor>
+      <label class="check schedule-toggle">
+        <input type="checkbox" name="schedule_enabled" value="1" data-schedule-toggle{" checked" if enabled else ""}>
+        Enforce only during a schedule
+      </label>
+      <div class="schedule-controls{" schedule-disabled" if not enabled else ""}" data-schedule-controls>
+        <div class="schedule-days">
+          <span class="schedule-label">Days</span>
+          <div class="schedule-day-grid">{day_buttons}</div>
+        </div>
+        <label>Start time<input type="time" name="schedule_start" value="{esc(start)}"></label>
+        <label>End time<input type="time" name="schedule_end" value="{esc(end)}"></label>
+        <label>Timezone<input name="schedule_timezone" value="{esc(tz_name)}" placeholder="America/New_York"></label>
+        <p class="schedule-help full">Selected days are the days the window begins. Overnight ranges such as 22:00–06:00 continue into the following morning. Equal start/end times mean the full selected day.</p>
+      </div>
+    </div>'''
 
 def redirect(path: str, notice: str | None = None, error: str | None = None):
     parts = []
@@ -455,6 +570,8 @@ def lists_page(request: Request):
         source_label = r["source_url"] or (
             "Uploaded list" if r["source_type"] == "upload" else "Manual list"
         )
+        list_schedule_summary = schedule_summary(r)
+        list_schedule_fields = schedule_fields_html(r)
         refresh_button = (
             '<button class="small-button" type="submit" name="action" value="refresh">'
             'Save & refresh URL</button>'
@@ -476,6 +593,7 @@ def lists_page(request: Request):
               <span><b>{int(r["entry_count"]):,}</b> entries</span>
               <span>{esc(r["format"])}</span>
               <span>{esc(assignment_text)}</span>
+              <span class="schedule-meta {"scheduled" if r["schedule_enabled"] else ""}">{esc(list_schedule_summary)}</span>
               <span>Updated {esc(r["last_updated"] or "Never")}</span>
             </div>
             {error_html}
@@ -504,6 +622,11 @@ def lists_page(request: Request):
                 <label class="check"><input type="checkbox" name="enabled" value="1"{" checked" if r["enabled"] else ""}> List enabled</label>
                 <label class="check full"><input type="checkbox" name="global_list" value="1" data-global-toggle{" checked" if r["use_globally"] else ""}> Apply globally to every network and endpoint</label>
 
+                <div class="form-section full schedule-section">
+                  <div class="form-section-head"><div><b>Enforcement schedule</b><p>Leave scheduling off to enforce this list at all times.</p></div></div>
+                  {list_schedule_fields}
+                </div>
+
                 <div class="form-section full">
                   <div class="form-section-head"><div><b>Scope assignments</b><p>Select every network and endpoint that should use this list.</p></div><span>{len(selected)} selected</span></div>
                   {scope_editor(selected, bool(r["use_globally"]))}
@@ -528,6 +651,7 @@ def lists_page(request: Request):
     if not cards:
         cards = '<div class="empty-card">No block lists yet. Import one to start building policy.</div>'
 
+    new_schedule_fields = schedule_fields_html(default_timezone=os.getenv("TZ", "UTC"))
     body = f'''<div class="split-grid blocklist-layout">
       <section class="panel">
         <div class="panel-head"><div><div class="panel-kicker">Policy sources</div><h3>Managed block lists</h3><p>Edit each list and assign it to networks or exact endpoints without leaving this page.</p></div><span class="result-count">{len(rows)} lists</span></div>
@@ -543,6 +667,10 @@ def lists_page(request: Request):
           <label class="full">Source URL (optional)<input name="source_url" placeholder="https://example.com/list.txt"></label>
           <label>Refresh interval (minutes)<input type="number" name="refresh_minutes" min="1" max="10080" value="1440"></label>
           <label class="check"><input type="checkbox" name="global_list" value="1" data-global-toggle checked> Apply globally</label>
+          <div class="form-section full schedule-section">
+            <div class="form-section-head"><div><b>Enforcement schedule</b><p>Optional. Configure recurring days and times for this list.</p></div></div>
+            {new_schedule_fields}
+          </div>
           <label class="full">Upload file (optional)<input type="file" name="file"></label>
           <label class="full">Paste domains / hosts / adblock rules<textarea name="text" rows="7"></textarea></label>
           <div class="form-section full">
@@ -845,6 +973,10 @@ async def add_list(request: Request):
     source_url = str(form.get("source_url", "")).strip()
     text = str(form.get("text", ""))
     global_list = str(form.get("global_list", "")) == "1"
+    try:
+        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(form)
+    except ValueError as e:
+        return redirect("/lists", error=str(e))
     scope_ids = _scope_ids_from_form(form)
     if global_list:
         scope_ids = []
@@ -877,8 +1009,18 @@ async def add_list(request: Request):
     with db.connect() as con:
         try:
             cur = con.execute(
-                "INSERT INTO blocklists(name,source_type,source_url,format,use_globally,refresh_minutes) VALUES(?,?,?,?,?,?)",
-                (name, source_type, source_url or None, format_name, 1 if global_list else 0, refresh_minutes),
+                """
+                INSERT INTO blocklists(
+                    name,source_type,source_url,format,use_globally,refresh_minutes,
+                    schedule_enabled,schedule_days,schedule_start,schedule_end,schedule_timezone
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    name, source_type, source_url or None, format_name,
+                    1 if global_list else 0, refresh_minutes,
+                    1 if schedule_enabled else 0, schedule_days,
+                    schedule_start, schedule_end, schedule_timezone,
+                ),
             )
             list_id = int(cur.lastrowid)
         except Exception as e:
@@ -908,6 +1050,10 @@ async def edit_list(list_id: int, request: Request):
     source_url = str(form.get("source_url", "")).strip()
     enabled = str(form.get("enabled", "")) == "1"
     global_list = str(form.get("global_list", "")) == "1"
+    try:
+        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(form)
+    except ValueError as e:
+        return redirect(f"/lists#edit-list-{list_id}", error=str(e))
     action = str(form.get("action", "save")).strip().lower()
     replacement_text = str(form.get("replacement_text", ""))
     replacement_file = form.get("replacement_file")
@@ -961,7 +1107,8 @@ async def edit_list(list_id: int, request: Request):
                 """
                 UPDATE blocklists
                 SET name=?, source_type=?, source_url=?, format=?, enabled=?,
-                    use_globally=?, refresh_minutes=?
+                    use_globally=?, refresh_minutes=?, schedule_enabled=?,
+                    schedule_days=?, schedule_start=?, schedule_end=?, schedule_timezone=?
                 WHERE id=?
                 """,
                 (
@@ -972,6 +1119,11 @@ async def edit_list(list_id: int, request: Request):
                     1 if enabled else 0,
                     1 if global_list else 0,
                     refresh_minutes,
+                    1 if schedule_enabled else 0,
+                    schedule_days,
+                    schedule_start,
+                    schedule_end,
+                    schedule_timezone,
                     list_id,
                 ),
             )
