@@ -21,7 +21,7 @@ from .policy import PolicyEngine
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.8.1"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -390,8 +390,10 @@ def lists_page(request: Request):
     networks = [scope for scope in scopes if scope["kind"] == "network"]
     clients = [scope for scope in scopes if scope["kind"] == "client"]
 
-    def scope_option(scope, selected: set[int]) -> str:
+    def scope_option(scope, selected: set[int], disabled: bool = False) -> str:
         checked = " checked" if int(scope["id"]) in selected else ""
+        disabled_attr = " disabled" if disabled else ""
+        disabled_class = " global-disabled" if disabled else ""
         if scope["kind"] == "client":
             target_html = client_identity_html(scope["target"], client_names)
             kind_label = "Endpoint"
@@ -399,23 +401,28 @@ def lists_page(request: Request):
             target_html = f'<span class="scope-target mono">{esc(scope["target"])}</span>'
             kind_label = "Network"
         return (
-            f'<label class="scope-option">'
-            f'<input type="checkbox" name="scope_id" value="{int(scope["id"])}"{checked}>'
+            f'<label class="scope-option{disabled_class}">'
+            f'<input type="checkbox" name="scope_id" value="{int(scope["id"])}"{checked}{disabled_attr}>'
             f'<span class="scope-option-copy"><span class="scope-option-title">'
             f'<b>{esc(scope["name"])}</b><small>{kind_label}</small></span>{target_html}</span>'
             f'</label>'
         )
 
-    def scope_editor(selected: set[int]) -> str:
+    def scope_editor(selected: set[int], global_disabled: bool = False) -> str:
         if not scopes:
             return (
                 '<div class="scope-empty">No networks or endpoints exist yet. '
                 '<a href="/scopes#add-scope">Create one first →</a></div>'
             )
-        network_html = "".join(scope_option(scope, selected) for scope in networks)
-        client_html = "".join(scope_option(scope, selected) for scope in clients)
+        network_html = "".join(
+            scope_option(scope, selected, global_disabled) for scope in networks
+        )
+        client_html = "".join(
+            scope_option(scope, selected, global_disabled) for scope in clients
+        )
+        disabled_class = " is-global-disabled" if global_disabled else ""
         return (
-            '<div class="scope-assignment-grid">'
+            f'<div class="scope-assignment-grid{disabled_class}" data-scope-assignments>'
             '<section class="scope-group"><div class="scope-group-head"><b>Networks</b>'
             f'<span>{len(networks)}</span></div>'
             f'{network_html or "<p class=\"scope-empty-inline\">No network scopes.</p>"}</section>'
@@ -495,11 +502,11 @@ def lists_page(request: Request):
                 <label class="full">Source URL<input name="source_url" value="{esc(r["source_url"] or "")}" placeholder="https://example.com/list.txt"></label>
                 <label>Refresh interval (minutes)<input type="number" name="refresh_minutes" min="1" max="10080" value="{int(r["refresh_minutes"])}"></label>
                 <label class="check"><input type="checkbox" name="enabled" value="1"{" checked" if r["enabled"] else ""}> List enabled</label>
-                <label class="check full"><input type="checkbox" name="global_list" value="1"{" checked" if r["use_globally"] else ""}> Apply globally in addition to any selected scopes</label>
+                <label class="check full"><input type="checkbox" name="global_list" value="1" data-global-toggle{" checked" if r["use_globally"] else ""}> Apply globally to every network and endpoint</label>
 
                 <div class="form-section full">
                   <div class="form-section-head"><div><b>Scope assignments</b><p>Select every network and endpoint that should use this list.</p></div><span>{len(selected)} selected</span></div>
-                  {scope_editor(selected)}
+                  {scope_editor(selected, bool(r["use_globally"]))}
                 </div>
 
                 <div class="form-section full replacement-section">
@@ -536,12 +543,12 @@ def lists_page(request: Request):
           <label>Format<select name="format"><option>auto</option><option>hosts</option><option>adblock</option><option>domains</option></select></label>
           <label class="full">Source URL (optional)<input name="source_url" placeholder="https://example.com/list.txt"></label>
           <label>Refresh interval (minutes)<input type="number" name="refresh_minutes" min="1" max="10080" value="1440"></label>
-          <label class="check"><input type="checkbox" name="global_list" value="1" checked> Apply globally</label>
+          <label class="check"><input type="checkbox" name="global_list" value="1" data-global-toggle checked> Apply globally</label>
           <label class="full">Upload file (optional)<input type="file" name="file"></label>
           <label class="full">Paste domains / hosts / adblock rules<textarea name="text" rows="7"></textarea></label>
           <div class="form-section full">
             <div class="form-section-head"><div><b>Initial scope assignments</b><p>Optional when the list is global; useful for scoped-only lists.</p></div></div>
-            {new_scope_editor}
+            {scope_editor(set(), True)}
           </div>
           <button class="primary-button full" type="submit">Import list</button>
         </form>
@@ -840,6 +847,8 @@ async def add_list(request: Request):
     text = str(form.get("text", ""))
     global_list = str(form.get("global_list", "")) == "1"
     scope_ids = _scope_ids_from_form(form)
+    if global_list:
+        scope_ids = []
 
     if not name:
         return redirect("/lists", error="List name is required")
@@ -904,6 +913,8 @@ async def edit_list(list_id: int, request: Request):
     replacement_text = str(form.get("replacement_text", ""))
     replacement_file = form.get("replacement_file")
     scope_ids = _scope_ids_from_form(form)
+    if global_list:
+        scope_ids = []
 
     if not name:
         return redirect(f"/lists#edit-list-{list_id}", error="List name is required")
@@ -1027,17 +1038,25 @@ def scopes_page(request: Request):
     )
 
     def blocklist_option(blocklist, selected: set[int]) -> str:
+        is_global = bool(blocklist["use_globally"])
         checked = " checked" if int(blocklist["id"]) in selected else ""
+        disabled_attr = " disabled" if is_global else ""
+        disabled_class = " global-disabled" if is_global else ""
         status_class = "green" if blocklist["enabled"] else "gray"
-        global_badge = '<span class="scope-list-global">Global</span>' if blocklist["use_globally"] else ""
+        global_badge = '<span class="scope-list-global">Global</span>' if is_global else ""
+        detail = (
+            "Applied globally · individual assignment not needed"
+            if is_global
+            else f'{int(blocklist["entry_count"]):,} entries · {esc(blocklist["format"])}'
+        )
         return (
-            f'<label class="scope-list-option">'
-            f'<input type="checkbox" name="blocklist_id" value="{int(blocklist["id"])}"{checked}>'
+            f'<label class="scope-list-option{disabled_class}">'
+            f'<input type="checkbox" name="blocklist_id" value="{int(blocklist["id"])}"{checked}{disabled_attr}>'
             f'<span class="scope-list-copy"><span class="scope-list-title">'
             f'<b>{esc(blocklist["name"])}</b>'
             f'<span class="pill {status_class}">{"Enabled" if blocklist["enabled"] else "Disabled"}</span>'
             f'{global_badge}</span>'
-            f'<small>{int(blocklist["entry_count"]):,} entries · {esc(blocklist["format"])}</small>'
+            f'<small>{detail}</small>'
             f'</span></label>'
         )
 
