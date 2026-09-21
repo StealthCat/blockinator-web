@@ -221,6 +221,80 @@ def schedule_fields_html(row=None, default_timezone: str = "UTC") -> str:
       </div>
     </div>'''
 
+
+def log_client_names(rows) -> dict[str, str | None]:
+    """Use stored PTR names first, resolve missing names, and backfill old rows."""
+    names: dict[str, str | None] = {}
+    missing: list[str] = []
+
+    for row in rows:
+        address = str(row["client_ip"] or "").strip()
+        stored_name = None
+        try:
+            stored_name = row["client_name"]
+        except (IndexError, KeyError):
+            stored_name = None
+        if stored_name:
+            names[address] = str(stored_name)
+        else:
+            missing.append(address)
+
+    if missing:
+        resolved = rdns.resolve_many(missing)
+        names.update(resolved)
+        updates = [
+            (hostname, address)
+            for address, hostname in resolved.items()
+            if hostname
+        ]
+        if updates:
+            with db.connect() as con:
+                con.executemany(
+                    """
+                    UPDATE query_log
+                    SET client_name=?
+                    WHERE client_ip=? AND (client_name IS NULL OR client_name='')
+                    """,
+                    updates,
+                )
+
+    return names
+
+
+def backfill_query_client_names(limit: int = 128) -> None:
+    """Resolve a bounded set of legacy log clients before hostname filtering."""
+    with db.connect() as con:
+        rows = con.execute(
+            """
+            SELECT DISTINCT client_ip
+            FROM query_log
+            WHERE client_name IS NULL OR client_name=''
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (max(1, min(limit, 512)),),
+        ).fetchall()
+
+    if not rows:
+        return
+
+    resolved = rdns.resolve_many(row["client_ip"] for row in rows)
+    updates = [
+        (hostname, address)
+        for address, hostname in resolved.items()
+        if hostname
+    ]
+    if updates:
+        with db.connect() as con:
+            con.executemany(
+                """
+                UPDATE query_log
+                SET client_name=?
+                WHERE client_ip=? AND (client_name IS NULL OR client_name='')
+                """,
+                updates,
+            )
+
 def redirect(path: str, notice: str | None = None, error: str | None = None):
     parts = []
     if notice:
@@ -459,9 +533,9 @@ def dashboard(request: Request):
               (SELECT COUNT(*) FROM query_log WHERE blocked=1) blocked,
               (SELECT COUNT(*) FROM query_log) queries
         """).fetchone())
-        recent = con.execute("SELECT ts,server_id,client_ip,qname,blocked,reason FROM query_log ORDER BY id DESC LIMIT 8").fetchall()
+        recent = con.execute("SELECT ts,server_id,client_ip,client_name,qname,blocked,reason FROM query_log ORDER BY id DESC LIMIT 8").fetchall()
     global_on = db.get_setting("global_blocking", "1") == "1"
-    recent_client_names = rdns.resolve_many(r["client_ip"] for r in recent)
+    recent_client_names = log_client_names(recent)
     rows = "".join(
         f'<tr><td>{esc(r["ts"])}</td><td>{querying_server_html(r["server_id"])}</td><td>{client_identity_html(r["client_ip"], recent_client_names)}</td><td>{esc(r["qname"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["reason"])}</td></tr>'
         for r in recent
@@ -1552,8 +1626,10 @@ def queries_page(
         clauses.append("qname LIKE ?")
         args.append("%" + q + "%")
     if client:
-        clauses.append("client_ip LIKE ?")
-        args.append("%" + client + "%")
+        backfill_query_client_names()
+        clauses.append("(client_ip LIKE ? OR client_name LIKE ?)")
+        client_pattern = "%" + client + "%"
+        args.extend([client_pattern, client_pattern])
     if server:
         clauses.append("server_id = ?")
         args.append(server)
@@ -1580,7 +1656,7 @@ def queries_page(
             """
         ).fetchall()
 
-    query_client_names = rdns.resolve_many(r["client_ip"] for r in rows)
+    query_client_names = log_client_names(rows)
     trs = "".join(
         f'<tr><td>{esc(r["ts"])}</td>'
         f'<td>{querying_server_html(r["server_id"])}</td>'
@@ -1608,7 +1684,7 @@ def queries_page(
       </div>
       <form class="filter-bar query-filter-bar" method="get">
         <input name="q" value="{esc(q)}" placeholder="Domain contains…">
-        <input name="client" value="{esc(client)}" placeholder="Client IP…">
+        <input name="client" value="{esc(client)}" placeholder="Client IP or hostname…">
         <select name="server">{server_options}</select>
         <select name="decision">
           <option value="">All decisions</option>
