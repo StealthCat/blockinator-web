@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+import os
+import sqlite3
+import threading
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Iterator
+
+
+class Database:
+    def __init__(self, path: str | None = None) -> None:
+        data_dir = Path(os.getenv("DATA_DIR", "/data"))
+        data_dir.mkdir(parents=True, exist_ok=True)
+        self.path = str(Path(path) if path else data_dir / "policy.db")
+        self._init_lock = threading.Lock()
+        self.initialize()
+
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        con = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA foreign_keys=ON")
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA synchronous=NORMAL")
+        con.execute("PRAGMA busy_timeout=30000")
+        try:
+            yield con
+        finally:
+            con.close()
+
+    def initialize(self) -> None:
+        with self._init_lock, self.connect() as con:
+            con.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS blocklists (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    source_type TEXT NOT NULL DEFAULT 'manual',
+                    source_url TEXT,
+                    format TEXT NOT NULL DEFAULT 'auto',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    use_globally INTEGER NOT NULL DEFAULT 1,
+                    refresh_minutes INTEGER NOT NULL DEFAULT 1440,
+                    last_updated TEXT,
+                    last_error TEXT,
+                    entry_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS block_entries (
+                    blocklist_id INTEGER NOT NULL,
+                    domain TEXT NOT NULL,
+                    PRIMARY KEY (blocklist_id, domain),
+                    FOREIGN KEY (blocklist_id) REFERENCES blocklists(id) ON DELETE CASCADE
+                ) WITHOUT ROWID;
+                CREATE INDEX IF NOT EXISTS idx_block_entries_domain ON block_entries(domain);
+
+                CREATE TABLE IF NOT EXISTS scopes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    kind TEXT NOT NULL CHECK(kind IN ('network','client')),
+                    target TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','paused')),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS scope_blocklists (
+                    scope_id INTEGER NOT NULL,
+                    blocklist_id INTEGER NOT NULL,
+                    PRIMARY KEY (scope_id, blocklist_id),
+                    FOREIGN KEY (scope_id) REFERENCES scopes(id) ON DELETE CASCADE,
+                    FOREIGN KEY (blocklist_id) REFERENCES blocklists(id) ON DELETE CASCADE
+                ) WITHOUT ROWID;
+
+                CREATE TABLE IF NOT EXISTS query_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    server_id TEXT,
+                    client_ip TEXT NOT NULL,
+                    client_port INTEGER,
+                    protocol TEXT,
+                    qname TEXT,
+                    qtype TEXT,
+                    qclass TEXT,
+                    blocked INTEGER NOT NULL,
+                    reason TEXT,
+                    matched_scope TEXT,
+                    matched_list TEXT,
+                    request_json TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_query_log_ts ON query_log(ts DESC);
+                CREATE INDEX IF NOT EXISTS idx_query_log_client ON query_log(client_ip, ts DESC);
+                CREATE INDEX IF NOT EXISTS idx_query_log_qname ON query_log(qname, ts DESC);
+
+                CREATE TABLE IF NOT EXISTS admin_users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS admin_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    csrf_token TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    last_seen_at INTEGER NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES admin_users(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_admin_sessions_user ON admin_sessions(user_id);
+                CREATE INDEX IF NOT EXISTS idx_admin_sessions_expiry ON admin_sessions(expires_at);
+
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    key_hash TEXT NOT NULL UNIQUE,
+                    key_prefix TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_used_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_api_keys_enabled ON api_keys(enabled);
+                """
+            )
+            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('global_blocking','1')")
+            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('block_response','nxdomain')")
+            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('max_query_logs','25000')")
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        with self.connect() as con:
+            row = con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+            return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self.connect() as con:
+            con.execute(
+                "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )

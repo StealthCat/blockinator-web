@@ -1,0 +1,17 @@
+services:
+  blockinator:
+    build: ./policy-server
+    container_name: blockinator
+    restart: unless-stopped
+    ports:
+      - "${POLICY_PORT:-8080}:8080"
+    environment:
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-change-this-admin-password}"
+      POLICY_API_KEY: "${POLICY_API_KEY:-change-this-long-random-api-key}"
+      MAX_BLOCKLIST_BYTES: "${MAX_BLOCKLIST_BYTES:-104857600}"
+      ADMIN_COOKIE_SECURE: "${ADMIN_COOKIE_SECURE:-0}"
+      ADMIN_SESSION_TTL_SECONDS: "${ADMIN_SESSION_TTL_SECONDS:-43200}"
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
