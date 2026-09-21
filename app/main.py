@@ -528,7 +528,6 @@ def lists_page(request: Request):
     if not cards:
         cards = '<div class="empty-card">No block lists yet. Import one to start building policy.</div>'
 
-    new_scope_editor = scope_editor(set())
     body = f'''<div class="split-grid blocklist-layout">
       <section class="panel">
         <div class="panel-head"><div><div class="panel-kicker">Policy sources</div><h3>Managed block lists</h3><p>Edit each list and assign it to networks or exact endpoints without leaving this page.</p></div><span class="result-count">{len(rows)} lists</span></div>
@@ -1198,7 +1197,7 @@ def _save_scope_blocklist_assignments(con, scope_id: int, blocklist_ids: list[in
         return 0
     placeholders = ",".join("?" for _ in blocklist_ids)
     valid_rows = con.execute(
-        f"SELECT id FROM blocklists WHERE id IN ({placeholders})",
+        f"SELECT id FROM blocklists WHERE id IN ({placeholders}) AND use_globally=0",
         blocklist_ids,
     ).fetchall()
     valid_ids = [int(row["id"]) for row in valid_rows]
