@@ -135,7 +135,7 @@ The **Networks & Endpoints** page provides the reverse view of block-list assign
 
 A scope can be converted between Network and Endpoint; Blockinator validates the address against the newly selected type when the change is saved.
 
-The block-list picker shows each list's enabled state, entry count, format, and whether it is already global. Global lists apply automatically even without an explicit scope assignment, while explicit assignments remain useful if that list is later changed to scoped-only.
+The block-list picker shows each list's enabled state, entry count, format, and whether it is already global. Global lists apply automatically everywhere, so their per-scope assignment checkbox is shaded and disabled. Scoped lists remain selectable normally.
 
 New networks/endpoints can also receive their initial block-list assignments during creation. All edits reload the in-memory policy engine immediately.
 
@@ -173,7 +173,7 @@ Open **Edit & assign** on any list to change:
 
 For URL-backed lists, **Save & refresh URL** saves the edited metadata and immediately re-imports the list from the configured URL.
 
-Global and scoped assignments are additive. A list can apply globally and also show explicit scope assignments, or it can be non-global and apply only to the selected networks/endpoints. Assignment changes reload the in-memory policy engine immediately.
+Global and scoped assignments are mutually exclusive in the UI. When a list is marked **Global**, individual network/endpoint assignment controls are shaded and disabled because the list already applies everywhere. Unchecking **Apply globally** immediately re-enables the scope selectors. Global lists cannot be assigned redundantly to individual scopes. Assignment changes reload the in-memory policy engine immediately.
 
 ## Policy precedence
 
