@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="policy-server/app/static/blockinator-hero.webp" alt="Blockinator" width="100%">
+  <img src="app/static/blockinator-hero.webp" alt="Blockinator" width="100%">
 </p>
 
 # Blockinator
@@ -47,25 +47,22 @@ Persistent application data is stored under:
 
 The first startup seeds the database administrator and initial API key using `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and `POLICY_API_KEY` from `.env`. Once records exist in SQLite, credentials and API keys are managed from **Access & Security** in the UI.
 
-## Docker layout
+## Repository layout
 
 ```text
 .
+├── Dockerfile
 ├── docker-compose.yml
+├── requirements.txt
 ├── .env.example
-└── policy-server/
-    ├── Dockerfile
-    ├── requirements.txt
-    ├── app/
-    │   ├── main.py
-    │   ├── auth.py
-    │   ├── policy.py
-    │   ├── blocklists.py
-    │   ├── db.py
-    │   ├── templates/
-    │   └── static/
-    │       └── assets/
-    └── tests/
+├── app/
+│   ├── main.py
+│   ├── auth.py
+│   ├── policy.py
+│   ├── blocklists.py
+│   ├── db.py
+│   └── static/
+└── tests/
 ```
 
 ## Decision API
@@ -146,7 +143,7 @@ The companion Technitium DNS application should point its policy endpoint at thi
 }
 ```
 
-If Technitium and Blockinator share a Docker network, use the compose service name:
+If Technitium and Blockinator share a Docker network, use the Compose service name:
 
 ```json
 "endpoint": "http://blockinator:8080/api/v1/decision"
@@ -163,7 +160,6 @@ If Technitium and Blockinator share a Docker network, use the compose service na
 ## Testing
 
 ```bash
-cd policy-server
 python -m pytest -q
 ```
 
@@ -171,4 +167,4 @@ Current suite: **8 tests** covering authentication, block-list parsing/import be
 
 ## Branding
 
-The Blockinator logo, mark, hero art, and splash art used by the application are stored under `policy-server/app/static/` and are bundled into the Docker image with the rest of the web application.
+The Blockinator logo, mark, hero art, and UI styling are stored under `app/static/` and are bundled into the Docker image.

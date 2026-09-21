@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.1 — Repository layout
+
+- Moved the Docker application contents from `policy-server/` to the repository root.
+- Updated Docker Compose build context, README paths, testing instructions, and branding paths for the flattened layout.
+
 ## 1.4.0 — Blockinator branding
 
 - Renamed the Docker policy application to **Blockinator**.

@@ -1,6 +1,6 @@
 services:
   blockinator:
-    build: ./policy-server
+    build: .
     container_name: blockinator
     restart: unless-stopped
     ports:
