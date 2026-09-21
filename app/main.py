@@ -21,7 +21,7 @@ from .policy import PolicyEngine
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -80,6 +80,24 @@ def client_identity_html(address: str, names: dict[str, str | None]) -> str:
         f'<span class="client-identity" title="No reverse DNS record found">'
         f'<b class="client-name mono">{esc(canonical)}</b>'
         f'<span class="client-address client-no-ptr">No PTR record</span>'
+        f'</span>'
+    )
+
+
+def querying_server_html(server_id: str | None) -> str:
+    """Render the DNS server that submitted a logged query."""
+    label = str(server_id or "").strip()
+    if not label:
+        return (
+            '<span class="query-server unknown" title="The querying server did not provide a server_id">'
+            '<span class="query-server-icon">◌</span>'
+            '<span><b>Unknown server</b><small>No server ID</small></span>'
+            '</span>'
+        )
+    return (
+        f'<span class="query-server" title="Querying DNS server: {esc(label)}">'
+        f'<span class="query-server-icon">◆</span>'
+        f'<span><b>{esc(label)}</b><small>DNS server</small></span>'
         f'</span>'
     )
 
@@ -336,13 +354,13 @@ def dashboard(request: Request):
               (SELECT COUNT(*) FROM query_log WHERE blocked=1) blocked,
               (SELECT COUNT(*) FROM query_log) queries
         """).fetchone())
-        recent = con.execute("SELECT ts,client_ip,qname,blocked,reason FROM query_log ORDER BY id DESC LIMIT 8").fetchall()
+        recent = con.execute("SELECT ts,server_id,client_ip,qname,blocked,reason FROM query_log ORDER BY id DESC LIMIT 8").fetchall()
     global_on = db.get_setting("global_blocking", "1") == "1"
     recent_client_names = rdns.resolve_many(r["client_ip"] for r in recent)
     rows = "".join(
-        f'<tr><td>{esc(r["ts"])}</td><td>{client_identity_html(r["client_ip"], recent_client_names)}</td><td>{esc(r["qname"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["reason"])}</td></tr>'
+        f'<tr><td>{esc(r["ts"])}</td><td>{querying_server_html(r["server_id"])}</td><td>{client_identity_html(r["client_ip"], recent_client_names)}</td><td>{esc(r["qname"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["reason"])}</td></tr>'
         for r in recent
-    ) or '<tr><td colspan="5" class="empty">No DNS decisions recorded yet.</td></tr>'
+    ) or '<tr><td colspan="6" class="empty">No DNS decisions recorded yet.</td></tr>'
     body = f'''
     <section class="hero-card"><img src="/static/blockinator-hero.webp" alt="Blockinator"><div class="hero-overlay"><p>BLOCK · FILTER · PROTECT</p><h2>Your network. Your policy.</h2><span>Centralized DNS policy control with client-aware filtering.</span></div></section>
     <div class="stat-grid">
@@ -355,7 +373,7 @@ def dashboard(request: Request):
       <form method="post" action="/admin/global-toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="{"danger-button" if global_on else "primary-button"}">{"Pause blocking" if global_on else "Resume blocking"}</button></form>
     </section>
     <section class="panel"><div class="panel-head"><div><h3>Recent DNS activity</h3><p>Latest policy decisions from connected resolvers.</p></div><a class="text-link" href="/queries">View all →</a></div>
-      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Client</th><th>Domain</th><th>Decision</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Decision</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table></div>
     </section>'''
     return page(request, "Dashboard", "dashboard", body, s)
 
@@ -1038,27 +1056,94 @@ async def delete_scope(scope_id: int, request: Request):
     return redirect("/scopes", notice="Scope deleted")
 
 @app.get("/queries", response_class=HTMLResponse)
-def queries_page(request: Request, q: str = "", client: str = "", decision: str = "", limit: int = 100):
+def queries_page(
+    request: Request,
+    q: str = "",
+    client: str = "",
+    server: str = "",
+    decision: str = "",
+    limit: int = 100,
+):
     s = require_session(request)
     clauses, args = [], []
     if q:
-        clauses.append("qname LIKE ?"); args.append("%" + q + "%")
+        clauses.append("qname LIKE ?")
+        args.append("%" + q + "%")
     if client:
-        clauses.append("client_ip LIKE ?"); args.append("%" + client + "%")
-    if decision in {"blocked","allowed"}:
-        clauses.append("blocked=?"); args.append(1 if decision=="blocked" else 0)
+        clauses.append("client_ip LIKE ?")
+        args.append("%" + client + "%")
+    if server:
+        clauses.append("server_id = ?")
+        args.append(server)
+    if decision in {"blocked", "allowed"}:
+        clauses.append("blocked=?")
+        args.append(1 if decision == "blocked" else 0)
+
     limit = max(25, min(limit, 500))
-    sql = "SELECT * FROM query_log" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY id DESC LIMIT ?"
+    sql = (
+        "SELECT * FROM query_log"
+        + (" WHERE " + " AND ".join(clauses) if clauses else "")
+        + " ORDER BY id DESC LIMIT ?"
+    )
     args.append(limit)
+
     with db.connect() as con:
         rows = con.execute(sql, args).fetchall()
+        server_rows = con.execute(
+            """
+            SELECT DISTINCT server_id
+            FROM query_log
+            WHERE server_id IS NOT NULL AND TRIM(server_id) <> ''
+            ORDER BY server_id COLLATE NOCASE
+            """
+        ).fetchall()
+
     query_client_names = rdns.resolve_many(r["client_ip"] for r in rows)
     trs = "".join(
-        f'<tr><td>{esc(r["ts"])}</td><td>{client_identity_html(r["client_ip"], query_client_names)}</td><td>{esc(r["qname"])}</td><td>{esc(r["qtype"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["matched_list"] or r["reason"])}</td></tr>'
+        f'<tr><td>{esc(r["ts"])}</td>'
+        f'<td>{querying_server_html(r["server_id"])}</td>'
+        f'<td>{client_identity_html(r["client_ip"], query_client_names)}</td>'
+        f'<td>{esc(r["qname"])}</td>'
+        f'<td>{esc(r["qtype"])}</td>'
+        f'<td><span class="pill {"red" if r["blocked"] else "green"}">'
+        f'{"Blocked" if r["blocked"] else "Allowed"}</span></td>'
+        f'<td>{esc(r["matched_list"] or r["reason"])}</td></tr>'
         for r in rows
-    ) or '<tr><td colspan="6" class="empty">No matching queries.</td></tr>'
-    body = f'''<section class="panel"><div class="panel-head query-head"><div><div class="panel-kicker">DNS activity</div><h3>Decision history</h3><p>Showing {len(rows)} most recent matching requests. Use filters to narrow by domain, client, or action.</p></div><span class="result-count">{len(rows)} results</span></div><form class="filter-bar" method="get"><input name="q" value="{esc(q)}" placeholder="Domain contains…"><input name="client" value="{esc(client)}" placeholder="Client IP…"><select name="decision"><option value="">All decisions</option><option value="blocked" {"selected" if decision=="blocked" else ""}>Blocked</option><option value="allowed" {"selected" if decision=="allowed" else ""}>Allowed</option></select><select name="limit"><option>{limit}</option><option>50</option><option>100</option><option>250</option><option>500</option></select><button class="primary-button">Filter</button></form>
-    <div class="table-wrap"><table><thead><tr><th>Time</th><th>Client</th><th>Domain</th><th>Type</th><th>Decision</th><th>Match</th></tr></thead><tbody>{trs}</tbody></table></div></section>'''
+    ) or '<tr><td colspan="7" class="empty">No matching queries.</td></tr>'
+
+    server_options = '<option value="">All servers</option>' + "".join(
+        f'<option value="{esc(row["server_id"])}"'
+        f'{" selected" if server == row["server_id"] else ""}>'
+        f'{esc(row["server_id"])}</option>'
+        for row in server_rows
+    )
+
+    body = f'''<section class="panel">
+      <div class="panel-head query-head">
+        <div><div class="panel-kicker">DNS activity</div><h3>Decision history</h3>
+        <p>Showing {len(rows)} most recent matching requests, including the DNS server that submitted each query.</p></div>
+        <span class="result-count">{len(rows)} results</span>
+      </div>
+      <form class="filter-bar query-filter-bar" method="get">
+        <input name="q" value="{esc(q)}" placeholder="Domain contains…">
+        <input name="client" value="{esc(client)}" placeholder="Client IP…">
+        <select name="server">{server_options}</select>
+        <select name="decision">
+          <option value="">All decisions</option>
+          <option value="blocked" {"selected" if decision=="blocked" else ""}>Blocked</option>
+          <option value="allowed" {"selected" if decision=="allowed" else ""}>Allowed</option>
+        </select>
+        <select name="limit">
+          <option value="{limit}">{limit}</option>
+          <option>50</option><option>100</option><option>250</option><option>500</option>
+        </select>
+        <button class="primary-button">Filter</button>
+      </form>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Type</th><th>Decision</th><th>Match</th></tr></thead>
+        <tbody>{trs}</tbody>
+      </table></div>
+    </section>'''
     return page(request, "Query Log", "queries", body, s)
 
 @app.get("/security", response_class=HTMLResponse)
