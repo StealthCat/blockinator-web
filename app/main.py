@@ -20,7 +20,7 @@ from .db import Database
 from .policy import PolicyEngine
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -57,6 +57,29 @@ class DecisionRequest(BaseModel):
 
 def esc(value) -> str:
     return html.escape("" if value is None else str(value), quote=True)
+
+def client_identity_html(address: str, names: dict[str, str | None]) -> str:
+    """Render a client hostname together with its IP address."""
+    raw = str(address or "").strip()
+    try:
+        canonical = str(ipaddress.ip_address(raw))
+    except ValueError:
+        return f'<span class="client-identity"><b class="client-name">{esc(raw)}</b></span>'
+
+    hostname = names.get(canonical)
+    if hostname:
+        return (
+            f'<span class="client-identity" title="{esc(hostname)} · {esc(canonical)}">'
+            f'<b class="client-name">{esc(hostname)}</b>'
+            f'<span class="client-address mono">{esc(canonical)}</span>'
+            f'</span>'
+        )
+    return (
+        f'<span class="client-identity" title="No reverse DNS record found">'
+        f'<b class="client-name mono">{esc(canonical)}</b>'
+        f'<span class="client-address client-no-ptr">No PTR record</span>'
+        f'</span>'
+    )
 
 def redirect(path: str, notice: str | None = None, error: str | None = None):
     parts = []
@@ -293,8 +316,9 @@ def dashboard(request: Request):
         """).fetchone())
         recent = con.execute("SELECT ts,client_ip,qname,blocked,reason FROM query_log ORDER BY id DESC LIMIT 8").fetchall()
     global_on = db.get_setting("global_blocking", "1") == "1"
+    recent_client_names = rdns.resolve_many(r["client_ip"] for r in recent)
     rows = "".join(
-        f'<tr><td>{esc(r["ts"])}</td><td class="mono">{esc(r["client_ip"])}</td><td>{esc(r["qname"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["reason"])}</td></tr>'
+        f'<tr><td>{esc(r["ts"])}</td><td>{client_identity_html(r["client_ip"], recent_client_names)}</td><td>{esc(r["qname"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["reason"])}</td></tr>'
         for r in recent
     ) or '<tr><td colspan="5" class="empty">No DNS decisions recorded yet.</td></tr>'
     body = f'''
@@ -394,10 +418,20 @@ def scopes_page(request: Request):
     s = require_session(request)
     with db.connect() as con:
         scopes = con.execute("SELECT * FROM scopes ORDER BY kind,name COLLATE NOCASE").fetchall()
-    rows = "".join(
-        f'''<tr><td><b>{esc(r["name"])}</b></td><td><span class="pill">{esc(r["kind"])}</span></td><td class="mono">{esc(r["target"])}</td><td><span class="pill {"green" if r["state"]=="active" else "amber"}">{esc(r["state"])}</span></td><td><div class="actions"><form method="post" action="/admin/scopes/{r["id"]}/toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button">Toggle</button></form><form method="post" action="/admin/scopes/{r["id"]}/delete"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button danger">Delete</button></form></div></td></tr>'''
-        for r in scopes
-    ) or '<tr><td colspan="5" class="empty">No managed networks or clients yet.</td></tr>'
+    scope_client_names = rdns.resolve_many(
+        r["target"] for r in scopes if r["kind"] == "client"
+    )
+    row_parts = []
+    for r in scopes:
+        target_html = (
+            client_identity_html(r["target"], scope_client_names)
+            if r["kind"] == "client"
+            else f'<span class="mono">{esc(r["target"])}</span>'
+        )
+        row_parts.append(
+            f'''<tr><td><b>{esc(r["name"])}</b></td><td><span class="pill">{esc(r["kind"])}</span></td><td>{target_html}</td><td><span class="pill {"green" if r["state"]=="active" else "amber"}">{esc(r["state"])}</span></td><td><div class="actions"><form method="post" action="/admin/scopes/{r["id"]}/toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button">Toggle</button></form><form method="post" action="/admin/scopes/{r["id"]}/delete"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button danger">Delete</button></form></div></td></tr>'''
+        )
+    rows = "".join(row_parts) or '<tr><td colspan="5" class="empty">No managed networks or clients yet.</td></tr>'
     body = f'''<section class="panel"><div class="panel-head"><div><h3>Networks & endpoints</h3><p>Pause or resume blocking for CIDR networks and exact client addresses.</p></div></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Target</th><th>State</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></section>
     <section class="panel narrow action-panel" id="add-scope"><div class="panel-kicker">Policy target</div><h3>Add network or client</h3><p class="panel-help">Use a CIDR for an entire network or an exact IP address for a single endpoint.</p><form method="post" action="/admin/scopes" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
     <label>Name<input name="name" required></label><label>Type<select name="kind"><option value="network">Network</option><option value="client">Client</option></select></label>
@@ -451,8 +485,9 @@ def queries_page(request: Request, q: str = "", client: str = "", decision: str 
     args.append(limit)
     with db.connect() as con:
         rows = con.execute(sql, args).fetchall()
+    query_client_names = rdns.resolve_many(r["client_ip"] for r in rows)
     trs = "".join(
-        f'<tr><td>{esc(r["ts"])}</td><td class="mono">{esc(r["client_ip"])}</td><td>{esc(r["qname"])}</td><td>{esc(r["qtype"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["matched_list"] or r["reason"])}</td></tr>'
+        f'<tr><td>{esc(r["ts"])}</td><td>{client_identity_html(r["client_ip"], query_client_names)}</td><td>{esc(r["qname"])}</td><td>{esc(r["qtype"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["matched_list"] or r["reason"])}</td></tr>'
         for r in rows
     ) or '<tr><td colspan="6" class="empty">No matching queries.</td></tr>'
     body = f'''<section class="panel"><div class="panel-head query-head"><div><div class="panel-kicker">DNS activity</div><h3>Decision history</h3><p>Showing {len(rows)} most recent matching requests. Use filters to narrow by domain, client, or action.</p></div><span class="result-count">{len(rows)} results</span></div><form class="filter-bar" method="get"><input name="q" value="{esc(q)}" placeholder="Domain contains…"><input name="client" value="{esc(client)}" placeholder="Client IP…"><select name="decision"><option value="">All decisions</option><option value="blocked" {"selected" if decision=="blocked" else ""}>Blocked</option><option value="allowed" {"selected" if decision=="allowed" else ""}>Allowed</option></select><select name="limit"><option>{limit}</option><option>50</option><option>100</option><option>250</option><option>500</option></select><button class="primary-button">Filter</button></form>
