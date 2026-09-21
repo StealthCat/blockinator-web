@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13.1 — Configurable default timezone
+
+- Added **Default schedule timezone** to System Settings.
+- The setting accepts validated IANA timezone names such as `America/New_York`.
+- New block-list and policy-target schedules now use the saved system timezone as their default.
+- Existing schedules retain their individually saved timezone when the system default changes.
+- The `TZ` environment variable now acts as the initial/bootstrap default for new databases.
+- Added persistence tests confirming UI-managed timezone settings survive reinitialization.
+- Updated the application version to 1.13.1.
+
 ## 1.13.0 — Dual-stack network targets
 
 - A single Network policy target can now hold IPv4 and IPv6 CIDRs concurrently.
