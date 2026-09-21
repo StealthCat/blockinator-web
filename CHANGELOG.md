@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.1 — Querying server identity in logs
+
+- Added the querying DNS server to every current log-data view.
+- Dashboard recent DNS activity now shows the originating `server_id`.
+- Query Log now includes a dedicated Server column.
+- Added server filtering to the Query Log for multi-resolver deployments.
+- Added a clear **Unknown server** state for legacy requests without `server_id`.
+- Added polished server identity styling alongside client hostname/IP information.
+- Updated the application version to 1.7.1.
+
 ## 1.7.0 — Editable networks, endpoints, and list assignments
 
 - Reworked the Networks & Endpoints page into editable scope cards.
