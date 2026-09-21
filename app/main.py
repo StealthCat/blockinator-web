@@ -1195,10 +1195,20 @@ def scopes_page(request: Request):
         disabled_class = " global-disabled" if is_global else ""
         status_class = "green" if blocklist["enabled"] else "gray"
         global_badge = '<span class="scope-list-global">Global</span>' if is_global else ""
+        schedule_badge = (
+            '<span class="scope-list-scheduled">Scheduled</span>'
+            if blocklist["schedule_enabled"]
+            else ""
+        )
         detail = (
             "Applied globally · individual assignment not needed"
             if is_global
             else f'{int(blocklist["entry_count"]):,} entries · {esc(blocklist["format"])}'
+        )
+        schedule_detail = (
+            f'<small class="scope-list-schedule">{esc(schedule_summary(blocklist))}</small>'
+            if blocklist["schedule_enabled"]
+            else ""
         )
         return (
             f'<label class="scope-list-option{disabled_class}">'
@@ -1206,8 +1216,8 @@ def scopes_page(request: Request):
             f'<span class="scope-list-copy"><span class="scope-list-title">'
             f'<b>{esc(blocklist["name"])}</b>'
             f'<span class="pill {status_class}">{"Enabled" if blocklist["enabled"] else "Disabled"}</span>'
-            f'{global_badge}</span>'
-            f'<small>{detail}</small>'
+            f'{global_badge}{schedule_badge}</span>'
+            f'<small>{detail}</small>{schedule_detail}'
             f'</span></label>'
         )
 
