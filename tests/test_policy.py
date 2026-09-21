@@ -482,3 +482,188 @@ def test_query_log_retention_combines_age_and_row_caps():
         "four.example.com",
     ]
     td.cleanup()
+
+
+def test_exact_reverse_dns_hostname_scope_blocks_assigned_list():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    with db.connect() as con:
+        list_id = con.execute(
+            "INSERT INTO blocklists(name,use_globally) VALUES('hostname-only',0)"
+        ).lastrowid
+        con.execute(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (list_id, "hostname.example.com"),
+        )
+        con.execute(
+            "UPDATE blocklists SET entry_count=1 WHERE id=?",
+            (list_id,),
+        )
+        scope_id = con.execute(
+            """
+            INSERT INTO scopes(name,kind,target,state)
+            VALUES('desktop-host','hostname','desktop-01.home.arpa','active')
+            """
+        ).lastrowid
+        con.execute(
+            "INSERT INTO scope_blocklists(scope_id,blocklist_id) VALUES(?,?)",
+            (scope_id, list_id),
+        )
+        con.execute(
+            """
+            INSERT INTO client_identities(client_ip,client_name)
+            VALUES('192.168.1.42','desktop-01.home.arpa')
+            """
+        )
+
+    e = PolicyEngine(db)
+    assert e.decide("192.168.1.42", "hostname.example.com").block is True
+    assert e.decide("192.168.1.43", "hostname.example.com").block is False
+    e.close()
+    td.cleanup()
+
+
+def test_wildcard_reverse_dns_hostname_scope_matches_suffix():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    with db.connect() as con:
+        list_id = con.execute(
+            "INSERT INTO blocklists(name,use_globally) VALUES('kids-list',0)"
+        ).lastrowid
+        con.execute(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (list_id, "games.example.com"),
+        )
+        con.execute(
+            "UPDATE blocklists SET entry_count=1 WHERE id=?",
+            (list_id,),
+        )
+        scope_id = con.execute(
+            """
+            INSERT INTO scopes(name,kind,target,state)
+            VALUES('kids-hosts','hostname','*.kids.home.arpa','active')
+            """
+        ).lastrowid
+        con.execute(
+            "INSERT INTO scope_blocklists(scope_id,blocklist_id) VALUES(?,?)",
+            (scope_id, list_id),
+        )
+        con.executemany(
+            """
+            INSERT INTO client_identities(client_ip,client_name)
+            VALUES(?,?)
+            """,
+            [
+                ("192.168.1.50", "tablet.kids.home.arpa"),
+                ("192.168.1.51", "kids.home.arpa"),
+            ],
+        )
+
+    e = PolicyEngine(db)
+    assert e.decide("192.168.1.50", "games.example.com").block is True
+    assert e.decide("192.168.1.51", "games.example.com").block is False
+    e.close()
+    td.cleanup()
+
+
+def test_exact_endpoint_precedes_paused_hostname_scope():
+    td, db, e = setup_engine()
+    with db.connect() as con:
+        con.execute(
+            """
+            INSERT INTO scopes(name,kind,target,state)
+            VALUES('paused-host','hostname','desktop-01.home.arpa','paused')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO scopes(name,kind,target,state)
+            VALUES('exact-client','client','192.168.1.42','active')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO client_identities(client_ip,client_name)
+            VALUES('192.168.1.42','desktop-01.home.arpa')
+            """
+        )
+    e.reload()
+
+    assert e.decide("192.168.1.42", "ads.example.com").block is True
+    e.close()
+    td.cleanup()
+
+
+def test_active_hostname_scope_precedes_paused_network():
+    td, db, e = setup_engine()
+    with db.connect() as con:
+        con.execute(
+            """
+            INSERT INTO scopes(name,kind,target,state)
+            VALUES('paused-lan','network','192.168.1.0/24','paused')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO scopes(name,kind,target,state)
+            VALUES('active-host','hostname','desktop-01.home.arpa','active')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO client_identities(client_ip,client_name)
+            VALUES('192.168.1.42','desktop-01.home.arpa')
+            """
+        )
+    e.reload()
+
+    assert e.decide("192.168.1.42", "ads.example.com").block is True
+    e.close()
+    td.cleanup()
+
+
+def test_scheduled_hostname_scope_only_applies_inside_window():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    with db.connect() as con:
+        list_id = con.execute(
+            "INSERT INTO blocklists(name,use_globally) VALUES('host-scheduled-list',0)"
+        ).lastrowid
+        con.execute(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (list_id, "school.example.com"),
+        )
+        con.execute(
+            "UPDATE blocklists SET entry_count=1 WHERE id=?",
+            (list_id,),
+        )
+        scope_id = con.execute(
+            """
+            INSERT INTO scopes(
+                name,kind,target,state,schedule_enabled,schedule_days,
+                schedule_start,schedule_end,schedule_timezone
+            ) VALUES(
+                'scheduled-host','hostname','student.home.arpa','active',
+                1,'0','15:00','20:00','UTC'
+            )
+            """
+        ).lastrowid
+        con.execute(
+            "INSERT INTO scope_blocklists(scope_id,blocklist_id) VALUES(?,?)",
+            (scope_id, list_id),
+        )
+        con.execute(
+            """
+            INSERT INTO client_identities(client_ip,client_name)
+            VALUES('192.168.1.60','student.home.arpa')
+            """
+        )
+
+    e = PolicyEngine(db)
+    inside = datetime(2026, 9, 21, 17, 0, tzinfo=timezone.utc)
+    outside = datetime(2026, 9, 21, 21, 0, tzinfo=timezone.utc)
+
+    assert e.decide("192.168.1.60", "school.example.com", inside).block is True
+    assert e.decide("192.168.1.60", "school.example.com", outside).block is False
+    e.close()
+    td.cleanup()
