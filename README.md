@@ -18,6 +18,7 @@ The application is packaged as a Docker service and includes a responsive, multi
 - Block lists are editable directly from the Block Lists page, including name, source URL, format, refresh interval, enabled state, and optional content replacement.
 - Manual lists can be edited one domain at a time on a dedicated page, with search, pagination, add, and remove controls.
 - Per-list global assignment plus editable per-network/per-client assignments from the same Block Lists screen.
+- Recurring weekly enforcement schedules per block list, with selectable days, start/end times, overnight windows, and IANA timezones.
 - Hosts-file, one-domain-per-line, and common DNS-oriented Adblock rule parsing.
 - Database-backed administrator credentials with salted `scrypt` password hashes.
 - Database-backed login sessions, HTTP-only cookies, and CSRF-protected admin forms.
@@ -157,6 +158,37 @@ Domains are normalized with the same Blockinator parser used for imports. For ex
 
 Only lists whose source type is **manual** expose this editor. URL-backed and uploaded lists remain managed through their normal source/import workflow.
 
+
+## Block-list enforcement schedules
+
+Each block list can optionally be limited to a recurring weekly schedule from **Block Lists → Edit & assign → Enforcement schedule**.
+
+A schedule includes:
+
+- one or more days of the week;
+- a start time;
+- an end time; and
+- an IANA timezone such as `America/New_York`.
+
+When scheduling is disabled, the list behaves normally and is eligible for enforcement at all times. When scheduling is enabled, the list participates in policy decisions only while its window is active.
+
+Selected days represent the day the window **starts**. This makes overnight schedules intuitive. For example:
+
+```text
+Days: Monday-Friday
+Start: 22:00
+End: 06:00
+Timezone: America/New_York
+```
+
+enforces from 10:00 PM Monday through 6:00 AM Tuesday, and repeats for each selected start day. A Friday 22:00 window therefore remains active until Saturday 06:00.
+
+If start and end are equal—for example `00:00–00:00`—the schedule covers the entire selected day.
+
+Timezone conversion uses Python's IANA timezone database and observes daylight-saving-time changes. The optional `TZ` value in `.env` controls the default timezone offered when creating a new schedule; each block list stores its own timezone after it is saved.
+
+Schedules apply equally to Global lists and lists assigned only to specific networks/endpoints. A list outside its schedule is treated as inactive for that DNS decision.
+
 ## Editing block lists and scope assignments
 
 The **Block Lists** page is now the central place to manage both list settings and where each list applies.
@@ -246,7 +278,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **11 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **14 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
