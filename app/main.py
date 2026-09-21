@@ -530,6 +530,7 @@ def dashboard(request: Request):
               (SELECT COALESCE(SUM(entry_count),0) FROM blocklists WHERE enabled=1) entries,
               (SELECT COUNT(*) FROM scopes WHERE kind='network') networks,
               (SELECT COUNT(*) FROM scopes WHERE kind='client') clients,
+              (SELECT COUNT(*) FROM scopes WHERE kind='hostname') hostnames,
               (SELECT COUNT(*) FROM query_log WHERE blocked=1) blocked,
               (SELECT COUNT(*) FROM query_log) queries
         """).fetchone())
@@ -546,7 +547,7 @@ def dashboard(request: Request):
       <article class="stat"><span>Queries</span><strong>{totals["queries"]:,}</strong><small>Recorded decisions</small></article>
       <article class="stat"><span>Blocked</span><strong>{totals["blocked"]:,}</strong><small>Rejected requests</small></article>
       <article class="stat"><span>Block entries</span><strong>{totals["entries"]:,}</strong><small>Across enabled lists</small></article>
-      <article class="stat"><span>Managed clients</span><strong>{totals["clients"]:,}</strong><small>{totals["networks"]} network scopes</small></article>
+      <article class="stat"><span>Policy targets</span><strong>{totals["clients"] + totals["networks"] + totals["hostnames"]:,}</strong><small>{totals["networks"]} networks · {totals["clients"]} endpoints · {totals["hostnames"]} hostnames</small></article>
     </div>
     <section class="panel status-panel"><div><span class="big-dot {"green" if global_on else "amber"}"></span><div><h3>Global blocking is {"active" if global_on else "paused"}</h3><p>{"Policy decisions are enforced." if global_on else "All requests are currently allowed."}</p></div></div>
       <form method="post" action="/admin/global-toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="{"danger-button" if global_on else "primary-button"}">{"Pause blocking" if global_on else "Resume blocking"}</button></form>
