@@ -35,7 +35,27 @@
     });
   }
 
+  function syncScheduleControls(editor) {
+    var toggle = editor.querySelector("[data-schedule-toggle]");
+    var controls = editor.querySelector("[data-schedule-controls]");
+    if (!toggle || !controls) return;
+    controls.classList.toggle("schedule-disabled", !toggle.checked);
+    controls.setAttribute("aria-disabled", toggle.checked ? "false" : "true");
+  }
+
+  function initializeScheduleControls() {
+    document.querySelectorAll("[data-schedule-editor]").forEach(function (editor) {
+      var toggle = editor.querySelector("[data-schedule-toggle]");
+      if (!toggle) return;
+      syncScheduleControls(editor);
+      toggle.addEventListener("change", function () {
+        syncScheduleControls(editor);
+      });
+    });
+  }
+
   window.addEventListener("hashchange", openHashDetails);
   openHashDetails();
   initializeGlobalAssignmentControls();
+  initializeScheduleControls();
 })();
