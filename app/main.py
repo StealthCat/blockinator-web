@@ -21,7 +21,7 @@ from .policy import PolicyEngine
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.7.2"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
