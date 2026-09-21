@@ -15,7 +15,8 @@ The application is packaged as a Docker service and includes a responsive, multi
 - IPv4/IPv6 CIDR policy scopes and exact client-IP scopes.
 - Client rules can override network pause/resume state.
 - Multiple independent block lists with URL, upload, and pasted-text imports.
-- Per-list global assignment plus per-network/per-client assignments.
+- Block lists are editable directly from the Block Lists page, including name, source URL, format, refresh interval, enabled state, and optional content replacement.
+- Per-list global assignment plus editable per-network/per-client assignments from the same Block Lists screen.
 - Hosts-file, one-domain-per-line, and common DNS-oriented Adblock rule parsing.
 - Database-backed administrator credentials with salted `scrypt` password hashes.
 - Database-backed login sessions, HTTP-only cookies, and CSRF-protected admin forms.
@@ -119,6 +120,25 @@ Example response:
 }
 ```
 
+
+## Editing block lists and scope assignments
+
+The **Block Lists** page is now the central place to manage both list settings and where each list applies.
+
+Open **Edit & assign** on any list to change:
+
+- list name and parser format;
+- source URL and refresh interval;
+- enabled/disabled state;
+- whether the list applies globally;
+- assigned network scopes;
+- assigned exact-client/endpoint scopes; and
+- list contents by uploading or pasting replacement rules.
+
+For URL-backed lists, **Save & refresh URL** saves the edited metadata and immediately re-imports the list from the configured URL.
+
+Global and scoped assignments are additive. A list can apply globally and also show explicit scope assignments, or it can be non-global and apply only to the selected networks/endpoints. Assignment changes reload the in-memory policy engine immediately.
+
 ## Policy precedence
 
 Blocking state is evaluated in this order:
@@ -183,7 +203,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **8 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **9 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
