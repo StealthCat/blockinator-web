@@ -22,7 +22,7 @@ from .policy import PolicyEngine, normalize_hostname_pattern
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.13.0"
+APP_VERSION = "1.13.1"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -220,6 +220,18 @@ def schedule_fields_html(row=None, default_timezone: str = "UTC") -> str:
         <p class="schedule-help full">Selected days are the days the window begins. Overnight ranges such as 22:00–06:00 continue into the following morning. Equal start/end times mean the full selected day.</p>
       </div>
     </div>'''
+
+
+def system_default_timezone() -> str:
+    configured = db.get_setting(
+        "default_timezone",
+        os.getenv("TZ", "UTC").strip() or "UTC",
+    ).strip() or "UTC"
+    try:
+        ZoneInfo(configured)
+    except (ZoneInfoNotFoundError, ValueError):
+        return "UTC"
+    return configured
 
 
 def log_client_names(rows) -> dict[str, str | None]:
@@ -749,7 +761,7 @@ def lists_page(request: Request):
     if not cards:
         cards = '<div class="empty-card">No block lists yet. Import one to start building policy.</div>'
 
-    new_schedule_fields = schedule_fields_html(default_timezone=os.getenv("TZ", "UTC"))
+    new_schedule_fields = schedule_fields_html(default_timezone=system_default_timezone())
     body = f'''<div class="split-grid blocklist-layout">
       <section class="panel">
         <div class="panel-head"><div><div class="panel-kicker">Policy sources</div><h3>Managed block lists</h3><p>Edit each list and assign it to networks or exact endpoints without leaving this page.</p></div><span class="result-count">{len(rows)} lists</span></div>
@@ -1539,7 +1551,7 @@ def scopes_page(request: Request):
         cards = '<div class="empty-card">No managed policy targets yet. Add a network, endpoint, or reverse-DNS hostname to start scoping policy.</div>'
 
     new_list_editor = blocklist_editor(set())
-    new_scope_schedule_fields = schedule_fields_html(default_timezone=os.getenv("TZ", "UTC"))
+    new_scope_schedule_fields = schedule_fields_html(default_timezone=system_default_timezone())
     body = f'''<div class="split-grid scopes-layout">
       <section class="panel">
         <div class="panel-head">
@@ -1940,6 +1952,7 @@ def settings_page(request: Request):
     mode = db.get_setting("block_response", "nxdomain")
     retention = db.get_setting("max_query_logs", "25000")
     retention_days = db.get_setting("max_query_log_age_days", "0")
+    default_timezone = system_default_timezone()
     age_summary = (
         "Disabled"
         if str(retention_days) == "0"
@@ -1978,6 +1991,26 @@ def settings_page(request: Request):
             </div>
           </div>
 
+          <div class="form-section full">
+            <div class="form-section-head">
+              <div><b>Default schedule timezone</b><p>Used when creating new block-list and policy-target schedules. Existing schedules keep their saved timezone.</p></div>
+              <span>{esc(default_timezone)}</span>
+            </div>
+            <label class="full">IANA timezone
+              <input name="default_timezone" value="{esc(default_timezone)}" list="timezone-options" placeholder="America/New_York" required>
+              <small>Examples: UTC, America/New_York, America/Chicago, America/Denver, America/Los_Angeles.</small>
+            </label>
+            <datalist id="timezone-options">
+              <option value="UTC"></option>
+              <option value="America/New_York"></option>
+              <option value="America/Chicago"></option>
+              <option value="America/Denver"></option>
+              <option value="America/Los_Angeles"></option>
+              <option value="America/Anchorage"></option>
+              <option value="Pacific/Honolulu"></option>
+            </datalist>
+          </div>
+
           <button class="primary-button full">Save settings & prune logs</button>
         </form>
       </section>
@@ -1992,6 +2025,7 @@ def settings_page(request: Request):
           <div><span>Service</span><b>Blockinator</b></div>
           <div><span>Log age limit</span><b>{age_summary}</b></div>
           <div><span>Log row limit</span><b>{int(retention):,}</b></div>
+          <div><span>Default timezone</span><b class="mono">{esc(default_timezone)}</b></div>
         </div>
       </section>
     </div>'''
@@ -2012,9 +2046,19 @@ async def save_settings(request: Request):
     except (TypeError, ValueError):
         retention_days = 0
 
+    default_timezone = str(form.get("default_timezone", "")).strip() or "UTC"
+    try:
+        ZoneInfo(default_timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return redirect(
+            "/settings",
+            error="Default timezone must be a valid IANA timezone such as America/New_York",
+        )
+
     db.set_setting("block_response", mode)
     db.set_setting("max_query_logs", str(retention))
     db.set_setting("max_query_log_age_days", str(retention_days))
+    db.set_setting("default_timezone", default_timezone)
     engine.reload()
 
     try:
