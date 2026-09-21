@@ -566,7 +566,7 @@ def dashboard(request: Request):
     <section class="panel status-panel"><div><span class="big-dot {"green" if global_on else "amber"}"></span><div><h3>Global blocking is {"active" if global_on else "paused"}</h3><p>{"Policy decisions are enforced." if global_on else "All requests are currently allowed."}</p></div></div>
       <form method="post" action="/admin/global-toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="{"danger-button" if global_on else "primary-button"}">{"Pause blocking" if global_on else "Resume blocking"}</button></form>
     </section>
-    <section class="panel"><div class="panel-head"><div><h3>Recent DNS activity</h3><p>Latest policy decisions from connected resolvers.</p></div><a class="text-link" href="/queries">View all →</a></div>
+    <section class="panel"><div class="panel-head"><div><h3>Recent DNS activity</h3><p>Latest policy decisions from connected resolvers · times shown in {esc(display_timezone)}.</p></div><a class="text-link" href="/queries">View all →</a></div>
       <div class="table-wrap"><table><thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Decision</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table></div>
     </section>'''
     return page(request, "Dashboard", "dashboard", body, s)
@@ -1860,7 +1860,7 @@ def queries_page(
     body = f'''<section class="panel">
       <div class="panel-head query-head">
         <div><div class="panel-kicker">DNS activity</div><h3>Decision history</h3>
-        <p>Showing {len(rows)} most recent matching requests, including the DNS server that submitted each query.</p></div>
+        <p>Showing {len(rows)} most recent matching requests, including the DNS server that submitted each query · times shown in {esc(display_timezone)}.</p></div>
         <span class="result-count">{len(rows)} results</span>
       </div>
       <form class="filter-bar query-filter-bar" method="get">
