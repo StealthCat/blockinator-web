@@ -1314,3 +1314,30 @@ input[type=file]{padding:8px}
     max-width:145px;
   }
 }
+
+
+/* =========================================================
+   Blockinator 1.7.2 — single-line sidebar navigation
+   ========================================================= */
+.sidebar .nav-link{
+  flex-wrap:nowrap;
+  white-space:nowrap;
+}
+.sidebar .nav-link > .nav-icon{
+  flex:0 0 26px;
+}
+.sidebar .nav-link > span:not(.nav-icon){
+  display:block;
+  width:auto;
+  min-width:0;
+  flex:1 1 auto;
+  overflow:hidden;
+  color:inherit;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+@media(max-width:760px){
+  .sidebar nav{
+    grid-template-columns:1fr;
+  }
+}
