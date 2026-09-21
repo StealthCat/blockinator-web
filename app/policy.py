@@ -342,18 +342,23 @@ class PolicyEngine:
             hostnames: list[Scope] = []
             networks: list[Scope] = []
             for r in con.execute("SELECT * FROM scopes"):
+                scope_target = str(r["target"])
                 try:
                     if r["kind"] == "client":
-                        ip = ipaddress.ip_address(r["target"])
+                        ip = ipaddress.ip_address(scope_target)
+                        scope_target = str(ip)
                         net: ipaddress._BaseNetwork | None = ipaddress.ip_network(
                             f"{ip}/{ip.max_prefixlen}", strict=False
                         )
                     elif r["kind"] == "network":
-                        net = ipaddress.ip_network(r["target"], strict=False)
+                        net = ipaddress.ip_network(scope_target, strict=False)
+                        scope_target = str(net)
                     elif r["kind"] == "hostname":
                         net = None
-                        if normalize_hostname_pattern(r["target"]) is None:
+                        normalized_pattern = normalize_hostname_pattern(scope_target)
+                        if normalized_pattern is None:
                             continue
+                        scope_target = normalized_pattern
                     else:
                         continue
                 except ValueError:
@@ -367,7 +372,7 @@ class PolicyEngine:
                     if 0 <= day <= 6:
                         scope_days.add(day)
                 s = Scope(
-                    id=r["id"], name=r["name"], kind=r["kind"], target=r["target"],
+                    id=r["id"], name=r["name"], kind=r["kind"], target=scope_target,
                     state=r["state"], network=net,
                     blocklist_ids=frozenset(memberships.get(r["id"], set())),
                     schedule_enabled=bool(r["schedule_enabled"]),
