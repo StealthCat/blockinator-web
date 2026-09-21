@@ -4,7 +4,7 @@
 
 # Blockinator
 
-**Blockinator** is a self-hosted DNS policy-control service designed to sit behind DNS servers such as Technitium DNS Server. It receives DNS request metadata over an authenticated API and returns an allow/block decision based on global policy, network/client scopes, and imported block lists.
+**Blockinator** is a self-hosted DNS policy-control service designed to sit behind DNS servers such as Technitium DNS Server. It receives DNS request metadata over an authenticated API and returns an allow/block decision based on global policy, network, exact-client, reverse-DNS hostname scopes, and imported block lists.
 
 The application is packaged as a Docker service and includes a responsive, multi-page administration console.
 
@@ -12,13 +12,14 @@ The application is packaged as a Docker service and includes a responsive, multi
 
 - Polished Blockinator web console with dashboard, block-list, scope, query-log, security, and settings pages.
 - Global pause/resume for DNS blocking.
-- Editable IPv4/IPv6 CIDR network scopes and exact client-IP endpoint scopes, with block-list assignment directly from the Networks & Endpoints page.
-- Networks and exact endpoints can also have recurring weekly schedules with selectable days, times, overnight windows, and IANA timezones.
-- Client rules can override network pause/resume state.
+- Editable policy targets for IPv4/IPv6 CIDR networks, exact client IPs, and reverse-DNS hostnames, with block-list assignment directly from the Policy Targets page.
+- Reverse-DNS hostname targets support exact PTR names and wildcard suffixes such as `*.kids.home.arpa`.
+- Networks, exact endpoints, and reverse-DNS hostname targets can have recurring weekly schedules with selectable days, times, overnight windows, and IANA timezones.
+- Policy precedence is exact IP endpoint → reverse-DNS hostname → most-specific network → global policy.
 - Multiple independent block lists with URL, upload, and pasted-text imports.
 - Block lists are editable directly from the Block Lists page, including name, source URL, format, refresh interval, enabled state, and optional content replacement.
 - Manual lists can be edited one domain at a time on a dedicated page, with search, pagination, add, and remove controls.
-- Per-list global assignment plus editable per-network/per-client assignments from the same Block Lists screen.
+- Per-list global assignment plus editable per-network/per-client/per-hostname assignments from the same Block Lists screen.
 - Recurring weekly enforcement schedules per block list, with selectable days, start/end times, overnight windows, and IANA timezones.
 - Hosts-file, one-domain-per-line, and common DNS-oriented Adblock rule parsing.
 - Database-backed administrator credentials with salted `scrypt` password hashes.
@@ -128,11 +129,51 @@ Example response:
 
 
 
+
+## Reverse-DNS hostname policy targets
+
+The **Policy Targets** page supports a third target type in addition to Network and Endpoint: **Reverse-DNS Hostname**.
+
+Examples:
+
+```text
+desktop-01.home.arpa
+*.kids.home.arpa
+```
+
+An exact hostname target matches one learned PTR name. A leading `*.` creates a suffix target and matches names below that suffix, such as `tablet.kids.home.arpa`. The wildcard does not match the bare suffix `kids.home.arpa`.
+
+Hostname targets support the same controls as network and endpoint targets:
+
+- Active/Paused state;
+- recurring enforcement schedules;
+- per-target block-list assignments;
+- editing and deletion from the Policy Targets page; and
+- assignment from the Block Lists page.
+
+Policy state precedence is:
+
+1. Global pause.
+2. Exact client-IP endpoint.
+3. Reverse-DNS hostname.
+4. Most-specific matching network.
+5. Default/global policy.
+
+Block-list assignments remain additive: enabled global lists plus matching network, hostname, and exact-client assignments form the active set, subject to their schedules.
+
+### PTR identity learning
+
+PTR resolution remains outside the DNS decision path. The asynchronous query-log worker resolves client addresses, normalizes the PTR hostname, stores the IP→hostname identity in SQLite, and updates the in-memory policy cache.
+
+This means a completely new client may initially use its IP/network/global policy until Blockinator has learned its PTR name. Once learned, subsequent requests can match hostname policy without waiting on a reverse lookup. Learned identities persist across restarts and are refreshed when successful PTR lookups return a new name.
+
+Hostname identity is only as trustworthy as the reverse-DNS service supplying it. It is best suited to internal DNS environments where you control the reverse zones.
+
 ## Network and endpoint schedules
 
-Networks and endpoints support the same recurring weekly schedule model as block lists.
+Networks, endpoints, and reverse-DNS hostname targets support the same recurring weekly schedule model as block lists.
 
-Open **Networks & Endpoints → Edit & assign → Enforcement schedule** to configure:
+Open **Policy Targets → Edit & assign → Enforcement schedule** to configure:
 
 - one or more days of the week;
 - start and end times;
@@ -143,27 +184,28 @@ When scheduling is off, the scope participates in policy at all times. When sche
 
 This is important for precedence:
 
-- an endpoint outside its schedule is ignored, so its containing network can apply;
+- an endpoint outside its schedule is ignored, so hostname/network policy can apply;
+- a hostname target outside its schedule is ignored, so network/global policy can apply;
 - a network outside its schedule is ignored, allowing a broader matching network or global policy to apply;
-- a **Paused** scope with a schedule only pauses blocking during that schedule; outside the window, normal fallback policy applies.
+- a **Paused** target with a schedule only pauses blocking during that schedule; outside the window, normal fallback policy applies.
 
 Overnight behavior matches block-list schedules: selected days are the days the window begins. A Monday `22:00–06:00` schedule remains active until Tuesday 06:00. Equal start/end times cover the full selected day.
 
 ## Editing networks and endpoints
 
-The **Networks & Endpoints** page provides the reverse view of block-list assignments. Open **Edit & assign** on any scope to change:
+The **Policy Targets** page provides the reverse view of block-list assignments. Open **Edit & assign** on any scope to change:
 
 - display name;
-- scope type (**Network** or **Endpoint**);
-- CIDR or exact IPv4/IPv6 address;
+- scope type (**Network**, **Endpoint**, or **Reverse-DNS Hostname**);
+- CIDR, exact IPv4/IPv6 address, exact PTR hostname, or wildcard PTR suffix;
 - active/paused blocking state; and
 - every block list explicitly assigned to that scope.
 
-A scope can be converted between Network and Endpoint; Blockinator validates the address against the newly selected type when the change is saved.
+A target can be converted among Network, Endpoint, and Reverse-DNS Hostname; Blockinator validates and normalizes the target when the change is saved.
 
 The block-list picker shows each list's enabled state, entry count, format, and whether it is already global. Global lists apply automatically everywhere, so their per-scope assignment checkbox is shaded and disabled. Scoped lists remain selectable normally.
 
-New networks/endpoints can also receive their initial block-list assignments during creation. All edits reload the in-memory policy engine immediately.
+New networks, endpoints, and hostname targets can also receive their initial block-list assignments during creation. All edits reload the in-memory policy engine immediately.
 
 
 ## Manual list domain editor
@@ -225,23 +267,24 @@ Open **Edit & assign** on any list to change:
 - enabled/disabled state;
 - whether the list applies globally;
 - assigned network scopes;
-- assigned exact-client/endpoint scopes; and
+- assigned exact-client/endpoint and reverse-DNS hostname scopes; and
 - list contents by uploading or pasting replacement rules.
 
 For URL-backed lists, **Save & refresh URL** saves the edited metadata and immediately re-imports the list from the configured URL.
 
-Global and scoped assignments are mutually exclusive in the UI. When a list is marked **Global**, individual network/endpoint assignment controls are shaded and disabled because the list already applies everywhere. Unchecking **Apply globally** immediately re-enables the scope selectors. Global lists cannot be assigned redundantly to individual scopes. Assignment changes reload the in-memory policy engine immediately.
+Global and scoped assignments are mutually exclusive in the UI. When a list is marked **Global**, individual network/endpoint/hostname assignment controls are shaded and disabled because the list already applies everywhere. Unchecking **Apply globally** immediately re-enables the scope selectors. Global lists cannot be assigned redundantly to individual scopes. Assignment changes reload the in-memory policy engine immediately.
 
 ## Policy precedence
 
 Blocking state is evaluated in this order:
 
 1. Global pause: all clients are allowed.
-2. Exact client scope: overrides a containing network's pause/resume state.
-3. Most-specific matching network scope.
-4. No matching scope: blocking remains active by default.
+2. Exact client-IP endpoint.
+3. Matching reverse-DNS hostname scope.
+4. Most-specific matching network scope.
+5. No matching scope: blocking remains active by default.
 
-The active block-list set is the union of enabled global lists, lists assigned to the most-specific matching network, and lists assigned to the exact client.
+The active block-list set is the union of enabled global lists and lists assigned to every matching active layer: network, reverse-DNS hostname, and exact client.
 
 
 
@@ -324,7 +367,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **19 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **26 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
