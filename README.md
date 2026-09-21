@@ -12,7 +12,7 @@ The application is packaged as a Docker service and includes a responsive, multi
 
 - Polished Blockinator web console with dashboard, block-list, scope, query-log, security, and settings pages.
 - Global pause/resume for DNS blocking.
-- IPv4/IPv6 CIDR policy scopes and exact client-IP scopes.
+- Editable IPv4/IPv6 CIDR network scopes and exact client-IP endpoint scopes, with block-list assignment directly from the Networks & Endpoints page.
 - Client rules can override network pause/resume state.
 - Multiple independent block lists with URL, upload, and pasted-text imports.
 - Block lists are editable directly from the Block Lists page, including name, source URL, format, refresh interval, enabled state, and optional content replacement.
@@ -121,6 +121,23 @@ Example response:
 ```
 
 
+
+## Editing networks and endpoints
+
+The **Networks & Endpoints** page provides the reverse view of block-list assignments. Open **Edit & assign** on any scope to change:
+
+- display name;
+- scope type (**Network** or **Endpoint**);
+- CIDR or exact IPv4/IPv6 address;
+- active/paused blocking state; and
+- every block list explicitly assigned to that scope.
+
+A scope can be converted between Network and Endpoint; Blockinator validates the address against the newly selected type when the change is saved.
+
+The block-list picker shows each list's enabled state, entry count, format, and whether it is already global. Global lists apply automatically even without an explicit scope assignment, while explicit assignments remain useful if that list is later changed to scoped-only.
+
+New networks/endpoints can also receive their initial block-list assignments during creation. All edits reload the in-memory policy engine immediately.
+
 ## Editing block lists and scope assignments
 
 The **Block Lists** page is now the central place to manage both list settings and where each list applies.
@@ -203,7 +220,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **9 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **10 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
