@@ -12,7 +12,8 @@ The application is packaged as a Docker service and includes a responsive, multi
 
 - Polished Blockinator web console with dashboard, block-list, scope, query-log, security, and settings pages.
 - Global pause/resume for DNS blocking.
-- Editable policy targets for IPv4/IPv6 CIDR networks, exact client IPs, and reverse-DNS hostnames, with block-list assignment directly from the Policy Targets page.
+- Editable policy targets for networks, exact client IPs, and reverse-DNS hostnames, with block-list assignment directly from the Policy Targets page.
+- A single Network target can carry dual-stack IPv4 and IPv6 CIDRs concurrently, sharing one state, schedule, and block-list assignment set.
 - Reverse-DNS hostname targets support exact PTR names and wildcard suffixes such as `*.kids.home.arpa`.
 - Networks, exact endpoints, and reverse-DNS hostname targets can have recurring weekly schedules with selectable days, times, overnight windows, and IANA timezones.
 - Policy precedence is exact IP endpoint → reverse-DNS hostname → most-specific network → global policy.
@@ -130,6 +131,30 @@ Example response:
 
 
 
+
+## Dual-stack network targets
+
+A single **Network** policy target can contain an IPv4 CIDR, an IPv6 CIDR, or both at the same time.
+
+For example:
+
+```text
+Name: Home LAN
+IPv4 CIDR: 192.168.50.0/24
+IPv6 CIDR: 2001:db8:50::/64
+```
+
+Both address families share the same:
+
+- Active/Paused state;
+- recurring schedule;
+- block-list assignments; and
+- display name.
+
+Blockinator evaluates the most-specific matching network independently for the client's address family. An IPv4 query is compared against IPv4 members of network targets, and an IPv6 query is compared against IPv6 members. This means a dual-stack network can coexist with a more-specific IPv4-only or IPv6-only network without changing precedence behavior.
+
+Existing single-stack Network targets are migrated automatically into the new address-family storage. They remain single-stack until you add the other CIDR in **Policy Targets → Edit & assign**.
+
 ## Reverse-DNS hostname policy targets
 
 The **Policy Targets** page supports a third target type in addition to Network and Endpoint: **Reverse-DNS Hostname**.
@@ -197,11 +222,11 @@ The **Policy Targets** page provides the reverse view of block-list assignments.
 
 - display name;
 - scope type (**Network**, **Endpoint**, or **Reverse-DNS Hostname**);
-- CIDR, exact IPv4/IPv6 address, exact PTR hostname, or wildcard PTR suffix;
+- IPv4/IPv6 CIDRs for Network targets, exact IPv4/IPv6 address, exact PTR hostname, or wildcard PTR suffix;
 - active/paused blocking state; and
 - every block list explicitly assigned to that scope.
 
-A target can be converted among Network, Endpoint, and Reverse-DNS Hostname; Blockinator validates and normalizes the target when the change is saved.
+A target can be converted among Network, Endpoint, and Reverse-DNS Hostname. Network targets expose separate IPv4 and IPv6 CIDR fields and require at least one address family.
 
 The block-list picker shows each list's enabled state, entry count, format, and whether it is already global. Global lists apply automatically everywhere, so their per-scope assignment checkbox is shaded and disabled. Scoped lists remain selectable normally.
 
@@ -367,7 +392,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **26 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **30 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
