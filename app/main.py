@@ -809,6 +809,7 @@ def manual_list_domains_page(
             <span><b>{int(blocklist["entry_count"]):,}</b><small>Total domains</small></span>
             <span><b>{esc(assignment_label)}</b><small>Policy mode</small></span>
             <span><b>{"Enabled" if blocklist["enabled"] else "Disabled"}</b><small>List state</small></span>
+            <span><b>{esc("Scheduled" if blocklist["schedule_enabled"] else "Always")}</b><small>{esc(schedule_summary(blocklist))}</small></span>
           </div>
         </div>
       </section>
