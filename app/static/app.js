@@ -41,6 +41,13 @@
     if (!toggle || !controls) return;
     controls.classList.toggle("schedule-disabled", !toggle.checked);
     controls.setAttribute("aria-disabled", toggle.checked ? "false" : "true");
+    controls.querySelectorAll("input").forEach(function (input) {
+      if (toggle.checked) {
+        input.removeAttribute("tabindex");
+      } else {
+        input.setAttribute("tabindex", "-1");
+      }
+    });
   }
 
   function initializeScheduleControls() {
