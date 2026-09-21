@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.3 — Startup syntax fix
+
+- Fixed a Python syntax error caused by inline JavaScript being embedded inside the shared HTML f-string.
+- Moved expandable-editor hash handling into `app/static/app.js`.
+- The shared page shell now loads the JavaScript as a normal static asset.
+- Updated the application version to 1.7.3.
+
 ## 1.7.2 — Sidebar navigation cleanup
 
 - Fixed sidebar menu labels inheriting the icon span width.
