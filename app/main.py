@@ -627,6 +627,8 @@ def manual_list_domains_page(
                       onsubmit="return confirm('Remove {esc(domain)} from this block list?')">
                   <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                   <input type="hidden" name="domain" value="{esc(domain)}">
+                  <input type="hidden" name="return_q" value="{esc(q)}">
+                  <input type="hidden" name="return_page" value="{page_num}">
                   <button class="small-button danger" type="submit">Remove</button>
                 </form>
               </td>
@@ -760,8 +762,18 @@ async def remove_manual_list_domain(list_id: int, request: Request):
         return redirect(f"/lists#list-{list_id}", error=error)
 
     domain = normalize_domain(str(form.get("domain", "")))
+    return_q = str(form.get("return_q", "")).strip()
+    try:
+        return_page = max(1, int(form.get("return_page", "1")))
+    except (TypeError, ValueError):
+        return_page = 1
+
+    return_path = f"/lists/{list_id}/domains?page_num={return_page}"
+    if return_q:
+        return_path += "&q=" + quote(return_q)
+
     if not domain:
-        return redirect(f"/lists/{list_id}/domains", error="Invalid domain")
+        return redirect(return_path, error="Invalid domain")
 
     with db.connect() as con:
         cur = con.execute(
@@ -773,11 +785,11 @@ async def remove_manual_list_domain(list_id: int, request: Request):
     engine.reload()
     if cur.rowcount == 0:
         return redirect(
-            f"/lists/{list_id}/domains",
+            return_path,
             error=f"{domain} was not found in this list",
         )
     return redirect(
-        f"/lists/{list_id}/domains",
+        return_path,
         notice=f"Removed {domain}; manual list now contains {count:,} domains",
     )
 
