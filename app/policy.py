@@ -34,7 +34,7 @@ class BlockListCache:
     schedule_enabled: bool = False
     schedule_days: frozenset[int] = frozenset(range(7))
     schedule_start: str = "00:00"
-    schedule_end: str = "23:59"
+    schedule_end: str = "00:00"
     schedule_timezone: str = "UTC"
 
     def schedule_is_active(self, now_utc: datetime | None = None) -> bool:
@@ -182,7 +182,7 @@ class PolicyEngine:
                     schedule_enabled=bool(r["schedule_enabled"]),
                     schedule_days=frozenset(schedule_days),
                     schedule_start=str(r["schedule_start"] or "00:00"),
-                    schedule_end=str(r["schedule_end"] or "23:59"),
+                    schedule_end=str(r["schedule_end"] or "00:00"),
                     schedule_timezone=str(r["schedule_timezone"] or "UTC"),
                 )
             clients: list[Scope] = []
