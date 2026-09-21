@@ -1764,3 +1764,17 @@ input[type=file]{padding:8px}
     grid-template-columns:repeat(4,minmax(0,1fr));
   }
 }
+
+
+/* =========================================================
+   Blockinator 1.10 — network and endpoint schedule summaries
+   ========================================================= */
+.scope-schedule-summary{
+  margin:5px 0 0!important;
+  color:#5f7f92!important;
+  font-size:10px!important;
+  line-height:1.35!important;
+}
+.scope-schedule-summary.scheduled{
+  color:#b7985e!important;
+}
