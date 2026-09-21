@@ -15,13 +15,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .auth import AuthManager, SESSION_COOKIE, SESSION_TTL_SECONDS
-from .blocklists import fetch_url, parse_blocklist
+from .blocklists import fetch_url, normalize_domain, parse_blocklist
 from .db import Database
 from .policy import PolicyEngine
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.7.3"
+APP_VERSION = "1.8.0"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -472,6 +472,7 @@ def lists_page(request: Request):
                 <button class="small-button">{"Disable" if r["enabled"] else "Enable"}</button>
               </form>
               <a class="small-button edit-link" href="#edit-list-{int(r["id"])}">Edit & assign</a>
+              {f'<a class="small-button domain-manage-link" href="/lists/{int(r["id"])}/domains">Manage domains</a>' if r["source_type"] == "manual" else ""}
               <form method="post" action="/admin/lists/{int(r["id"])}/delete" onsubmit="return confirm('Delete this list and its scope assignments?')">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                 <button class="small-button danger">Delete</button>
@@ -542,6 +543,243 @@ def lists_page(request: Request):
     </div>'''
     return page(request, "Block Lists", "lists", body, s)
 
+
+
+def _get_manual_blocklist(list_id: int):
+    with db.connect() as con:
+        row = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
+    if not row:
+        return None, "Block list not found"
+    if row["source_type"] != "manual":
+        return row, "Only manual block lists can be edited one domain at a time"
+    return row, None
+
+
+def _refresh_manual_list_count(con, list_id: int) -> int:
+    count = int(
+        con.execute(
+            "SELECT COUNT(*) AS c FROM block_entries WHERE blocklist_id=?",
+            (list_id,),
+        ).fetchone()["c"]
+    )
+    con.execute(
+        """
+        UPDATE blocklists
+        SET entry_count=?, last_updated=CURRENT_TIMESTAMP, last_error=NULL
+        WHERE id=?
+        """,
+        (count, list_id),
+    )
+    return count
+
+
+@app.get("/lists/{list_id}/domains", response_class=HTMLResponse)
+def manual_list_domains_page(
+    list_id: int,
+    request: Request,
+    q: str = "",
+    page_num: int = 1,
+):
+    s = require_session(request)
+    blocklist, error = _get_manual_blocklist(list_id)
+    if error:
+        return redirect(f"/lists#list-{list_id}", error=error)
+
+    assert blocklist is not None
+    q = q.strip()
+    page_size = 100
+    page_num = max(1, page_num)
+    where_sql = "blocklist_id=?"
+    args: list[object] = [list_id]
+    if q:
+        where_sql += " AND domain LIKE ?"
+        args.append("%" + q.lower() + "%")
+
+    with db.connect() as con:
+        total = int(
+            con.execute(
+                f"SELECT COUNT(*) AS c FROM block_entries WHERE {where_sql}",
+                args,
+            ).fetchone()["c"]
+        )
+        max_page = max(1, (total + page_size - 1) // page_size)
+        page_num = min(page_num, max_page)
+        offset = (page_num - 1) * page_size
+        entries = con.execute(
+            f"""
+            SELECT domain
+            FROM block_entries
+            WHERE {where_sql}
+            ORDER BY domain COLLATE NOCASE
+            LIMIT ? OFFSET ?
+            """,
+            [*args, page_size, offset],
+        ).fetchall()
+
+    domain_rows = []
+    for entry in entries:
+        domain = str(entry["domain"])
+        domain_rows.append(
+            f'''<tr>
+              <td><span class="manual-domain-name mono">{esc(domain)}</span></td>
+              <td class="manual-domain-action">
+                <form method="post" action="/admin/lists/{list_id}/domains/remove"
+                      onsubmit="return confirm('Remove {esc(domain)} from this block list?')">
+                  <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+                  <input type="hidden" name="domain" value="{esc(domain)}">
+                  <button class="small-button danger" type="submit">Remove</button>
+                </form>
+              </td>
+            </tr>'''
+        )
+    rows_html = "".join(domain_rows) or (
+        '<tr><td colspan="2" class="empty">'
+        + ("No domains match this search." if q else "This manual list has no domains yet.")
+        + "</td></tr>"
+    )
+
+    query_suffix = "&q=" + quote(q) if q else ""
+    prev_link = (
+        f'<a class="small-button" href="/lists/{list_id}/domains?page_num={page_num - 1}{query_suffix}">← Previous</a>'
+        if page_num > 1 else '<span class="small-button disabled">← Previous</span>'
+    )
+    next_link = (
+        f'<a class="small-button" href="/lists/{list_id}/domains?page_num={page_num + 1}{query_suffix}">Next →</a>'
+        if page_num < max_page else '<span class="small-button disabled">Next →</span>'
+    )
+
+    assignment_label = "Global" if blocklist["use_globally"] else "Scoped only"
+    body = f'''<div class="manual-domain-page">
+      <section class="manual-domain-heading">
+        <a class="back-link" href="/lists#list-{list_id}">← Back to Block Lists</a>
+        <div class="manual-domain-title-row">
+          <div>
+            <div class="panel-kicker">Manual block list</div>
+            <h2>{esc(blocklist["name"])}</h2>
+            <p>Add or remove individual domains without replacing the entire list.</p>
+          </div>
+          <div class="manual-list-stats">
+            <span><b>{int(blocklist["entry_count"]):,}</b><small>Total domains</small></span>
+            <span><b>{esc(assignment_label)}</b><small>Policy mode</small></span>
+            <span><b>{"Enabled" if blocklist["enabled"] else "Disabled"}</b><small>List state</small></span>
+          </div>
+        </div>
+      </section>
+
+      <div class="manual-domain-layout">
+        <section class="panel action-panel manual-domain-add">
+          <div class="panel-kicker">Add entry</div>
+          <h3>Add a domain</h3>
+          <p class="panel-help">Enter one hostname. Subdomains are covered automatically by Blockinator's suffix matching.</p>
+          <form method="post" action="/admin/lists/{list_id}/domains/add" class="manual-domain-add-form">
+            <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+            <label>Domain
+              <input name="domain" placeholder="example.com" autocomplete="off" required autofocus>
+            </label>
+            <button class="primary-button" type="submit">Add domain</button>
+          </form>
+          <div class="manual-domain-tip">
+            <b>Accepted</b>
+            <span>Normal hostnames and IDNs are normalized to lowercase ASCII. Wildcard prefixes such as <code>*.example.com</code> are stored as <code>example.com</code>.</span>
+          </div>
+        </section>
+
+        <section class="panel manual-domain-list-panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-kicker">List entries</div>
+              <h3>Domains</h3>
+              <p>{total:,} matching domain{"s" if total != 1 else ""} · page {page_num} of {max_page}</p>
+            </div>
+            <span class="result-count">{total:,} results</span>
+          </div>
+
+          <form class="manual-domain-search" method="get">
+            <input name="q" value="{esc(q)}" placeholder="Search domains…">
+            <button class="small-button" type="submit">Search</button>
+            {f'<a class="small-button" href="/lists/{list_id}/domains">Clear</a>' if q else ""}
+          </form>
+
+          <div class="table-wrap manual-domain-table-wrap">
+            <table class="manual-domain-table">
+              <thead><tr><th>Domain</th><th></th></tr></thead>
+              <tbody>{rows_html}</tbody>
+            </table>
+          </div>
+
+          <div class="manual-domain-pagination">
+            {prev_link}
+            <span>Page {page_num} of {max_page}</span>
+            {next_link}
+          </div>
+        </section>
+      </div>
+    </div>'''
+    return page(request, f"Manual List · {blocklist['name']}", "lists", body, s)
+
+
+@app.post("/admin/lists/{list_id}/domains/add")
+async def add_manual_list_domain(list_id: int, request: Request):
+    _, form = await require_post_session(request)
+    blocklist, error = _get_manual_blocklist(list_id)
+    if error:
+        return redirect(f"/lists#list-{list_id}", error=error)
+
+    raw_domain = str(form.get("domain", ""))
+    domain = normalize_domain(raw_domain)
+    if not domain:
+        return redirect(
+            f"/lists/{list_id}/domains",
+            error="Enter a valid domain such as example.com",
+        )
+
+    with db.connect() as con:
+        cur = con.execute(
+            "INSERT OR IGNORE INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            (list_id, domain),
+        )
+        count = _refresh_manual_list_count(con, list_id)
+
+    engine.reload()
+    if cur.rowcount == 0:
+        return redirect(
+            f"/lists/{list_id}/domains?q={quote(domain)}",
+            notice=f"{domain} is already in this list",
+        )
+    return redirect(
+        f"/lists/{list_id}/domains?q={quote(domain)}",
+        notice=f"Added {domain}; manual list now contains {count:,} domains",
+    )
+
+
+@app.post("/admin/lists/{list_id}/domains/remove")
+async def remove_manual_list_domain(list_id: int, request: Request):
+    _, form = await require_post_session(request)
+    blocklist, error = _get_manual_blocklist(list_id)
+    if error:
+        return redirect(f"/lists#list-{list_id}", error=error)
+
+    domain = normalize_domain(str(form.get("domain", "")))
+    if not domain:
+        return redirect(f"/lists/{list_id}/domains", error="Invalid domain")
+
+    with db.connect() as con:
+        cur = con.execute(
+            "DELETE FROM block_entries WHERE blocklist_id=? AND domain=?",
+            (list_id, domain),
+        )
+        count = _refresh_manual_list_count(con, list_id)
+
+    engine.reload()
+    if cur.rowcount == 0:
+        return redirect(
+            f"/lists/{list_id}/domains",
+            error=f"{domain} was not found in this list",
+        )
+    return redirect(
+        f"/lists/{list_id}/domains",
+        notice=f"Removed {domain}; manual list now contains {count:,} domains",
+    )
 
 def _scope_ids_from_form(form) -> list[int]:
     scope_ids: list[int] = []
