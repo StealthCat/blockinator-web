@@ -592,3 +592,37 @@ input[type=file]{padding:8px}
   .icon-button{width:42px}
   .hero-card{height:205px}
 }
+
+
+/* Reverse-DNS client identity */
+.client-identity{
+  display:inline-grid;
+  gap:2px;
+  min-width:0;
+  vertical-align:middle;
+}
+.client-name{
+  display:block;
+  max-width:260px;
+  overflow:hidden;
+  color:#e7f5fc;
+  font-size:12px;
+  font-weight:750;
+  line-height:1.25;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.client-address{
+  display:block;
+  color:#6e8da1;
+  font-size:10.5px;
+  line-height:1.25;
+}
+.client-no-ptr{
+  color:#536f82;
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font-style:italic;
+}
+@media(max-width:760px){
+  .client-name{max-width:190px}
+}
