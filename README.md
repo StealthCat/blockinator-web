@@ -252,11 +252,20 @@ Only lists whose source type is **manual** expose this editor. URL-backed and up
 
 
 
+
+### Log timestamp timezone
+
+Query-log timestamps are stored in UTC for stable ordering and retention, then converted for display using **System Settings → Default timezone**.
+
+This applies to both the Dashboard's recent DNS activity and the full Query Log. The displayed timestamp includes the active timezone abbreviation, such as `EDT` or `EST`, and automatically follows daylight-saving-time rules for the configured IANA timezone.
+
+Older rows written by SQLite as timezone-less `CURRENT_TIMESTAMP` values are also interpreted as UTC before display conversion.
+
 ### Default schedule timezone
 
-**System Settings** includes a **Default schedule timezone** field. Enter any valid IANA timezone such as `America/New_York`.
+**System Settings** includes a **Default timezone** field. Enter any valid IANA timezone such as `America/New_York`.
 
-The saved system timezone is used to prefill the timezone for newly created block-list and policy-target schedules. Changing it does not rewrite existing schedules; each existing schedule keeps the timezone already saved with it.
+The saved system timezone is used for query-log display and to prefill the timezone for newly created block-list and policy-target schedules. Changing it does not rewrite existing schedules; each existing schedule keeps the timezone already saved with it.
 
 The `TZ` environment value remains a bootstrap/fallback value. On a new database, Blockinator seeds the persisted default timezone from `TZ`; after that, changes made in System Settings remain authoritative across restarts.
 
@@ -401,7 +410,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **32 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **36 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
