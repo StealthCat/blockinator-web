@@ -21,7 +21,7 @@ from .policy import PolicyEngine
 from .rdns import ReverseDnsResolver
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.6.0"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -352,52 +352,360 @@ def lists_page(request: Request):
     s = require_session(request)
     with db.connect() as con:
         rows = con.execute("SELECT * FROM blocklists ORDER BY name COLLATE NOCASE").fetchall()
+        scopes = con.execute("SELECT * FROM scopes ORDER BY kind,name COLLATE NOCASE").fetchall()
+        membership_rows = con.execute(
+            "SELECT blocklist_id,scope_id FROM scope_blocklists"
+        ).fetchall()
+
+    memberships: dict[int, set[int]] = {}
+    for membership in membership_rows:
+        memberships.setdefault(int(membership["blocklist_id"]), set()).add(int(membership["scope_id"]))
+
+    client_names = rdns.resolve_many(
+        scope["target"] for scope in scopes if scope["kind"] == "client"
+    )
+    networks = [scope for scope in scopes if scope["kind"] == "network"]
+    clients = [scope for scope in scopes if scope["kind"] == "client"]
+
+    def scope_option(scope, selected: set[int]) -> str:
+        checked = " checked" if int(scope["id"]) in selected else ""
+        if scope["kind"] == "client":
+            target_html = client_identity_html(scope["target"], client_names)
+            kind_label = "Endpoint"
+        else:
+            target_html = f'<span class="scope-target mono">{esc(scope["target"])}</span>'
+            kind_label = "Network"
+        return (
+            f'<label class="scope-option">'
+            f'<input type="checkbox" name="scope_id" value="{int(scope["id"])}"{checked}>'
+            f'<span class="scope-option-copy"><span class="scope-option-title">'
+            f'<b>{esc(scope["name"])}</b><small>{kind_label}</small></span>{target_html}</span>'
+            f'</label>'
+        )
+
+    def scope_editor(selected: set[int]) -> str:
+        if not scopes:
+            return (
+                '<div class="scope-empty">No networks or endpoints exist yet. '
+                '<a href="/scopes#add-scope">Create one first →</a></div>'
+            )
+        network_html = "".join(scope_option(scope, selected) for scope in networks)
+        client_html = "".join(scope_option(scope, selected) for scope in clients)
+        return (
+            '<div class="scope-assignment-grid">'
+            '<section class="scope-group"><div class="scope-group-head"><b>Networks</b>'
+            f'<span>{len(networks)}</span></div>'
+            f'{network_html or "<p class=\"scope-empty-inline\">No network scopes.</p>"}</section>'
+            '<section class="scope-group"><div class="scope-group-head"><b>Endpoints</b>'
+            f'<span>{len(clients)}</span></div>'
+            f'{client_html or "<p class=\"scope-empty-inline\">No endpoint scopes.</p>"}</section>'
+            '</div>'
+        )
+
     cards = ""
     for r in rows:
-        cards += f'''<article class="list-card"><div class="list-card-top"><div><h3>{esc(r["name"])}</h3><p>{esc(r["source_url"] or "Manual / uploaded list")}</p></div><span class="pill {"green" if r["enabled"] else "gray"}">{"Enabled" if r["enabled"] else "Disabled"}</span></div>
-        <div class="list-meta"><span><b>{int(r["entry_count"]):,}</b> entries</span><span>{esc(r["format"])}</span><span>{"Global" if r["use_globally"] else "Scoped"}</span></div>
-        <div class="actions"><form method="post" action="/admin/lists/{r["id"]}/toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button">{"Disable" if r["enabled"] else "Enable"}</button></form>
-        <form method="post" action="/admin/lists/{r["id"]}/delete" onsubmit="return confirm('Delete this list?')"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button danger">Delete</button></form></div></article>'''
+        selected = memberships.get(int(r["id"]), set())
+        assignment_text = (
+            f'Global + {len(selected)} scoped assignment{"s" if len(selected) != 1 else ""}'
+            if r["use_globally"] and selected
+            else "Global"
+            if r["use_globally"]
+            else f'{len(selected)} scoped assignment{"s" if len(selected) != 1 else ""}'
+            if selected
+            else "No assignments"
+        )
+        format_options = "".join(
+            f'<option value="{fmt}"{" selected" if r["format"] == fmt else ""}>{fmt}</option>'
+            for fmt in ("auto", "hosts", "adblock", "domains")
+        )
+        error_html = (
+            f'<div class="list-warning">Last refresh error: {esc(r["last_error"])}</div>'
+            if r["last_error"] else ""
+        )
+        source_label = r["source_url"] or (
+            "Uploaded list" if r["source_type"] == "upload" else "Manual list"
+        )
+        refresh_button = (
+            '<button class="small-button" type="submit" name="action" value="refresh">Save & refresh URL</button>'
+            if r["source_url"] else ""
+        )
+
+        cards += f'''<article class="list-card editable-list-card" id="list-{int(r["id"])}">
+          <div class="list-card-summary">
+            <div class="list-card-top">
+              <div class="list-title-block"><h3>{esc(r["name"])}</h3><p>{esc(source_label)}</p></div>
+              <span class="pill {"green" if r["enabled"] else "gray"}">{"Enabled" if r["enabled"] else "Disabled"}</span>
+            </div>
+            <div class="list-meta">
+              <span><b>{int(r["entry_count"]):,}</b> entries</span>
+              <span>{esc(r["format"])}</span>
+              <span>{esc(assignment_text)}</span>
+              <span>Updated {esc(r["last_updated"] or "Never")}</span>
+            </div>
+            {error_html}
+            <div class="actions list-card-actions">
+              <form method="post" action="/admin/lists/{int(r["id"])}/toggle">
+                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+                <button class="small-button">{"Disable" if r["enabled"] else "Enable"}</button>
+              </form>
+              <a class="small-button edit-link" href="#edit-list-{int(r["id"])}">Edit & assign</a>
+              <form method="post" action="/admin/lists/{int(r["id"])}/delete" onsubmit="return confirm('Delete this list and its scope assignments?')">
+                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+                <button class="small-button danger">Delete</button>
+              </form>
+            </div>
+          </div>
+          <details class="list-editor" id="edit-list-{int(r["id"])}">
+            <summary><span><b>Edit list</b><small>Settings, contents, networks and endpoints</small></span><span class="editor-chevron">⌄</span></summary>
+            <div class="list-edit-body">
+              <form method="post" action="/admin/lists/{int(r["id"])}/edit" enctype="multipart/form-data" class="form-grid list-edit-form">
+                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+                <label>Name<input name="name" value="{esc(r["name"])}" required></label>
+                <label>Format<select name="format">{format_options}</select></label>
+                <label class="full">Source URL<input name="source_url" value="{esc(r["source_url"] or "")}" placeholder="https://example.com/list.txt"></label>
+                <label>Refresh interval (minutes)<input type="number" name="refresh_minutes" min="1" max="10080" value="{int(r["refresh_minutes"])}"></label>
+                <label class="check"><input type="checkbox" name="enabled" value="1"{" checked" if r["enabled"] else ""}> List enabled</label>
+                <label class="check full"><input type="checkbox" name="global_list" value="1"{" checked" if r["use_globally"] else ""}> Apply globally in addition to any selected scopes</label>
+
+                <div class="form-section full">
+                  <div class="form-section-head"><div><b>Scope assignments</b><p>Select every network and endpoint that should use this list.</p></div><span>{len(selected)} selected</span></div>
+                  {scope_editor(selected)}
+                </div>
+
+                <div class="form-section full replacement-section">
+                  <div class="form-section-head"><div><b>Replace list contents</b><p>Optional. Leave both fields blank to keep the current {int(r["entry_count"]):,} entries.</p></div></div>
+                  <label>Upload replacement file<input type="file" name="replacement_file"></label>
+                  <label>Or paste replacement rules<textarea name="replacement_text" rows="5" placeholder="One domain per line, hosts format, or supported Adblock domain rules"></textarea></label>
+                </div>
+
+                <div class="editor-actions full">
+                  <button class="primary-button" type="submit" name="action" value="save">Save changes</button>
+                  {refresh_button}
+                  <a class="small-button" href="#list-{int(r["id"])}">Close editor</a>
+                </div>
+              </form>
+            </div>
+          </details>
+        </article>'''
+
     if not cards:
-        cards = '<div class="empty-card">No block lists yet. Add one below.</div>'
-    body = f'''<div class="split-grid"><section class="panel"><div class="panel-head"><div><h3>Managed block lists</h3><p>Multiple independent lists can be enabled globally or attached to individual scopes.</p></div></div><div class="card-grid">{cards}</div></section>
-    <section class="panel action-panel" id="add-list"><div class="panel-kicker">New source</div><h3>Add block list</h3><p class="panel-help">Import from a URL, upload a file, or paste rules directly. Blockinator will normalize supported formats automatically.</p><form method="post" action="/admin/lists" enctype="multipart/form-data" class="form-grid">
-      <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
-      <label>Name<input name="name" required></label><label>Format<select name="format"><option>auto</option><option>hosts</option><option>adblock</option><option>domains</option></select></label>
-      <label class="full">Source URL (optional)<input name="source_url" placeholder="https://example.com/list.txt"></label>
-      <label class="full">Upload file (optional)<input type="file" name="file"></label>
-      <label class="full">Paste domains / hosts / adblock rules<textarea name="text" rows="8"></textarea></label>
-      <label class="check"><input type="checkbox" name="global_list" value="1" checked> Use globally</label>
-      <button class="primary-button" type="submit">Import list</button>
-    </form></section></div>'''
+        cards = '<div class="empty-card">No block lists yet. Import one to start building policy.</div>'
+
+    new_scope_editor = scope_editor(set())
+    body = f'''<div class="split-grid blocklist-layout">
+      <section class="panel">
+        <div class="panel-head"><div><div class="panel-kicker">Policy sources</div><h3>Managed block lists</h3><p>Edit each list and assign it to networks or exact endpoints without leaving this page.</p></div><span class="result-count">{len(rows)} lists</span></div>
+        <div class="blocklist-list">{cards}</div>
+      </section>
+      <section class="panel action-panel" id="add-list">
+        <div class="panel-kicker">New source</div><h3>Add block list</h3>
+        <p class="panel-help">Import from a URL, upload a file, or paste rules directly. You can make the list global and/or assign it to specific scopes immediately.</p>
+        <form method="post" action="/admin/lists" enctype="multipart/form-data" class="form-grid">
+          <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+          <label>Name<input name="name" required></label>
+          <label>Format<select name="format"><option>auto</option><option>hosts</option><option>adblock</option><option>domains</option></select></label>
+          <label class="full">Source URL (optional)<input name="source_url" placeholder="https://example.com/list.txt"></label>
+          <label>Refresh interval (minutes)<input type="number" name="refresh_minutes" min="1" max="10080" value="1440"></label>
+          <label class="check"><input type="checkbox" name="global_list" value="1" checked> Apply globally</label>
+          <label class="full">Upload file (optional)<input type="file" name="file"></label>
+          <label class="full">Paste domains / hosts / adblock rules<textarea name="text" rows="7"></textarea></label>
+          <div class="form-section full">
+            <div class="form-section-head"><div><b>Initial scope assignments</b><p>Optional when the list is global; useful for scoped-only lists.</p></div></div>
+            {new_scope_editor}
+          </div>
+          <button class="primary-button full" type="submit">Import list</button>
+        </form>
+      </section>
+    </div>'''
     return page(request, "Block Lists", "lists", body, s)
 
+
+def _scope_ids_from_form(form) -> list[int]:
+    scope_ids: list[int] = []
+    for raw in form.getlist("scope_id"):
+        try:
+            scope_ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    return list(dict.fromkeys(scope_ids))
+
+
+def _save_list_scope_assignments(con, list_id: int, scope_ids: list[int]) -> int:
+    con.execute("DELETE FROM scope_blocklists WHERE blocklist_id=?", (list_id,))
+    if not scope_ids:
+        return 0
+    placeholders = ",".join("?" for _ in scope_ids)
+    valid_rows = con.execute(
+        f"SELECT id FROM scopes WHERE id IN ({placeholders})",
+        scope_ids,
+    ).fetchall()
+    valid_ids = [int(row["id"]) for row in valid_rows]
+    con.executemany(
+        "INSERT OR IGNORE INTO scope_blocklists(scope_id,blocklist_id) VALUES(?,?)",
+        [(scope_id, list_id) for scope_id in valid_ids],
+    )
+    return len(valid_ids)
+
+
 @app.post("/admin/lists")
-async def add_list(request: Request, name: str = Form(...), format: str = Form("auto"), source_url: str = Form(""), text: str = Form(""), global_list: str | None = Form(None), file: UploadFile | None = File(default=None)):
-    s, _ = await require_post_session(request)
+async def add_list(request: Request):
+    _, form = await require_post_session(request)
+    name = str(form.get("name", "")).strip()
+    format_name = str(form.get("format", "auto")).strip().lower()
+    source_url = str(form.get("source_url", "")).strip()
+    text = str(form.get("text", ""))
+    global_list = str(form.get("global_list", "")) == "1"
+    scope_ids = _scope_ids_from_form(form)
+
+    if not name:
+        return redirect("/lists", error="List name is required")
+    if format_name not in {"auto", "hosts", "adblock", "domains"}:
+        return redirect("/lists", error="Unsupported block-list format")
+    try:
+        refresh_minutes = max(1, min(int(form.get("refresh_minutes", "1440")), 10080))
+    except (TypeError, ValueError):
+        refresh_minutes = 1440
+
     source_type = "manual"
     content = text
-    if file and file.filename:
-        content = (await file.read()).decode("utf-8", errors="replace")
+    file_obj = form.get("file")
+    if getattr(file_obj, "filename", None):
+        content = (await file_obj.read()).decode("utf-8", errors="replace")
         source_type = "upload"
-    elif source_url.strip():
-        content = fetch_url(source_url.strip())
+    elif source_url:
+        try:
+            content = fetch_url(source_url)
+        except Exception as e:
+            return redirect("/lists", error=f"Could not fetch list URL: {e}")
         source_type = "url"
+
     if not content.strip():
         return redirect("/lists", error="Provide a URL, upload, or pasted list content")
+
     with db.connect() as con:
         try:
-            cur = con.execute("INSERT INTO blocklists(name,source_type,source_url,format,use_globally) VALUES(?,?,?,?,?)", (name.strip(), source_type, source_url.strip() or None, format, 1 if global_list else 0))
+            cur = con.execute(
+                "INSERT INTO blocklists(name,source_type,source_url,format,use_globally,refresh_minutes) VALUES(?,?,?,?,?,?)",
+                (name, source_type, source_url or None, format_name, 1 if global_list else 0, refresh_minutes),
+            )
+            list_id = int(cur.lastrowid)
         except Exception as e:
             return redirect("/lists", error=str(e))
-        list_id = int(cur.lastrowid)
+
     try:
-        count, ignored = import_list(list_id, content, format)
+        count, ignored = import_list(list_id, content, format_name)
+        with db.connect() as con:
+            assigned = _save_list_scope_assignments(con, list_id, scope_ids)
     except Exception as e:
         with db.connect() as con:
             con.execute("DELETE FROM blocklists WHERE id=?", (list_id,))
         return redirect("/lists", error=f"Import failed: {e}")
-    return redirect("/lists", notice=f"Imported {count:,} entries ({ignored:,} ignored)")
+
+    engine.reload()
+    return redirect(
+        f"/lists#list-{list_id}",
+        notice=f"Imported {count:,} entries, ignored {ignored:,}, assigned to {assigned} scope{'s' if assigned != 1 else ''}",
+    )
+
+
+@app.post("/admin/lists/{list_id}/edit")
+async def edit_list(list_id: int, request: Request):
+    _, form = await require_post_session(request)
+    name = str(form.get("name", "")).strip()
+    format_name = str(form.get("format", "auto")).strip().lower()
+    source_url = str(form.get("source_url", "")).strip()
+    enabled = str(form.get("enabled", "")) == "1"
+    global_list = str(form.get("global_list", "")) == "1"
+    action = str(form.get("action", "save")).strip().lower()
+    replacement_text = str(form.get("replacement_text", ""))
+    replacement_file = form.get("replacement_file")
+    scope_ids = _scope_ids_from_form(form)
+
+    if not name:
+        return redirect(f"/lists#edit-list-{list_id}", error="List name is required")
+    if format_name not in {"auto", "hosts", "adblock", "domains"}:
+        return redirect(f"/lists#edit-list-{list_id}", error="Unsupported block-list format")
+    try:
+        refresh_minutes = max(1, min(int(form.get("refresh_minutes", "1440")), 10080))
+    except (TypeError, ValueError):
+        refresh_minutes = 1440
+
+    with db.connect() as con:
+        existing = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
+    if not existing:
+        return redirect("/lists", error="Block list not found")
+
+    replacement_content: str | None = None
+    source_type = str(existing["source_type"])
+
+    try:
+        if action == "refresh":
+            if not source_url:
+                return redirect(
+                    f"/lists#edit-list-{list_id}",
+                    error="A source URL is required to refresh this list",
+                )
+            replacement_content = fetch_url(source_url)
+            source_type = "url"
+        elif getattr(replacement_file, "filename", None):
+            replacement_content = (await replacement_file.read()).decode("utf-8", errors="replace")
+            source_type = "upload"
+        elif replacement_text.strip():
+            replacement_content = replacement_text
+            source_type = "manual"
+        elif source_url:
+            source_type = "url"
+        elif source_type == "url":
+            source_type = "manual"
+    except Exception as e:
+        return redirect(f"/lists#edit-list-{list_id}", error=f"Could not refresh list: {e}")
+
+    with db.connect() as con:
+        try:
+            con.execute("BEGIN")
+            con.execute(
+                """
+                UPDATE blocklists
+                SET name=?, source_type=?, source_url=?, format=?, enabled=?,
+                    use_globally=?, refresh_minutes=?
+                WHERE id=?
+                """,
+                (
+                    name,
+                    source_type,
+                    source_url or None,
+                    format_name,
+                    1 if enabled else 0,
+                    1 if global_list else 0,
+                    refresh_minutes,
+                    list_id,
+                ),
+            )
+            assigned = _save_list_scope_assignments(con, list_id, scope_ids)
+            con.execute("COMMIT")
+        except Exception as e:
+            con.execute("ROLLBACK")
+            return redirect(f"/lists#edit-list-{list_id}", error=f"Could not save list: {e}")
+
+    replaced_notice = ""
+    if replacement_content is not None:
+        if not replacement_content.strip():
+            return redirect(f"/lists#edit-list-{list_id}", error="Replacement list content is empty")
+        try:
+            count, ignored = import_list(list_id, replacement_content, format_name)
+            replaced_notice = f"; replaced contents with {count:,} entries ({ignored:,} ignored)"
+        except Exception as e:
+            return redirect(
+                f"/lists#edit-list-{list_id}",
+                error=f"Settings were saved, but replacing list contents failed: {e}",
+            )
+
+    engine.reload()
+    return redirect(
+        f"/lists#list-{list_id}",
+        notice=f"Saved {name}; {assigned} scoped assignment{'s' if assigned != 1 else ''}{replaced_notice}",
+    )
+
 
 @app.post("/admin/lists/{list_id}/toggle")
 async def toggle_list(list_id: int, request: Request):
@@ -405,7 +713,8 @@ async def toggle_list(list_id: int, request: Request):
     with db.connect() as con:
         con.execute("UPDATE blocklists SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (list_id,))
     engine.reload()
-    return redirect("/lists", notice="List state updated")
+    return redirect(f"/lists#list-{list_id}", notice="List state updated")
+
 
 @app.post("/admin/lists/{list_id}/delete")
 async def delete_list(list_id: int, request: Request):
