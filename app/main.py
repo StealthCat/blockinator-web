@@ -14,6 +14,7 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from .auth import AuthManager, SESSION_COOKIE, SESSION_TTL_SECONDS
 from .blocklists import fetch_url, normalize_domain, parse_blocklist
@@ -2337,7 +2338,7 @@ async def _optional_upload_bytes(form, field_name: str, max_bytes: int = 1024 * 
 @app.post("/admin/settings/tls")
 async def save_tls_settings(request: Request):
     _, form = await require_post_session(request)
-    current_tls_settings = tls_manager.load_settings()
+    current_tls_settings = await run_in_threadpool(tls_manager.load_settings)
     requested_http_redirect = str(form.get("tls_http_redirect", "")) == "1"
     try:
         validate_http_redirect_change(
@@ -2364,7 +2365,8 @@ async def save_tls_settings(request: Request):
         ca_root_pem = await _optional_upload_bytes(form, "tls_acme_ca_root")
         eab_hmac_raw = str(form.get("tls_acme_eab_hmac", ""))
         eab_hmac = eab_hmac_raw if eab_hmac_raw.strip() else None
-        tls_manager.configure(
+        await run_in_threadpool(
+            tls_manager.configure,
             settings,
             certificate_pem=certificate_pem,
             private_key_pem=private_key_pem,
