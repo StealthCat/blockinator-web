@@ -64,6 +64,8 @@ This makes it possible to run either an open-by-default or closed-by-default pol
 
 Blockinator supports multiple independent block lists with their own source, parser, assignments, state, and schedule.
 
+Domains are stored in a normalized global domain table. If the same domain appears in multiple lists, the domain text is stored once and each list keeps a lightweight membership reference to that shared entry. Removing or refreshing one list does not remove the shared domain until its final list membership is gone.
+
 ### Sources
 
 Lists can be created from:
