@@ -1,0 +1,33 @@
+{
+  "admin": {
+    "listen": "0.0.0.0:2019",
+    "config": {
+      "persist": false
+    }
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "bootstrap": {
+          "listen": [
+            ":80"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "blockinator:8080"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}
