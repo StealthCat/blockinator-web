@@ -313,6 +313,7 @@ class PolicyEngine:
         self.global_blocking = True
         self.response_mode = "nxdomain"
         self.unmatched_scope_action = "allow"
+        self.global_blocklist_scope_mode = "all_clients"
         self.logger = QueryLogger(db, self._remember_client_identities)
         self.reload()
 
@@ -452,6 +453,15 @@ class PolicyEngine:
                 if unmatched_scope_action in {"allow", "deny"}
                 else "allow"
             )
+            global_blocklist_scope_mode = settings.get(
+                "global_blocklist_scope_mode",
+                "all_clients",
+            )
+            self.global_blocklist_scope_mode = (
+                global_blocklist_scope_mode
+                if global_blocklist_scope_mode in {"all_clients", "matched_scopes"}
+                else "all_clients"
+            )
 
     @staticmethod
     def suffixes(domain: str) -> list[str]:
@@ -524,10 +534,17 @@ class PolicyEngine:
             else:
                 effective_scope = None
 
+            include_global_lists = (
+                self.global_blocklist_scope_mode == "all_clients"
+                or effective_scope is not None
+            )
             active_ids = {
                 lid
                 for lid, bl in self.blocklists.items()
-                if bl.enabled and bl.use_globally and bl.schedule_is_active(now_utc)
+                if include_global_lists
+                and bl.enabled
+                and bl.use_globally
+                and bl.schedule_is_active(now_utc)
             }
             if network_scope is not None:
                 active_ids.update(network_scope.blocklist_ids)
