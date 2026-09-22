@@ -103,6 +103,9 @@
     form.querySelectorAll("[data-tls-acme-fields]").forEach(function (node) {
       node.hidden = mode !== "acme";
     });
+    form.querySelectorAll("[data-tls-http-behavior]").forEach(function (node) {
+      node.hidden = mode === "http";
+    });
   }
 
   function initializeTlsSettings() {
