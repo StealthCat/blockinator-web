@@ -1,10 +1,31 @@
 services:
+  caddy:
+    image: caddy:2.11.4-alpine
+    container_name: blockinator-caddy
+    restart: unless-stopped
+    user: "0:0"
+    ports:
+      - "${POLICY_PORT:-8080}:80"
+      - "${HTTPS_PORT:-8443}:443"
+      - "${HTTPS_PORT:-8443}:443/udp"
+    volumes:
+      - ./caddy/Caddyfile.bootstrap:/etc/caddy/Caddyfile:ro
+      - ./data/tls:/blockinator-tls:ro
+      - ./data/caddy:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2019/config/ >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 5s
+      retries: 12
+
   blockinator:
     build: .
     container_name: blockinator
     restart: unless-stopped
-    ports:
-      - "${POLICY_PORT:-8080}:8080"
+    depends_on:
+      caddy:
+        condition: service_healthy
     environment:
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-change-this-admin-password}"
@@ -19,6 +40,8 @@ services:
       RDNS_PAGE_BUDGET_SECONDS: "${RDNS_PAGE_BUDGET_SECONDS:-1.25}"
       RDNS_CACHE_TTL_SECONDS: "${RDNS_CACHE_TTL_SECONDS:-300}"
       RDNS_NEGATIVE_TTL_SECONDS: "${RDNS_NEGATIVE_TTL_SECONDS:-60}"
+      CADDY_ADMIN_URL: "http://caddy:2019"
+      TLS_RECONCILE_SECONDS: "${TLS_RECONCILE_SECONDS:-30}"
       DATA_DIR: /data
     volumes:
       - ./data:/data
