@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.14.1 — Dashboard allow-reason cleanup
+
+- Dashboard recent DNS activity now leaves the **Reason** column blank for allowed queries.
+- Blocked queries continue to display their blocking reason.
+- Dashboard behavior now matches the full Query Log display.
+- Updated the application version to 1.14.1.
+
 ## 1.14.0 — Automatic per-list URL refresh
 
 - Added a background refresh worker for URL-backed block lists.
