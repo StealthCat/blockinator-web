@@ -277,6 +277,17 @@ class TlsManager:
                 mode = 0o600 if path in {self.key_path, self.eab_hmac_path} else 0o644
                 self._write_atomic(path, data, mode)
 
+    def _redact_caddy_error(self, value: str) -> str:
+        redacted = value
+        try:
+            if self.eab_hmac_path.exists():
+                secret = self.eab_hmac_path.read_text(encoding="utf-8").strip()
+                if secret:
+                    redacted = redacted.replace(secret, "[redacted]")
+        except OSError:
+            pass
+        return redacted
+
     def _request(
         self,
         path: str,
@@ -300,6 +311,7 @@ class TlsManager:
                 return response.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace").strip()
+            detail = self._redact_caddy_error(detail)
             raise RuntimeError(
                 f"Caddy admin API returned HTTP {exc.code}: {detail or exc.reason}"
             ) from exc
