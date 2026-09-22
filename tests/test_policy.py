@@ -821,3 +821,52 @@ def test_dual_stack_network_uses_family_specific_most_specific_match():
     assert e.decide("2001:db8:9999::10", "ads.example.com").block is False
     e.close()
     td.cleanup()
+
+
+def test_unmatched_scope_default_allow_preserves_existing_behavior():
+    td, db, e = setup_engine()
+
+    decision = e.decide("192.168.1.2", "clean.example.com")
+
+    assert decision.block is False
+    assert decision.reason == "not_listed"
+    assert decision.matched_scope is None
+    e.close()
+    td.cleanup()
+
+
+def test_unmatched_scope_default_deny_blocks_otherwise_allowed_query():
+    td, db, e = setup_engine()
+    db.set_setting("unmatched_scope_action", "deny")
+    e.reload()
+
+    decision = e.decide("192.168.1.2", "clean.example.com")
+
+    assert decision.block is True
+    assert decision.reason == "no_scope_default_deny"
+    assert decision.matched_scope is None
+
+    blocklist_decision = e.decide("192.168.1.2", "ads.example.com")
+    assert blocklist_decision.block is True
+    assert blocklist_decision.reason == "blocklist_match"
+    assert blocklist_decision.matched_list == "global"
+    e.close()
+    td.cleanup()
+
+
+def test_unmatched_scope_default_deny_does_not_override_matching_scope():
+    td, db, e = setup_engine()
+    db.set_setting("unmatched_scope_action", "deny")
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO scopes(name,kind,target,state) VALUES('lan','network','192.168.1.0/24','active')"
+        )
+    e.reload()
+
+    decision = e.decide("192.168.1.2", "clean.example.com")
+
+    assert decision.block is False
+    assert decision.reason == "not_listed"
+    assert decision.matched_scope == "lan"
+    e.close()
+    td.cleanup()
