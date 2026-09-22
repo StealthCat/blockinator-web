@@ -24,7 +24,7 @@ from .refresher import BlocklistRefresher
 from .timeutil import format_timestamp_for_timezone
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.14.0"
+APP_VERSION = "1.14.1"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -572,7 +572,7 @@ def dashboard(request: Request):
     recent_client_names = log_client_names(recent)
     display_timezone = system_default_timezone()
     rows = "".join(
-        f'<tr><td title="Stored in UTC">{esc(format_timestamp_for_timezone(r["ts"], display_timezone))}</td><td>{querying_server_html(r["server_id"])}</td><td>{client_identity_html(r["client_ip"], recent_client_names)}</td><td>{esc(r["qname"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["reason"])}</td></tr>'
+        f'<tr><td title="Stored in UTC">{esc(format_timestamp_for_timezone(r["ts"], display_timezone))}</td><td>{querying_server_html(r["server_id"])}</td><td>{client_identity_html(r["client_ip"], recent_client_names)}</td><td>{esc(r["qname"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["reason"] if r["blocked"] else "")}</td></tr>'
         for r in recent
     ) or '<tr><td colspan="6" class="empty">No DNS decisions recorded yet.</td></tr>'
     body = f'''
