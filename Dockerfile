@@ -10,6 +10,7 @@ WORKDIR /srv
 COPY requirements.txt /srv/requirements.txt
 RUN pip install --no-cache-dir -r /srv/requirements.txt
 COPY app /srv/app
+COPY tools /srv/tools
 RUN mkdir -p /data
 VOLUME ["/data"]
 EXPOSE 8080
