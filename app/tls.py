@@ -11,10 +11,10 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization
+if TYPE_CHECKING:
+    from cryptography import x509
 
 from .db import Database
 
@@ -111,6 +111,8 @@ def validate_acme_directory(value: str) -> str:
 
 
 def _public_key_bytes(key) -> bytes:
+    from cryptography.hazmat.primitives import serialization
+
     return key.public_bytes(
         serialization.Encoding.DER,
         serialization.PublicFormat.SubjectPublicKeyInfo,
@@ -128,7 +130,9 @@ def _dnsname_matches(hostname: str, pattern: str) -> bool:
     return hostname == pattern
 
 
-def _certificate_info(cert: x509.Certificate) -> CertificateInfo:
+def _certificate_info(cert: "x509.Certificate") -> CertificateInfo:
+    from cryptography import x509
+
     try:
         sans = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
         dns_names = tuple(sans.value.get_values_for_type(x509.DNSName))
@@ -144,7 +148,9 @@ def _certificate_info(cert: x509.Certificate) -> CertificateInfo:
     )
 
 
-def _load_leaf_certificate(pem: bytes) -> tuple[x509.Certificate, CertificateInfo]:
+def _load_leaf_certificate(pem: bytes) -> tuple["x509.Certificate", CertificateInfo]:
+    from cryptography import x509
+
     try:
         certs = x509.load_pem_x509_certificates(pem)
     except ValueError as exc:
@@ -164,6 +170,8 @@ def validate_certificate_and_key(
     key_pem: bytes,
     hostname: str,
 ) -> CertificateInfo:
+    from cryptography.hazmat.primitives import serialization
+
     cert, info = _load_leaf_certificate(cert_pem)
     try:
         key = serialization.load_pem_private_key(key_pem, password=None)
@@ -190,6 +198,8 @@ def validate_certificate_and_key(
 
 
 def validate_ca_root(pem: bytes) -> None:
+    from cryptography import x509
+
     try:
         certs = x509.load_pem_x509_certificates(pem)
     except ValueError as exc:
