@@ -1886,3 +1886,13 @@ input[type=file]{padding:8px}
     overflow-wrap:anywhere;
   }
 }
+
+
+/* =========================================================
+   Blockinator 1.14 — per-list URL refresh cadence
+   ========================================================= */
+.refresh-meta.scheduled{
+  color:#7fc7d6;
+  border-color:rgba(72,190,210,.18);
+  background:rgba(72,190,210,.06);
+}
