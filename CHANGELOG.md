@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.15.8 — SQLite refresh contention fix
+
+- Fixed intermittent URL block-list refresh failures that could report `database is locked` while query logging or admin writes were active.
+- SQLite WAL mode is now established once during database startup instead of reissuing `PRAGMA journal_mode=WAL` on every connection.
+- Block-list refresh replacement transactions now use `BEGIN IMMEDIATE` so the writer slot is acquired before taking the metadata snapshot, avoiding deferred read-to-write upgrade races.
+- Added bounded retries for transient SQLite busy/locked errors during refresh commits.
+- Refresh error bookkeeping no longer allows a secondary SQLite lock to terminate the background refresh operation.
+- Added a concurrency regression test covering refresh behavior while another writer temporarily owns the database.
+- Updated the application version to 1.15.8.
+
 ## 1.15.7 — Global block-list scope mode
 
 - Added a System Settings option controlling whether globally assigned block lists apply to all clients or only clients with a matching active policy target.
