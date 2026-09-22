@@ -37,6 +37,16 @@ The application is packaged as a Docker service and includes a responsive, multi
 - Reverse-DNS client names displayed alongside client IP addresses, with bounded lookups and caching.
 - SQLite persistence and automatic schema migration.
 
+## System Settings layout
+
+System Settings is organized into three tabs:
+
+- **DNS & logs** — blocked-response behavior, query-log retention, and default timezone.
+- **HTTPS & TLS** — HTTP-only, uploaded-certificate, and ACME configuration.
+- **Runtime** — application, proxy, storage, and current TLS status.
+
+The HTTPS & TLS tab shows only the controls required for the currently selected setup type. Hidden modes are also disabled, so irrelevant fields are not submitted with the form.
+
 ## HTTPS, uploaded certificates, and ACME
 
 The `acme-tls` branch adds a Caddy sidecar in front of Blockinator. Blockinator itself continues to listen only on the Docker-internal HTTP port, while Caddy owns the host-facing HTTP and HTTPS ports.
@@ -540,7 +550,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **53 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **55 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
