@@ -84,6 +84,41 @@ TLS_RECONCILE_SECONDS=30
 
 For public ACME HTTP-01/TLS-ALPN-01 validation, the public challenge ports normally need to reach Caddy on standard ports 80 and/or 443. Set `POLICY_PORT=80` and `HTTPS_PORT=443` where required. DNS-01 provider plugins are intentionally not included in this first implementation.
 
+### Redirect-only HTTP
+
+After HTTPS is working, **System Settings → HTTPS & certificates** can disable direct HTTP access while leaving the HTTP listener available for redirects.
+
+The switch can only be changed while the control panel itself is being accessed over HTTPS. This prevents an administrator from enabling redirect-only mode before verifying that HTTPS is reachable.
+
+When enabled:
+
+- requests arriving on the HTTP port receive a **308 Permanent Redirect** to the configured HTTPS hostname;
+- the original path and query string are preserved;
+- POST requests keep their method/body semantics across the redirect;
+- redirects include the configured external `HTTPS_PORT` when it is not the standard port 443; and
+- the Docker HTTP port remains open so browsers, API clients, and ACME HTTP challenge traffic can still reach Caddy.
+
+For example, with:
+
+```env
+POLICY_PORT=8080
+HTTPS_PORT=8443
+```
+
+a request to:
+
+```text
+http://blockinator.example.com:8080/api/v1/decision
+```
+
+is redirected to:
+
+```text
+https://blockinator.example.com:8443/api/v1/decision
+```
+
+With `HTTPS_PORT=443`, the redirect omits the explicit port.
+
 Administrator session cookies automatically become Secure when the request arrives through HTTPS. Blockinator trusts forwarding headers from its internal reverse proxy so the application can correctly detect the original scheme.
 
 ## Quick start
@@ -505,7 +540,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **49 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **53 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
