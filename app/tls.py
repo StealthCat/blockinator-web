@@ -30,6 +30,7 @@ class TlsSettings:
     acme_email: str = ""
     acme_directory: str = DEFAULT_ACME_DIRECTORY
     acme_eab_key_id: str = ""
+    http_redirect: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +234,7 @@ class TlsManager:
             )
             or DEFAULT_ACME_DIRECTORY,
             acme_eab_key_id=self.db.get_setting("tls_acme_eab_key_id", ""),
+            http_redirect=self.db.get_setting("tls_http_redirect", "0") == "1",
         )
 
     def _save_settings(self, settings: TlsSettings) -> None:
@@ -241,6 +243,7 @@ class TlsManager:
         self.db.set_setting("tls_acme_email", settings.acme_email)
         self.db.set_setting("tls_acme_directory", settings.acme_directory)
         self.db.set_setting("tls_acme_eab_key_id", settings.acme_eab_key_id)
+        self.db.set_setting("tls_http_redirect", "1" if settings.http_redirect else "0")
 
     def _set_last_error(self, value: str) -> None:
         self.db.set_setting("tls_last_error", value[:4000])
@@ -329,7 +332,7 @@ class TlsManager:
         if settings.mode not in TLS_MODES:
             raise ValueError("TLS mode must be HTTP only, Uploaded certificate, or ACME")
         if settings.mode == "http":
-            return TlsSettings(mode="http")
+            return TlsSettings(mode="http", http_redirect=False)
 
         hostname = normalize_tls_hostname(settings.hostname)
         email = settings.acme_email.strip()
@@ -341,6 +344,7 @@ class TlsManager:
                 mode="upload",
                 hostname=hostname,
                 acme_directory=directory,
+                http_redirect=bool(settings.http_redirect),
             )
         if email and ("@" not in email or any(ch.isspace() for ch in email)):
             raise ValueError("ACME account email is invalid")
@@ -350,6 +354,7 @@ class TlsManager:
             acme_email=email,
             acme_directory=directory,
             acme_eab_key_id=key_id,
+            http_redirect=bool(settings.http_redirect),
         )
 
     def render_caddyfile(self, settings: TlsSettings | None = None) -> str:
@@ -382,7 +387,18 @@ class TlsManager:
                 ])
         else:
             lines.append("  auto_https off")
-        lines.extend(["}", "", ":80 {", "  reverse_proxy blockinator:8080", "}"])
+        lines.extend(["}", "", ":80 {"])
+        if settings.mode != "http" and settings.http_redirect:
+            try:
+                https_port = int(os.getenv("HTTPS_PORT", "8443"))
+            except ValueError:
+                https_port = 8443
+            port_suffix = "" if https_port == 443 else f":{https_port}"
+            redirect_target = f"https://{settings.hostname}{port_suffix}{{uri}}"
+            lines.append(f"  redir {redirect_target} permanent")
+        else:
+            lines.append("  reverse_proxy blockinator:8080")
+        lines.append("}")
 
         if settings.mode == "upload":
             if not self.cert_path.exists() or not self.key_path.exists():
