@@ -22,7 +22,7 @@ from .policy import PolicyEngine, normalize_hostname_pattern
 from .rdns import ReverseDnsResolver
 from .refresher import BlocklistRefresher
 from .timeutil import format_timestamp_for_timezone
-from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings
+from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
 APP_VERSION = "1.15.1"
@@ -2251,14 +2251,14 @@ async def save_tls_settings(request: Request):
     _, form = await require_post_session(request)
     current_tls_settings = tls_manager.load_settings()
     requested_http_redirect = str(form.get("tls_http_redirect", "")) == "1"
-    if (
-        request.url.scheme != "https"
-        and requested_http_redirect != current_tls_settings.http_redirect
-    ):
-        return redirect(
-            "/settings",
-            error="HTTP redirect behavior can only be changed while System Settings is accessed over HTTPS",
+    try:
+        validate_http_redirect_change(
+            current_tls_settings.http_redirect,
+            requested_http_redirect,
+            request.url.scheme == "https",
         )
+    except ValueError as exc:
+        return redirect("/settings", error=str(exc))
 
     settings = TlsSettings(
         mode=str(form.get("tls_mode", "http")).strip().lower(),
