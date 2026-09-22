@@ -334,14 +334,42 @@ class Database:
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tls_last_applied','')")
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tls_last_error','')")
 
-    def get_setting(self, key: str, default: str = "") -> str:
+    def get_settings(self, defaults: dict[str, str]) -> dict[str, str]:
+        if not defaults:
+            return {}
+        keys = tuple(defaults)
+        placeholders = ",".join("?" for _ in keys)
+        values = dict(defaults)
         with self.connect() as con:
-            row = con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-            return row["value"] if row else default
+            rows = con.execute(
+                f"SELECT key,value FROM settings WHERE key IN ({placeholders})",
+                keys,
+            ).fetchall()
+        for row in rows:
+            values[str(row["key"])] = str(row["value"])
+        return values
+
+    def set_settings(self, values: dict[str, str]) -> None:
+        if not values:
+            return
+        with self.connect() as con:
+            con.execute("BEGIN")
+            try:
+                con.executemany(
+                    """
+                    INSERT INTO settings(key,value)
+                    VALUES(?,?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                    """,
+                    [(key, value) for key, value in values.items()],
+                )
+                con.execute("COMMIT")
+            except Exception:
+                con.execute("ROLLBACK")
+                raise
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        return self.get_settings({key: default})[key]
 
     def set_setting(self, key: str, value: str) -> None:
-        with self.connect() as con:
-            con.execute(
-                "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, value),
-            )
+        self.set_settings({key: value})
