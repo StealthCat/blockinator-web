@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.15.10 — Dashboard block-list reason
+
+- Dashboard Recent DNS activity now shows the triggering block-list name in the **Reason** column for block-list matches.
+- Non-list blocks continue to show their policy reason, such as an unmatched-target default deny.
+- Allowed rows remain blank in the Reason column.
+- Added regression coverage for the Dashboard display behavior.
+- Updated the application version to 1.15.10.
+
 ## 1.15.9 — Deduplicated domain storage
 
 - Normalized block-list storage so each domain string is stored only once globally, regardless of how many block lists contain it.
