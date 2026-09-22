@@ -26,7 +26,7 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.15.9"
+APP_VERSION = "1.15.10"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -591,7 +591,7 @@ def dashboard(request: Request):
             """
             SELECT
               ts,server_id,client_ip,client_name,qname,blocked,reason,
-              matched_scope,policy_scheme
+              matched_scope,matched_list,policy_scheme
             FROM query_log
             ORDER BY id DESC
             LIMIT 8
@@ -609,7 +609,7 @@ def dashboard(request: Request):
         f'<td>{esc(r["matched_scope"] or "—")}</td>'
         f'<td><span class="pill {"red" if r["blocked"] else "green"}">'
         f'{"Blocked" if r["blocked"] else "Allowed"}</span></td>'
-        f'<td>{esc(r["reason"] if r["blocked"] else "")}</td></tr>'
+        f'<td>{esc((r["matched_list"] or r["reason"] or "") if r["blocked"] else "")}</td></tr>'
         for r in recent
     ) or '<tr><td colspan="8" class="empty">No DNS decisions recorded yet.</td></tr>'
     body = f'''
