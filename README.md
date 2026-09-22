@@ -11,6 +11,8 @@ The application is packaged as a Docker service and includes a responsive, multi
 ## Features
 
 - Polished Blockinator web console with dashboard, block-list, scope, query-log, security, and settings pages.
+- Optional HTTPS termination through a managed Caddy sidecar, with uploaded PEM certificates or ACME issuance.
+- Custom ACME directory URLs, private CA root certificates, and External Account Binding (EAB) are supported from System Settings.
 - Global pause/resume for DNS blocking.
 - Editable policy targets for networks, exact client IPs, and reverse-DNS hostnames, with block-list assignment directly from the Policy Targets page.
 - A single Network target can carry dual-stack IPv4 and IPv6 CIDRs concurrently, sharing one state, schedule, and block-list assignment set.
@@ -34,6 +36,55 @@ The application is packaged as a Docker service and includes a responsive, multi
 - Configurable row-count and time-based query-log retention, enforced together with immediate pruning when settings change.
 - Reverse-DNS client names displayed alongside client IP addresses, with bounded lookups and caching.
 - SQLite persistence and automatic schema migration.
+
+## HTTPS, uploaded certificates, and ACME
+
+The `acme-tls` branch adds a Caddy sidecar in front of Blockinator. Blockinator itself continues to listen only on the Docker-internal HTTP port, while Caddy owns the host-facing HTTP and HTTPS ports.
+
+Default port mappings are:
+
+```text
+HTTP   host:8080 -> Caddy:80
+HTTPS  host:8443 -> Caddy:443
+```
+
+Change these in `.env` when desired:
+
+```env
+POLICY_PORT=80
+HTTPS_PORT=443
+```
+
+Existing installations remain in **HTTP only** mode after upgrade.
+
+Open **System Settings → HTTPS & certificates** to select one of three modes:
+
+- **HTTP only** — no TLS listener is configured.
+- **Uploaded certificate** — upload a PEM certificate/full-chain and matching unencrypted PEM private key.
+- **ACME / custom ACME server** — let Caddy issue and renew the certificate automatically.
+
+Uploaded certificates are validated before activation. Blockinator verifies that the certificate and private key match, checks the validity period, and confirms that the configured HTTPS hostname is covered by the certificate's DNS SANs. The private key is stored under `/data/tls` with restrictive filesystem permissions.
+
+ACME mode supports:
+
+- account email;
+- a configurable ACME directory URL;
+- an optional PEM root certificate for a private/internal ACME CA;
+- optional External Account Binding (EAB) key ID and HMAC secret.
+
+The EAB HMAC secret is stored as a protected file under `/data/tls`; it is not stored in SQLite. Caddy configuration persistence is disabled so the generated Caddy configuration is not autosaved with the EAB secret embedded. Caddy's certificate storage under `./data/caddy` remains persistent for normal ACME account/certificate lifecycle data.
+
+Blockinator validates candidate Caddy configuration through the internal Caddy admin API before loading it. If activation fails, uploaded TLS material is restored and the previous Caddy configuration is re-applied. The Caddy admin API is available only on the Compose network and is not published to the host.
+
+A background TLS reconciler reapplies the saved configuration after an independent Caddy restart. Its default interval is 30 seconds:
+
+```env
+TLS_RECONCILE_SECONDS=30
+```
+
+For public ACME HTTP-01/TLS-ALPN-01 validation, the public challenge ports normally need to reach Caddy on standard ports 80 and/or 443. Set `POLICY_PORT=80` and `HTTPS_PORT=443` where required. DNS-01 provider plugins are intentionally not included in this first implementation.
+
+Administrator session cookies automatically become Secure when the request arrives through HTTPS. Blockinator trusts forwarding headers from its internal reverse proxy so the application can correctly detect the original scheme.
 
 ## Quick start
 
@@ -70,8 +121,13 @@ The first startup seeds the database administrator and initial API key using `AD
 │   ├── auth.py
 │   ├── policy.py
 │   ├── blocklists.py
+│   ├── tls.py
 │   ├── db.py
 │   └── static/
+├── caddy/
+│   └── Caddyfile.bootstrap
+├── docs/
+│   └── ACME_TLS_PLAN.md
 └── tests/
 ```
 
