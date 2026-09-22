@@ -1,4 +1,6 @@
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 from app.db import Database
@@ -212,3 +214,59 @@ def test_empty_refresh_does_not_wipe_last_good_list():
     assert domains == {"old.example.com"}
 
     td.cleanup()
+
+def test_refresh_waits_for_concurrent_writer_without_recording_lock_error():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    engine = FakeEngine()
+    list_id = _create_url_list(db, "remote", "https://example.test/list.txt", 60)
+
+    refresher = BlocklistRefresher(
+        db,
+        engine,
+        fetcher=lambda url: "new.example.com\n",
+        poll_seconds=5,
+    )
+    result_holder: dict[str, object] = {}
+
+    with db.connect() as blocker:
+        blocker.execute("BEGIN IMMEDIATE")
+        blocker.execute(
+            "UPDATE settings SET value=value WHERE key='global_blocking'"
+        )
+
+        thread = threading.Thread(
+            target=lambda: result_holder.setdefault(
+                "result", refresher.refresh_list(list_id)
+            )
+        )
+        thread.start()
+        time.sleep(0.1)
+        assert thread.is_alive()
+
+        blocker.execute("COMMIT")
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    result = result_holder["result"]
+    assert result.refreshed is True
+    assert result.error is None
+    assert engine.reloads == 1
+
+    with db.connect() as con:
+        row = con.execute(
+            "SELECT last_error FROM blocklists WHERE id=?",
+            (list_id,),
+        ).fetchone()
+        domains = {
+            r["domain"]
+            for r in con.execute(
+                "SELECT domain FROM block_entries WHERE blocklist_id=?",
+                (list_id,),
+            )
+        }
+
+    assert row["last_error"] is None
+    assert domains == {"new.example.com"}
+    td.cleanup()
+
