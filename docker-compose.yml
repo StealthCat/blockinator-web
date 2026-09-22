@@ -4,20 +4,22 @@ services:
     container_name: blockinator-caddy
     restart: unless-stopped
     user: "0:0"
+    command: ["caddy", "run", "--config", "/etc/caddy/caddy.json"]
     ports:
       - "${POLICY_PORT:-8080}:80"
       - "${HTTPS_PORT:-8443}:443"
       - "${HTTPS_PORT:-8443}:443/udp"
     volumes:
-      - ./caddy/Caddyfile.bootstrap:/etc/caddy/Caddyfile:ro
+      - ./caddy/caddy.bootstrap.json:/etc/caddy/caddy.json:ro
       - ./data/tls:/blockinator-tls:ro
       - ./data/caddy:/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2019/config/ >/dev/null 2>&1 || exit 1"]
-      interval: 5s
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2019/config/apps/http/servers >/dev/null 2>&1 || exit 1"]
+      interval: 30s
       timeout: 3s
-      start_period: 5s
-      retries: 12
+      start_period: 10s
+      start_interval: 2s
+      retries: 3
 
   blockinator:
     build: .
