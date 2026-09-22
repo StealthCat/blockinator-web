@@ -18,6 +18,7 @@ The application is packaged as a Docker service and includes a responsive, multi
 - Networks, exact endpoints, and reverse-DNS hostname targets can have recurring weekly schedules with selectable days, times, overnight windows, and IANA timezones.
 - Policy precedence is exact IP endpoint → reverse-DNS hostname → most-specific network → global policy.
 - Multiple independent block lists with URL, upload, and pasted-text imports.
+- URL-backed block lists refresh automatically on each list's independently configured interval.
 - Block lists are editable directly from the Block Lists page, including name, source URL, format, refresh interval, enabled state, and optional content replacement.
 - Manual lists can be edited one domain at a time on a dedicated page, with search, pagination, add, and remove controls.
 - Per-list global assignment plus editable per-network/per-client/per-hostname assignments from the same Block Lists screen.
@@ -299,6 +300,44 @@ Timezone conversion uses Python's IANA timezone database and observes daylight-s
 
 Schedules apply equally to Global lists and lists assigned only to specific networks/endpoints. A list outside its schedule is treated as inactive for that DNS decision.
 
+
+## Automatic URL block-list refresh
+
+URL-backed block lists are refreshed automatically in the background using each list's own **Automatic refresh interval (minutes)** value on the Block Lists page.
+
+For example, these can coexist independently:
+
+```text
+Advertising list     60 minutes
+Malware list         15 minutes
+Telemetry list     1440 minutes
+```
+
+The background scheduler checks for due lists periodically and refreshes only those whose configured interval has elapsed. The default scheduler scan frequency is 30 seconds, so a list normally refreshes within roughly one scheduler scan after becoming due.
+
+On a successful refresh, Blockinator:
+
+- downloads the configured source URL;
+- parses it using that list's selected format;
+- atomically replaces that list's domain entries;
+- updates the entry count and refresh timestamps;
+- clears any prior refresh error; and
+- reloads the in-memory policy engine.
+
+A failed download or parse **does not remove the last known-good list**. Blockinator stores the error, records the attempt time, and waits for that list's configured interval before trying again. An upstream response containing no usable domains is also rejected rather than replacing a working list with an empty one.
+
+Using **Save & refresh URL** performs an immediate refresh and resets the same interval clock, preventing an automatic refresh from immediately following a manual one.
+
+Automatic refresh applies only to URL-backed lists. Uploaded and manual lists are not scheduled for remote refresh.
+
+The scheduler's internal scan frequency can be adjusted with:
+
+```text
+BLOCKLIST_REFRESH_POLL_SECONDS=30
+```
+
+This controls how often Blockinator checks whether lists are due; it does not replace the per-list refresh interval.
+
 ## Editing block lists and scope assignments
 
 The **Block Lists** page is now the central place to manage both list settings and where each list applies.
@@ -410,7 +449,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **36 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **40 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
