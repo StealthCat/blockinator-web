@@ -2298,7 +2298,7 @@ async def save_settings(request: Request):
         ZoneInfo(default_timezone)
     except (ZoneInfoNotFoundError, ValueError):
         return redirect(
-            "/settings",
+            "/settings#general",
             error="Default timezone must be a valid IANA timezone such as America/New_York",
         )
 
