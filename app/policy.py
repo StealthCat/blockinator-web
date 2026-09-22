@@ -312,6 +312,7 @@ class PolicyEngine:
         self.client_identities: dict[str, str] = {}
         self.global_blocking = True
         self.response_mode = "nxdomain"
+        self.unmatched_scope_action = "allow"
         self.logger = QueryLogger(db, self._remember_client_identities)
         self.reload()
 
@@ -445,6 +446,12 @@ class PolicyEngine:
             self.client_identities = identities
             self.global_blocking = settings.get("global_blocking", "1") == "1"
             self.response_mode = settings.get("block_response", "nxdomain")
+            unmatched_scope_action = settings.get("unmatched_scope_action", "allow")
+            self.unmatched_scope_action = (
+                unmatched_scope_action
+                if unmatched_scope_action in {"allow", "deny"}
+                else "allow"
+            )
 
     @staticmethod
     def suffixes(domain: str) -> list[str]:
@@ -537,6 +544,12 @@ class PolicyEngine:
             }
 
             if not active_ids:
+                if effective_scope is None and self.unmatched_scope_action == "deny":
+                    return Decision(
+                        True,
+                        "no_scope_default_deny",
+                        response_mode=self.response_mode,
+                    )
                 return Decision(False, "no_active_lists", effective_scope, response_mode=self.response_mode)
 
             suffixes = self.suffixes(domain)
@@ -547,6 +560,12 @@ class PolicyEngine:
                         return Decision(
                             True, "blocklist_match", effective_scope, bl.name, suffix, self.response_mode
                         )
+            if effective_scope is None and self.unmatched_scope_action == "deny":
+                return Decision(
+                    True,
+                    "no_scope_default_deny",
+                    response_mode=self.response_mode,
+                )
             return Decision(False, "not_listed", effective_scope, response_mode=self.response_mode)
 
     def decide_and_log(
