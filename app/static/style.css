@@ -1896,3 +1896,45 @@ input[type=file]{padding:8px}
   border-color:rgba(72,190,210,.18);
   background:rgba(72,190,210,.06);
 }
+
+
+/* =========================================================
+   Blockinator 1.15 — TLS / ACME settings
+   ========================================================= */
+.tls-settings-panel{
+  grid-column:1 / -1;
+}
+.tls-settings-panel [hidden]{
+  display:none!important;
+}
+.tls-cert-summary{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:8px;
+}
+.tls-cert-summary span{
+  min-width:0;
+  padding:9px 10px;
+  border:1px solid rgba(91,132,154,.13);
+  border-radius:8px;
+  background:rgba(7,19,27,.36);
+}
+.tls-cert-summary b,
+.tls-cert-summary small{
+  display:block;
+}
+.tls-cert-summary b{
+  margin-bottom:3px;
+  color:#6f93a7;
+  font-size:9px;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+}
+.tls-cert-summary small{
+  overflow-wrap:anywhere;
+}
+@media(max-width:760px){
+  .tls-cert-summary{
+    grid-template-columns:1fr;
+  }
+}
