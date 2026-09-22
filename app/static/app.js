@@ -90,9 +90,36 @@
     });
   }
 
+  function syncTlsSettings(form) {
+    var select = form.querySelector("[data-tls-mode-select]");
+    if (!select) return;
+    var mode = select.value;
+    form.querySelectorAll("[data-tls-host-field]").forEach(function (node) {
+      node.hidden = mode === "http";
+    });
+    form.querySelectorAll("[data-tls-upload-fields]").forEach(function (node) {
+      node.hidden = mode !== "upload";
+    });
+    form.querySelectorAll("[data-tls-acme-fields]").forEach(function (node) {
+      node.hidden = mode !== "acme";
+    });
+  }
+
+  function initializeTlsSettings() {
+    document.querySelectorAll("[data-tls-settings-form]").forEach(function (form) {
+      var select = form.querySelector("[data-tls-mode-select]");
+      if (!select) return;
+      syncTlsSettings(form);
+      select.addEventListener("change", function () {
+        syncTlsSettings(form);
+      });
+    });
+  }
+
   window.addEventListener("hashchange", openHashDetails);
   openHashDetails();
   initializeGlobalAssignmentControls();
   initializeScheduleControls();
   initializeScopeKindFields();
+  initializeTlsSettings();
 })();
