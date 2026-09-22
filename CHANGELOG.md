@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.14.0 — Automatic per-list URL refresh
+
+- Added a background refresh worker for URL-backed block lists.
+- Each URL list now refreshes independently using its configured refresh interval.
+- Added `last_refresh_attempt` tracking so failed sources retry on their normal per-list cadence instead of being hammered continuously.
+- Successful refreshes atomically replace list entries, update counts/timestamps, clear errors, and reload the policy engine.
+- Failed downloads/parses preserve the last known-good list and store the refresh error.
+- Empty upstream lists are rejected instead of wiping an existing working list.
+- Manual **Save & refresh URL** imports now reset the automatic refresh interval clock.
+- Added visible automatic-refresh cadence/status on Block List cards.
+- Added `BLOCKLIST_REFRESH_POLL_SECONDS` for the scheduler's internal due-list scan frequency.
+- Added regression coverage for independent intervals, successful refresh, failure preservation, and empty-list protection.
+- Updated the application version to 1.14.0.
+
 ## 1.13.2 — Timezone-aware query log display
 
 - Query-log timestamps remain stored in UTC but are now converted for display using the configured System Settings timezone.
