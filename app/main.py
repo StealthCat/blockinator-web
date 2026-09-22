@@ -26,7 +26,7 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.15.5"
+APP_VERSION = "1.15.6"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -2067,6 +2067,9 @@ async def delete_key(key_id: int, request: Request):
 def settings_page(request: Request):
     s = require_session(request)
     mode = db.get_setting("block_response", "nxdomain")
+    unmatched_scope_action = db.get_setting("unmatched_scope_action", "allow")
+    if unmatched_scope_action not in {"allow", "deny"}:
+        unmatched_scope_action = "allow"
     retention = db.get_setting("max_query_logs", "25000")
     retention_days = db.get_setting("max_query_log_age_days", "0")
     default_timezone = system_default_timezone()
@@ -2126,9 +2129,24 @@ def settings_page(request: Request):
         <section class="panel action-panel">
           <div class="panel-kicker">DNS behavior</div>
           <h3>Blocked response & logging</h3>
-          <p class="panel-help">Configure blocked DNS responses, query-history retention, and the system timezone.</p>
+          <p class="panel-help">Configure blocked DNS responses, unmatched-target behavior, query-history retention, and the system timezone.</p>
           <form method="post" action="/admin/settings" class="form-grid">
             <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+
+            <div class="form-section full">
+              <div class="form-section-head">
+                <div><b>No matching policy target</b><p>Choose the fallback after normal global block-list evaluation when no active endpoint, hostname, or network target matches the client.</p></div>
+                <span>{"Allow" if unmatched_scope_action == "allow" else "Deny"}</span>
+              </div>
+              <label class="full">Default action
+                <select name="unmatched_scope_action">
+                  <option value="allow" {"selected" if unmatched_scope_action=="allow" else ""}>Allow</option>
+                  <option value="deny" {"selected" if unmatched_scope_action=="deny" else ""}>Deny</option>
+                </select>
+                <small>Allow preserves existing behavior. Deny blocks an otherwise-allowed query from a client with no matching policy target. Global block-list matches still take precedence.</small>
+              </label>
+            </div>
+
             <label class="full">Response mode
               <select name="block_response">
                 <option value="nxdomain" {"selected" if mode=="nxdomain" else ""}>NXDOMAIN</option>
@@ -2346,6 +2364,7 @@ def settings_page(request: Request):
             <div><span>Log age limit</span><b>{age_summary}</b></div>
             <div><span>Log row limit</span><b>{int(retention):,}</b></div>
             <div><span>Default timezone</span><b class="mono">{esc(default_timezone)}</b></div>
+            <div><span>Unmatched target action</span><b>{esc(unmatched_scope_action.title())}</b></div>
             <div><span>TLS mode</span><b>{esc(tls_mode_label)}</b></div>
             <div><span>Caddy</span><b>{"Reachable" if tls_status.caddy_reachable else "Unavailable"}</b></div>
             <div><span>HTTPS port</span><b class="mono">{esc(https_port)}</b></div>
@@ -2363,6 +2382,9 @@ async def save_settings(request: Request):
     mode = str(form.get("block_response","nxdomain"))
     if mode not in {"nxdomain","refused","nodata","zero"}:
         mode = "nxdomain"
+    unmatched_scope_action = str(form.get("unmatched_scope_action", "allow")).strip().lower()
+    if unmatched_scope_action not in {"allow", "deny"}:
+        unmatched_scope_action = "allow"
     try:
         retention = max(1000, min(int(form.get("max_query_logs","25000")), 5_000_000))
     except (TypeError, ValueError):
@@ -2381,10 +2403,15 @@ async def save_settings(request: Request):
             error="Default timezone must be a valid IANA timezone such as America/New_York",
         )
 
-    db.set_setting("block_response", mode)
-    db.set_setting("max_query_logs", str(retention))
-    db.set_setting("max_query_log_age_days", str(retention_days))
-    db.set_setting("default_timezone", default_timezone)
+    db.set_settings(
+        {
+            "block_response": mode,
+            "unmatched_scope_action": unmatched_scope_action,
+            "max_query_logs": str(retention),
+            "max_query_log_age_days": str(retention_days),
+            "default_timezone": default_timezone,
+        }
+    )
     engine.reload()
 
     try:
