@@ -187,9 +187,12 @@ class BlocklistRefresher:
                     UPDATE blocklists
                     SET last_refresh_attempt=CURRENT_TIMESTAMP,
                         last_error=?
-                    WHERE id=? AND source_type='url'
+                    WHERE id=?
+                      AND source_type='url'
+                      AND source_url=?
+                      AND format=?
                     """,
-                    (message[:2000], list_id),
+                    (message[:2000], list_id, source_url, list_format),
                 )
             return RefreshResult(
                 list_id=list_id,
