@@ -26,7 +26,7 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.15.6"
+APP_VERSION = "1.15.7"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -2070,6 +2070,12 @@ def settings_page(request: Request):
     unmatched_scope_action = db.get_setting("unmatched_scope_action", "allow")
     if unmatched_scope_action not in {"allow", "deny"}:
         unmatched_scope_action = "allow"
+    global_blocklist_scope_mode = db.get_setting(
+        "global_blocklist_scope_mode",
+        "all_clients",
+    )
+    if global_blocklist_scope_mode not in {"all_clients", "matched_scopes"}:
+        global_blocklist_scope_mode = "all_clients"
     retention = db.get_setting("max_query_logs", "25000")
     retention_days = db.get_setting("max_query_log_age_days", "0")
     default_timezone = system_default_timezone()
@@ -2135,7 +2141,21 @@ def settings_page(request: Request):
 
             <div class="form-section full">
               <div class="form-section-head">
-                <div><b>No matching policy target</b><p>Choose the fallback after normal global block-list evaluation when no active endpoint, hostname, or network target matches the client.</p></div>
+                <div><b>Global block-list reach</b><p>Control whether lists marked Global also apply to clients that do not match an active policy target.</p></div>
+                <span>{"All clients" if global_blocklist_scope_mode == "all_clients" else "Matched targets only"}</span>
+              </div>
+              <label class="full">Apply global block lists to
+                <select name="global_blocklist_scope_mode">
+                  <option value="all_clients" {"selected" if global_blocklist_scope_mode=="all_clients" else ""}>All clients, including clients with no matching policy target</option>
+                  <option value="matched_scopes" {"selected" if global_blocklist_scope_mode=="matched_scopes" else ""}>Matched policy targets only</option>
+                </select>
+                <small>Matched policy targets only means globally assigned lists are skipped when no active endpoint, hostname, or network target matches.</small>
+              </label>
+            </div>
+
+            <div class="form-section full">
+              <div class="form-section-head">
+                <div><b>No matching policy target</b><p>Choose what happens after applicable block lists are evaluated when no active endpoint, hostname, or network target matches the client.</p></div>
                 <span>{"Allow" if unmatched_scope_action == "allow" else "Deny"}</span>
               </div>
               <label class="full">Default action
@@ -2143,7 +2163,7 @@ def settings_page(request: Request):
                   <option value="allow" {"selected" if unmatched_scope_action=="allow" else ""}>Allow</option>
                   <option value="deny" {"selected" if unmatched_scope_action=="deny" else ""}>Deny</option>
                 </select>
-                <small>Allow preserves existing behavior. Deny blocks an otherwise-allowed query from a client with no matching policy target. Global block-list matches still take precedence.</small>
+                <small>If global lists are limited to matched targets, an unmatched client skips those lists first and then uses this Allow/Deny fallback.</small>
               </label>
             </div>
 
@@ -2365,6 +2385,7 @@ def settings_page(request: Request):
             <div><span>Log row limit</span><b>{int(retention):,}</b></div>
             <div><span>Default timezone</span><b class="mono">{esc(default_timezone)}</b></div>
             <div><span>Unmatched target action</span><b>{esc(unmatched_scope_action.title())}</b></div>
+            <div><span>Global list reach</span><b>{"All clients" if global_blocklist_scope_mode == "all_clients" else "Matched targets only"}</b></div>
             <div><span>TLS mode</span><b>{esc(tls_mode_label)}</b></div>
             <div><span>Caddy</span><b>{"Reachable" if tls_status.caddy_reachable else "Unavailable"}</b></div>
             <div><span>HTTPS port</span><b class="mono">{esc(https_port)}</b></div>
@@ -2385,6 +2406,11 @@ async def save_settings(request: Request):
     unmatched_scope_action = str(form.get("unmatched_scope_action", "allow")).strip().lower()
     if unmatched_scope_action not in {"allow", "deny"}:
         unmatched_scope_action = "allow"
+    global_blocklist_scope_mode = str(
+        form.get("global_blocklist_scope_mode", "all_clients")
+    ).strip().lower()
+    if global_blocklist_scope_mode not in {"all_clients", "matched_scopes"}:
+        global_blocklist_scope_mode = "all_clients"
     try:
         retention = max(1000, min(int(form.get("max_query_logs","25000")), 5_000_000))
     except (TypeError, ValueError):
@@ -2407,6 +2433,7 @@ async def save_settings(request: Request):
         {
             "block_response": mode,
             "unmatched_scope_action": unmatched_scope_action,
+            "global_blocklist_scope_mode": global_blocklist_scope_mode,
             "max_query_logs": str(retention),
             "max_query_log_age_days": str(retention_days),
             "default_timezone": default_timezone,
