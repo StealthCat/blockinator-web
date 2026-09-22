@@ -22,3 +22,12 @@ def test_tls_settings_render_one_mode_fieldset_at_a_time():
     assert 'fieldset.hidden = !active;' in javascript
     assert 'fieldset.disabled = !active;' in javascript
     assert 'data-tls-mode-description' in source
+
+
+def test_system_settings_exposes_unmatched_scope_default_action():
+    source = Path("app/main.py").read_text(encoding="utf-8")
+
+    assert 'name="unmatched_scope_action"' in source
+    assert '<option value="allow"' in source
+    assert '<option value="deny"' in source
+    assert 'No matching policy target' in source
