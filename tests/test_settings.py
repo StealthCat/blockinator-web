@@ -28,3 +28,29 @@ def test_default_timezone_setting_persists_across_reinitialization(monkeypatch):
 
     assert db_again.get_setting("default_timezone") == "America/New_York"
     td.cleanup()
+
+
+
+def test_batch_settings_round_trip(tmp_path):
+    db = Database(str(tmp_path / "settings.db"))
+    db.set_settings(
+        {
+            "alpha": "1",
+            "beta": "2",
+            "gamma": "3",
+        }
+    )
+
+    values = db.get_settings(
+        {
+            "alpha": "default-a",
+            "beta": "default-b",
+            "missing": "fallback",
+        }
+    )
+
+    assert values == {
+        "alpha": "1",
+        "beta": "2",
+        "missing": "fallback",
+    }
