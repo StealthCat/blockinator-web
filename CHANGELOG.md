@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.15.9 — Deduplicated domain storage
+
+- Normalized block-list storage so each domain string is stored only once globally, regardless of how many block lists contain it.
+- Added a many-to-many membership table linking block lists to canonical domain rows.
+- Added an automatic startup migration that deduplicates existing per-list domain rows without changing list membership or blocking behavior.
+- Preserved the existing `block_entries` SQL interface through a compatibility view and triggers.
+- Added automatic orphan cleanup so canonical domain rows are removed only after their final list membership is deleted.
+- Dashboard Block entries now reports unique domains across enabled lists rather than summing duplicate per-list counts.
+- Added regression coverage for shared-domain storage, orphan cleanup, and legacy-schema migration.
+- Updated the application version to 1.15.9.
+
 ## 1.15.8 — SQLite refresh contention fix
 
 - Fixed intermittent URL block-list refresh failures that could report `database is locked` while query logging or admin writes were active.
