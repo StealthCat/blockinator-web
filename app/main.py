@@ -26,7 +26,7 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.15.4"
+APP_VERSION = "1.15.5"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -1858,6 +1858,7 @@ def queries_page(
     q: str = "",
     client: str = "",
     server: str = "",
+    target: str = "",
     blocklist: str = "",
     decision: str = "",
     limit: int = 100,
@@ -1876,6 +1877,9 @@ def queries_page(
     if server:
         clauses.append("server_id = ?")
         args.append(server)
+    if target:
+        clauses.append("matched_scope = ?")
+        args.append(target)
     if blocklist:
         clauses.append("matched_list LIKE ?")
         args.append("%" + blocklist + "%")
@@ -1900,6 +1904,14 @@ def queries_page(
             FROM query_log
             WHERE server_id IS NOT NULL AND TRIM(server_id) <> ''
             ORDER BY server_id COLLATE NOCASE
+            """
+        ).fetchall()
+        target_rows = con.execute(
+            """
+            SELECT DISTINCT matched_scope
+            FROM query_log
+            WHERE matched_scope IS NOT NULL AND TRIM(matched_scope) <> ''
+            ORDER BY matched_scope COLLATE NOCASE
             """
         ).fetchall()
         blocklist_rows = con.execute(
@@ -1933,6 +1945,12 @@ def queries_page(
         f'{esc(row["server_id"])}</option>'
         for row in server_rows
     )
+    target_options = '<option value="">All policy targets</option>' + "".join(
+        f'<option value="{esc(row["matched_scope"])}"'
+        f'{" selected" if target == row["matched_scope"] else ""}>'
+        f'{esc(row["matched_scope"])}</option>'
+        for row in target_rows
+    )
     blocklist_options = "".join(
         f'<option value="{esc(row["matched_list"])}"></option>'
         for row in blocklist_rows
@@ -1959,6 +1977,7 @@ def queries_page(
         <input name="q" value="{esc(q)}" placeholder="Domain contains…">
         <input name="client" value="{esc(client)}" placeholder="Client IP or hostname…">
         <select name="server">{server_options}</select>
+        <select name="target">{target_options}</select>
         <input name="blocklist" value="{esc(blocklist)}" list="query-blocklists" placeholder="Block list contains…">
         <datalist id="query-blocklists">{blocklist_options}</datalist>
         <select name="decision">

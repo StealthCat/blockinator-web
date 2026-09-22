@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.15.5 — Query log policy-target filter
+
+- Added a Policy Target selector to the Query Log filters.
+- The filter uses logged matched policy-target names and performs an exact target match.
+- Policy Target selection is retained in the query string, so auto-refresh preserves the active target filter.
+- Updated the application version to 1.15.5.
+
 ## 1.15.4 — Query log policy metadata and refresh
 
 - Query Log and Dashboard activity now show the matched policy target for each DNS decision.
