@@ -40,3 +40,10 @@ def test_system_settings_exposes_global_blocklist_scope_mode():
     assert 'value="all_clients"' in source
     assert 'value="matched_scopes"' in source
     assert 'Global block-list reach' in source
+
+def test_dashboard_reason_prefers_triggering_blocklist_name():
+    source = Path("app/main.py").read_text(encoding="utf-8")
+
+    assert "matched_scope,matched_list,policy_scheme" in source
+    assert 'r["matched_list"] or r["reason"] or ""' in source
+
