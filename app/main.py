@@ -26,7 +26,7 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.15.8"
+APP_VERSION = "1.15.9"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -573,7 +573,14 @@ def dashboard(request: Request):
         totals = dict(con.execute("""
             SELECT
               (SELECT COUNT(*) FROM blocklists WHERE enabled=1) active_lists,
-              (SELECT COALESCE(SUM(entry_count),0) FROM blocklists WHERE enabled=1) entries,
+              (SELECT COUNT(*)
+               FROM domains d
+               WHERE EXISTS (
+                 SELECT 1
+                 FROM blocklist_domain_memberships m
+                 JOIN blocklists b ON b.id=m.blocklist_id
+                 WHERE m.domain_id=d.id AND b.enabled=1
+               )) entries,
               (SELECT COUNT(*) FROM scopes WHERE kind='network') networks,
               (SELECT COUNT(*) FROM scopes WHERE kind='client') clients,
               (SELECT COUNT(*) FROM scopes WHERE kind='hostname') hostnames,
