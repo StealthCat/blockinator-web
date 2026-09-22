@@ -156,6 +156,7 @@ def test_configure_uploaded_certificate_applies_and_persists(tmp_path, monkeypat
         TlsSettings(
             mode="upload",
             hostname="blockinator.example.com",
+            http_redirect=True,
         ),
         certificate_pem=cert_pem,
         private_key_pem=key_pem,
@@ -164,6 +165,7 @@ def test_configure_uploaded_certificate_applies_and_persists(tmp_path, monkeypat
     assert info is not None
     assert db.get_setting("tls_mode") == "upload"
     assert db.get_setting("tls_hostname") == "blockinator.example.com"
+    assert db.get_setting("tls_http_redirect") == "1"
     assert adapted and loaded
     assert "tls /blockinator-tls/uploaded-cert.pem /blockinator-tls/uploaded-key.pem" in loaded[-1]
     assert stat.S_IMODE(os.stat(manager.cert_path).st_mode) == 0o644
@@ -234,3 +236,48 @@ def test_failed_caddy_load_restores_previous_files_and_settings(tmp_path, monkey
 def test_ca_root_validation_rejects_non_certificate_data():
     with pytest.raises(ValueError):
         validate_ca_root(b"not a certificate")
+
+
+def test_http_redirect_uses_configured_external_https_port(tmp_path, monkeypatch):
+    _, manager = _manager(tmp_path)
+    monkeypatch.setenv("HTTPS_PORT", "8443")
+
+    config = manager.render_caddyfile(
+        TlsSettings(
+            mode="acme",
+            hostname="blockinator.example.com",
+            http_redirect=True,
+        )
+    )
+
+    assert ":80 {" in config
+    assert "redir https://blockinator.example.com:8443{uri} permanent" in config
+    assert ":80 {\n  reverse_proxy blockinator:8080" not in config
+
+
+def test_http_redirect_omits_standard_https_port(tmp_path, monkeypatch):
+    _, manager = _manager(tmp_path)
+    monkeypatch.setenv("HTTPS_PORT", "443")
+
+    config = manager.render_caddyfile(
+        TlsSettings(
+            mode="acme",
+            hostname="blockinator.example.com",
+            http_redirect=True,
+        )
+    )
+
+    assert "redir https://blockinator.example.com{uri} permanent" in config
+    assert "https://blockinator.example.com:443{uri}" not in config
+
+
+def test_http_only_mode_never_redirects(tmp_path, monkeypatch):
+    _, manager = _manager(tmp_path)
+    monkeypatch.setenv("HTTPS_PORT", "443")
+
+    config = manager.render_caddyfile(
+        TlsSettings(mode="http", http_redirect=True)
+    )
+
+    assert "redir https://" not in config
+    assert ":80 {\n  reverse_proxy blockinator:8080\n}" in config
