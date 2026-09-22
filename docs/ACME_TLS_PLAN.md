@@ -109,6 +109,8 @@ Implemented on `acme-tls`:
 - [x] Caddy config validation/load with rollback.
 - [x] TLS reconciliation after Caddy restarts.
 - [x] HTTPS-aware Secure administrator cookies.
+- [x] HTTPS-only control for redirect-only HTTP mode.
+- [x] Method-preserving 308 redirects with non-standard HTTPS port support.
 - [x] System Settings UI and TLS runtime status.
 - [x] Python regression tests.
 - [x] CI validation of Docker Compose and bootstrap Caddyfile.
