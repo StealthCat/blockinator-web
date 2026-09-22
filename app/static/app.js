@@ -93,19 +93,24 @@
   function syncTlsSettings(form) {
     var select = form.querySelector("[data-tls-mode-select]");
     if (!select) return;
+
     var mode = select.value;
-    form.querySelectorAll("[data-tls-host-field]").forEach(function (node) {
-      node.hidden = mode === "http";
+    var descriptions = {
+      http: "Use Blockinator over HTTP only. No certificate or ACME configuration is required.",
+      upload: "Use a certificate and private key you provide. Blockinator validates them before Caddy reloads.",
+      acme: "Let Caddy obtain and renew the certificate automatically from Let's Encrypt or a custom ACME server."
+    };
+
+    form.querySelectorAll("[data-tls-mode-fields]").forEach(function (fieldset) {
+      var active = fieldset.getAttribute("data-tls-mode-fields") === mode;
+      fieldset.hidden = !active;
+      fieldset.disabled = !active;
     });
-    form.querySelectorAll("[data-tls-upload-fields]").forEach(function (node) {
-      node.hidden = mode !== "upload";
-    });
-    form.querySelectorAll("[data-tls-acme-fields]").forEach(function (node) {
-      node.hidden = mode !== "acme";
-    });
-    form.querySelectorAll("[data-tls-http-behavior]").forEach(function (node) {
-      node.hidden = mode === "http";
-    });
+
+    var description = form.querySelector("[data-tls-mode-description]");
+    if (description) {
+      description.textContent = descriptions[mode] || descriptions.http;
+    }
   }
 
   function initializeTlsSettings() {
@@ -119,10 +124,63 @@
     });
   }
 
+  function activateSettingsTab(root, name, updateHash) {
+    var buttons = Array.prototype.slice.call(root.querySelectorAll("[data-settings-tab]"));
+    var panels = Array.prototype.slice.call(root.querySelectorAll("[data-settings-panel]"));
+    var valid = buttons.some(function (button) {
+      return button.getAttribute("data-settings-tab") === name;
+    });
+    if (!valid) name = "general";
+
+    buttons.forEach(function (button) {
+      var active = button.getAttribute("data-settings-tab") === name;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+      button.tabIndex = active ? 0 : -1;
+    });
+
+    panels.forEach(function (panel) {
+      panel.hidden = panel.getAttribute("data-settings-panel") !== name;
+    });
+
+    if (updateHash && window.location.hash !== "#" + name) {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search + "#" + name);
+    }
+  }
+
+  function initializeSettingsTabs() {
+    document.querySelectorAll("[data-settings-tabs]").forEach(function (root) {
+      var initial = window.location.hash ? window.location.hash.slice(1) : "general";
+      activateSettingsTab(root, initial, false);
+
+      root.querySelectorAll("[data-settings-tab]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          activateSettingsTab(root, button.getAttribute("data-settings-tab"), true);
+        });
+        button.addEventListener("keydown", function (event) {
+          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+          var buttons = Array.prototype.slice.call(root.querySelectorAll("[data-settings-tab]"));
+          var index = buttons.indexOf(button);
+          var delta = event.key === "ArrowRight" ? 1 : -1;
+          var next = buttons[(index + delta + buttons.length) % buttons.length];
+          next.focus();
+          activateSettingsTab(root, next.getAttribute("data-settings-tab"), true);
+        });
+      });
+    });
+
+    window.addEventListener("hashchange", function () {
+      document.querySelectorAll("[data-settings-tabs]").forEach(function (root) {
+        activateSettingsTab(root, window.location.hash.slice(1), false);
+      });
+    });
+  }
+
   window.addEventListener("hashchange", openHashDetails);
   openHashDetails();
   initializeGlobalAssignmentControls();
   initializeScheduleControls();
   initializeScopeKindFields();
   initializeTlsSettings();
+  initializeSettingsTabs();
 })();
