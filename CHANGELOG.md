@@ -1,6 +1,24 @@
 # Changelog
 
-## 1.15.2 — Tabbed System Settings
+## 1.15.3 — TLS efficiency hardening
+
+- Replaced generated Caddyfiles and the separate `/adapt` request with deterministic native Caddy JSON loaded directly through `/load`.
+- Converted the Caddy bootstrap configuration to native JSON.
+- Reworked TLS reconciliation so unchanged configurations are not repeatedly loaded every polling interval.
+- Added Caddy restart/bootstrap detection using a small `/config/apps/http/servers` state request.
+- TLS status now uses cached Caddy health instead of issuing a live admin request on every System Settings render.
+- Batched TLS settings reads and writes through SQLite and made multi-setting writes transactional.
+- De-duplicated repeated TLS error writes and update `tls_last_applied` only after an actual configuration load.
+- Moved TLS apply operations to Starlette's threadpool so slow Caddy/file operations cannot block FastAPI's async event loop.
+- Avoided parsing uploaded X.509 certificates twice and lazy-load the cryptography X.509 modules only when needed.
+- Reduced Caddy health-check traffic to a 30-second steady-state cadence with a fast startup interval and a smaller config endpoint.
+- Added real Caddy 2.11.4 validation for generated HTTP-only, uploaded-certificate, and custom-ACME JSON.
+- Added a direct-vs-Caddy policy latency benchmark and CI smoke run; the validation run measured approximately 0.16 ms mean Caddy overhead.
+- Kept HTTP/3 support unchanged, including the UDP 443 publication.
+- Expanded regression coverage for no-op reconciliation, restart restoration, error-write de-duplication, and batched settings access.
+- Updated the application version to 1.15.3.
+
+ 1.15.2 — Tabbed System Settings
 
 - Reorganized **System Settings** into **DNS & logs**, **HTTPS & TLS**, and **Runtime** tabs.
 - Tab selection is retained in the URL fragment so saves and validation errors return to the relevant configuration area.
