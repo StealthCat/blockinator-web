@@ -2020,172 +2020,260 @@ def settings_page(request: Request):
         if str(retention_days) == "0"
         else f'{esc(retention_days)} day{"s" if str(retention_days) != "1" else ""}'
     )
-    body = f'''<div class="split-grid">
-      <section class="panel action-panel">
-        <div class="panel-kicker">DNS behavior</div>
-        <h3>Blocked response & logging</h3>
-        <p class="panel-help">Configure blocked DNS responses and how long query history is retained.</p>
-        <form method="post" action="/admin/settings" class="form-grid">
-          <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
-          <label class="full">Response mode
-            <select name="block_response">
-              <option value="nxdomain" {"selected" if mode=="nxdomain" else ""}>NXDOMAIN</option>
-              <option value="refused" {"selected" if mode=="refused" else ""}>REFUSED</option>
-              <option value="nodata" {"selected" if mode=="nodata" else ""}>NODATA</option>
-              <option value="zero" {"selected" if mode=="zero" else ""}>0.0.0.0 / ::</option>
-            </select>
-          </label>
+    tls_http_hidden = "" if tls_settings.mode == "http" else " hidden"
+    tls_upload_hidden = "" if tls_settings.mode == "upload" else " hidden"
+    tls_acme_hidden = "" if tls_settings.mode == "acme" else " hidden"
+    tls_http_disabled = "" if tls_settings.mode == "http" else " disabled"
+    tls_upload_disabled = "" if tls_settings.mode == "upload" else " disabled"
+    tls_acme_disabled = "" if tls_settings.mode == "acme" else " disabled"
 
-          <div class="form-section full log-retention-section">
-            <div class="form-section-head">
-              <div><b>Query log retention</b><p>Both limits apply. Blockinator removes a row when it exceeds either the age limit or the row-count limit.</p></div>
-              <span>{age_summary}</span>
-            </div>
-            <div class="retention-grid">
-              <label>Maximum age (days)
-                <input type="number" min="0" max="3650" name="max_query_log_age_days" value="{esc(retention_days)}">
-                <small>0 disables time-based retention.</small>
-              </label>
-              <label>Maximum rows
-                <input type="number" min="1000" max="5000000" name="max_query_logs" value="{esc(retention)}">
-                <small>Oldest rows are removed when this cap is exceeded.</small>
-              </label>
-            </div>
-          </div>
+    body = f'''<div class="settings-page" data-settings-tabs>
+      <nav class="settings-tabs" role="tablist" aria-label="System Settings sections">
+        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="general" aria-controls="settings-general">
+          <span class="settings-tab-icon">⚙</span>
+          <span><b>DNS & logs</b><small>Responses, retention, timezone</small></span>
+        </button>
+        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="tls" aria-controls="settings-tls">
+          <span class="settings-tab-icon">◆</span>
+          <span><b>HTTPS & TLS</b><small>Certificates and ACME</small></span>
+        </button>
+        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="runtime" aria-controls="settings-runtime">
+          <span class="settings-tab-icon">◈</span>
+          <span><b>Runtime</b><small>Service and storage status</small></span>
+        </button>
+      </nav>
 
-          <div class="form-section full">
-            <div class="form-section-head">
-              <div><b>Default timezone</b><p>Used to display log timestamps and as the default for new schedules. Existing schedules keep their saved timezone.</p></div>
-              <span>{esc(default_timezone)}</span>
-            </div>
-            <label class="full">IANA timezone
-              <input name="default_timezone" value="{esc(default_timezone)}" list="timezone-options" placeholder="America/New_York" required>
-              <small>Log timestamps are converted from stored UTC into this timezone. Examples: UTC, America/New_York, America/Chicago, America/Denver, America/Los_Angeles.</small>
+      <section id="settings-general" class="settings-tab-panel" role="tabpanel" data-settings-panel="general">
+        <section class="panel action-panel">
+          <div class="panel-kicker">DNS behavior</div>
+          <h3>Blocked response & logging</h3>
+          <p class="panel-help">Configure blocked DNS responses, query-history retention, and the system timezone.</p>
+          <form method="post" action="/admin/settings" class="form-grid">
+            <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+            <label class="full">Response mode
+              <select name="block_response">
+                <option value="nxdomain" {"selected" if mode=="nxdomain" else ""}>NXDOMAIN</option>
+                <option value="refused" {"selected" if mode=="refused" else ""}>REFUSED</option>
+                <option value="nodata" {"selected" if mode=="nodata" else ""}>NODATA</option>
+                <option value="zero" {"selected" if mode=="zero" else ""}>0.0.0.0 / ::</option>
+              </select>
             </label>
-            <datalist id="timezone-options">
-              <option value="UTC"></option>
-              <option value="America/New_York"></option>
-              <option value="America/Chicago"></option>
-              <option value="America/Denver"></option>
-              <option value="America/Los_Angeles"></option>
-              <option value="America/Anchorage"></option>
-              <option value="Pacific/Honolulu"></option>
-            </datalist>
-          </div>
 
-          <button class="primary-button full">Save settings & prune logs</button>
-        </form>
+            <div class="form-section full log-retention-section">
+              <div class="form-section-head">
+                <div><b>Query log retention</b><p>Both limits apply. Blockinator removes a row when it exceeds either the age limit or the row-count limit.</p></div>
+                <span>{age_summary}</span>
+              </div>
+              <div class="retention-grid">
+                <label>Maximum age (days)
+                  <input type="number" min="0" max="3650" name="max_query_log_age_days" value="{esc(retention_days)}">
+                  <small>0 disables time-based retention.</small>
+                </label>
+                <label>Maximum rows
+                  <input type="number" min="1000" max="5000000" name="max_query_logs" value="{esc(retention)}">
+                  <small>Oldest rows are removed when this cap is exceeded.</small>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-section full">
+              <div class="form-section-head">
+                <div><b>Default timezone</b><p>Used to display log timestamps and as the default for new schedules. Existing schedules keep their saved timezone.</p></div>
+                <span>{esc(default_timezone)}</span>
+              </div>
+              <label class="full">IANA timezone
+                <input name="default_timezone" value="{esc(default_timezone)}" list="timezone-options" placeholder="America/New_York" required>
+                <small>Examples: UTC, America/New_York, America/Chicago, America/Denver, America/Los_Angeles.</small>
+              </label>
+              <datalist id="timezone-options">
+                <option value="UTC"></option>
+                <option value="America/New_York"></option>
+                <option value="America/Chicago"></option>
+                <option value="America/Denver"></option>
+                <option value="America/Los_Angeles"></option>
+                <option value="America/Anchorage"></option>
+                <option value="Pacific/Honolulu"></option>
+              </datalist>
+            </div>
+
+            <button class="primary-button full">Save DNS & log settings</button>
+          </form>
+        </section>
       </section>
 
-      <section class="panel action-panel tls-settings-panel">
-        <div class="panel-kicker">Transport security</div>
-        <h3>HTTPS & certificates</h3>
-        <p class="panel-help">Caddy terminates TLS in front of Blockinator. Direct HTTP can remain available or become redirect-only after HTTPS is working.</p>
-        {tls_error_html}
-        <form method="post" action="/admin/settings/tls" enctype="multipart/form-data" class="form-grid" data-tls-settings-form>
-          <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
-          <label>TLS mode
-            <select name="tls_mode" data-tls-mode-select>
-              <option value="http" {"selected" if tls_settings.mode=="http" else ""}>HTTP only</option>
-              <option value="upload" {"selected" if tls_settings.mode=="upload" else ""}>Uploaded certificate</option>
-              <option value="acme" {"selected" if tls_settings.mode=="acme" else ""}>ACME / custom ACME server</option>
-            </select>
-          </label>
-          <label data-tls-host-field>HTTPS hostname
-            <input name="tls_hostname" value="{esc(tls_settings.hostname)}" placeholder="blockinator.example.com">
-            <small>Use a fully qualified DNS hostname. HTTPS is published on host port {esc(https_port)}.</small>
-          </label>
+      <section id="settings-tls" class="settings-tab-panel" role="tabpanel" data-settings-panel="tls" hidden>
+        <section class="panel action-panel tls-settings-panel">
+          <div class="panel-kicker">Transport security</div>
+          <h3>HTTPS & certificates</h3>
+          <p class="panel-help">Choose how Blockinator should handle HTTPS. Only settings for the selected setup type are shown.</p>
+          {tls_error_html}
+          <form method="post" action="/admin/settings/tls" enctype="multipart/form-data" class="form-grid" data-tls-settings-form>
+            <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
 
-          <div class="form-section full" data-tls-http-behavior>
-            <div class="form-section-head">
-              <div><b>HTTP access</b><p>Keep direct HTTP available, or make the HTTP listener redirect every request to the configured HTTPS hostname.</p></div>
-              <span>{esc(http_behavior_label)}</span>
+            <div class="tls-mode-selector full">
+              <label>HTTPS setup type
+                <select name="tls_mode" data-tls-mode-select>
+                  <option value="http" {"selected" if tls_settings.mode=="http" else ""}>HTTP only</option>
+                  <option value="upload" {"selected" if tls_settings.mode=="upload" else ""}>Use my certificate</option>
+                  <option value="acme" {"selected" if tls_settings.mode=="acme" else ""}>Automatic certificate with ACME</option>
+                </select>
+              </label>
+              <div class="tls-mode-description" data-tls-mode-description>
+                Choose a setup type to see only the options needed for that configuration.
+              </div>
             </div>
-            <label class="check full">
-              <input type="checkbox" name="tls_http_redirect" value="1"
-                     {"checked" if tls_settings.http_redirect else ""}
-                     {"" if request_is_https else "disabled"}>
-              Disable direct HTTP and redirect HTTP traffic to HTTPS
-            </label>
-            <p class="schedule-help full">
-              {
-                "This control is unlocked because this settings page is being accessed over HTTPS."
-                if request_is_https
-                else "Open System Settings over HTTPS before enabling or disabling redirect-only HTTP. This protects against accidentally locking out the control panel."
-              }
-              The HTTP listener stays open for redirects; it is not removed from Docker.
-            </p>
-          </div>
 
-          <div class="form-section full" data-tls-upload-fields>
-            <div class="form-section-head">
-              <div><b>Uploaded certificate</b><p>Upload PEM certificate/full-chain and an unencrypted PEM private key. Leave a field blank to keep the stored file.</p></div>
-              <span>{"Certificate + key stored" if tls_status.uploaded_cert_present and tls_status.uploaded_key_present else "Incomplete"}</span>
-            </div>
-            <label>Certificate / full chain
-              <input type="file" name="tls_certificate" accept=".pem,.crt,.cer,application/x-pem-file">
-              <small>{"Stored certificate available." if tls_status.uploaded_cert_present else "No certificate stored."}</small>
-            </label>
-            <label>Private key
-              <input type="file" name="tls_private_key" accept=".pem,.key,application/x-pem-file">
-              <small>{"Stored private key available." if tls_status.uploaded_key_present else "No private key stored."}</small>
-            </label>
-            <div class="tls-cert-summary full">
-              <span><b>Subject</b><small>{esc(cert_info.subject if cert_info else "—")}</small></span>
-              <span><b>Issuer</b><small>{esc(cert_info.issuer if cert_info else "—")}</small></span>
-              <span><b>Expires</b><small>{esc(cert_expiry)}</small></span>
-              <span><b>DNS SANs</b><small>{esc(cert_sans)}</small></span>
-            </div>
-          </div>
+            <fieldset class="tls-mode-fields full" data-tls-mode-fields="http"{tls_http_hidden}{tls_http_disabled}>
+              <div class="tls-mode-empty">
+                <span class="tls-mode-empty-icon">○</span>
+                <div>
+                  <b>HTTP only</b>
+                  <p>Blockinator will stay on the HTTP listener and Caddy will not configure an HTTPS site. No certificate settings are required.</p>
+                </div>
+              </div>
+            </fieldset>
 
-          <div class="form-section full" data-tls-acme-fields>
-            <div class="form-section-head">
-              <div><b>ACME issuer</b><p>Use Let's Encrypt by default or supply any compatible ACME directory, including an internal/private CA.</p></div>
-              <span>{"Custom directory" if tls_settings.acme_directory != DEFAULT_ACME_DIRECTORY else "Let's Encrypt"}</span>
-            </div>
-            <label>Account email
-              <input type="email" name="tls_acme_email" value="{esc(tls_settings.acme_email)}" placeholder="admin@example.com">
-            </label>
-            <label>ACME directory URL
-              <input name="tls_acme_directory" value="{esc(tls_settings.acme_directory)}" placeholder="{esc(DEFAULT_ACME_DIRECTORY)}">
-            </label>
-            <label>Custom CA root PEM
-              <input type="file" name="tls_acme_ca_root" accept=".pem,.crt,.cer,application/x-pem-file">
-              <small>{"Custom root stored." if tls_status.acme_ca_root_present else "Uses the container trust store."}</small>
-            </label>
-            <label class="check"><input type="checkbox" name="remove_acme_ca_root" value="1"> Remove stored custom CA root</label>
-            <label>EAB key ID
-              <input name="tls_acme_eab_key_id" value="{esc(tls_settings.acme_eab_key_id)}" autocomplete="off">
-            </label>
-            <label>EAB HMAC key
-              <input type="password" name="tls_acme_eab_hmac" value="" autocomplete="new-password" placeholder="Leave blank to keep stored secret">
-              <small>{"HMAC secret stored." if tls_status.acme_eab_hmac_present else "No HMAC secret stored."}</small>
-            </label>
-            <label class="check full"><input type="checkbox" name="remove_acme_eab_hmac" value="1"> Remove stored EAB HMAC secret</label>
-            <p class="schedule-help full">Public ACME HTTP-01/TLS-ALPN-01 validation normally requires the host's public ports 80 and/or 443 to reach Caddy. Set POLICY_PORT=80 and HTTPS_PORT=443 when those standard ports are required. DNS-01 provider plugins are not included in this branch.</p>
-          </div>
+            <fieldset class="tls-mode-fields full" data-tls-mode-fields="upload"{tls_upload_hidden}{tls_upload_disabled}>
+              <div class="form-section full">
+                <div class="form-section-head">
+                  <div><b>HTTPS identity</b><p>Choose the DNS name clients will use and provide the certificate that covers it.</p></div>
+                  <span>Port {esc(https_port)}</span>
+                </div>
+                <label class="full">HTTPS hostname
+                  <input name="tls_hostname" value="{esc(tls_settings.hostname)}" placeholder="blockinator.example.com">
+                  <small>Use a fully qualified DNS hostname covered by the uploaded certificate.</small>
+                </label>
+              </div>
 
-          <button class="primary-button full" type="submit">Apply TLS settings</button>
-        </form>
+              <div class="form-section full">
+                <div class="form-section-head">
+                  <div><b>Certificate files</b><p>Upload a PEM certificate/full-chain and matching unencrypted PEM private key. Leave a file blank to keep the currently stored copy.</p></div>
+                  <span>{"Certificate + key stored" if tls_status.uploaded_cert_present and tls_status.uploaded_key_present else "Incomplete"}</span>
+                </div>
+                <label>Certificate / full chain
+                  <input type="file" name="tls_certificate" accept=".pem,.crt,.cer,application/x-pem-file">
+                  <small>{"Stored certificate available." if tls_status.uploaded_cert_present else "No certificate stored."}</small>
+                </label>
+                <label>Private key
+                  <input type="file" name="tls_private_key" accept=".pem,.key,application/x-pem-file">
+                  <small>{"Stored private key available." if tls_status.uploaded_key_present else "No private key stored."}</small>
+                </label>
+                <div class="tls-cert-summary full">
+                  <span><b>Subject</b><small>{esc(cert_info.subject if cert_info else "—")}</small></span>
+                  <span><b>Issuer</b><small>{esc(cert_info.issuer if cert_info else "—")}</small></span>
+                  <span><b>Expires</b><small>{esc(cert_expiry)}</small></span>
+                  <span><b>DNS SANs</b><small>{esc(cert_sans)}</small></span>
+                </div>
+              </div>
+
+              <div class="form-section full">
+                <div class="form-section-head">
+                  <div><b>HTTP access</b><p>Optionally turn the HTTP listener into a redirect to the configured HTTPS hostname.</p></div>
+                  <span>{esc(http_behavior_label)}</span>
+                </div>
+                <label class="check full">
+                  <input type="checkbox" name="tls_http_redirect" value="1"
+                         {"checked" if tls_settings.http_redirect else ""}
+                         {"" if request_is_https else "disabled"}>
+                  Redirect direct HTTP requests to HTTPS
+                </label>
+                <p class="schedule-help full">{
+                  "This control is unlocked because this page is being accessed over HTTPS."
+                  if request_is_https
+                  else "Open System Settings over HTTPS before changing redirect-only HTTP. This protects against accidentally locking out the control panel."
+                }</p>
+              </div>
+            </fieldset>
+
+            <fieldset class="tls-mode-fields full" data-tls-mode-fields="acme"{tls_acme_hidden}{tls_acme_disabled}>
+              <div class="form-section full">
+                <div class="form-section-head">
+                  <div><b>HTTPS identity</b><p>Choose the DNS name for the certificate Caddy will obtain automatically.</p></div>
+                  <span>Port {esc(https_port)}</span>
+                </div>
+                <label class="full">HTTPS hostname
+                  <input name="tls_hostname" value="{esc(tls_settings.hostname)}" placeholder="blockinator.example.com">
+                  <small>Use the hostname that resolves to this Blockinator instance.</small>
+                </label>
+              </div>
+
+              <div class="form-section full">
+                <div class="form-section-head">
+                  <div><b>ACME server</b><p>Use Let's Encrypt by default or point Blockinator at a compatible public or private ACME directory.</p></div>
+                  <span>{"Custom directory" if tls_settings.acme_directory != DEFAULT_ACME_DIRECTORY else "Let's Encrypt"}</span>
+                </div>
+                <label>Account email
+                  <input type="email" name="tls_acme_email" value="{esc(tls_settings.acme_email)}" placeholder="admin@example.com">
+                </label>
+                <label>ACME directory URL
+                  <input name="tls_acme_directory" value="{esc(tls_settings.acme_directory)}" placeholder="{esc(DEFAULT_ACME_DIRECTORY)}">
+                </label>
+                <label>Custom CA root PEM
+                  <input type="file" name="tls_acme_ca_root" accept=".pem,.crt,.cer,application/x-pem-file">
+                  <small>{"Custom root stored." if tls_status.acme_ca_root_present else "Uses the container trust store."}</small>
+                </label>
+                <label class="check"><input type="checkbox" name="remove_acme_ca_root" value="1"> Remove stored custom CA root</label>
+              </div>
+
+              <div class="form-section full">
+                <div class="form-section-head">
+                  <div><b>External Account Binding</b><p>Only configure EAB if your ACME provider requires it.</p></div>
+                  <span>{"Configured" if tls_settings.acme_eab_key_id and tls_status.acme_eab_hmac_present else "Optional"}</span>
+                </div>
+                <label>EAB key ID
+                  <input name="tls_acme_eab_key_id" value="{esc(tls_settings.acme_eab_key_id)}" autocomplete="off">
+                </label>
+                <label>EAB HMAC key
+                  <input type="password" name="tls_acme_eab_hmac" value="" autocomplete="new-password" placeholder="Leave blank to keep stored secret">
+                  <small>{"HMAC secret stored." if tls_status.acme_eab_hmac_present else "No HMAC secret stored."}</small>
+                </label>
+                <label class="check full"><input type="checkbox" name="remove_acme_eab_hmac" value="1"> Remove stored EAB HMAC secret</label>
+              </div>
+
+              <div class="form-section full">
+                <div class="form-section-head">
+                  <div><b>HTTP access</b><p>Optionally turn the HTTP listener into a redirect after ACME HTTPS is working.</p></div>
+                  <span>{esc(http_behavior_label)}</span>
+                </div>
+                <label class="check full">
+                  <input type="checkbox" name="tls_http_redirect" value="1"
+                         {"checked" if tls_settings.http_redirect else ""}
+                         {"" if request_is_https else "disabled"}>
+                  Redirect direct HTTP requests to HTTPS
+                </label>
+                <p class="schedule-help full">{
+                  "This control is unlocked because this page is being accessed over HTTPS."
+                  if request_is_https
+                  else "Open System Settings over HTTPS before changing redirect-only HTTP. This protects against accidentally locking out the control panel."
+                }</p>
+                <p class="schedule-help full">Public ACME HTTP-01/TLS-ALPN-01 validation normally requires public ports 80 and/or 443 to reach Caddy. Use POLICY_PORT=80 and HTTPS_PORT=443 when standard challenge ports are required. DNS-01 provider plugins are not included in this branch.</p>
+              </div>
+            </fieldset>
+
+            <button class="primary-button full" type="submit">Apply HTTPS settings</button>
+          </form>
+        </section>
       </section>
 
-      <section class="panel">
-        <div class="panel-kicker">Service details</div><h3>Runtime</h3>
-        <p class="panel-help">Current application and storage information for this Blockinator instance.</p>
-        <div class="info-grid">
-          <div><span>Version</span><b>{APP_VERSION}</b></div>
-          <div><span>Database</span><b class="mono">{esc(db.path)}</b></div>
-          <div><span>Decision API</span><b class="mono">/api/v1/decision</b></div>
-          <div><span>Service</span><b>Blockinator</b></div>
-          <div><span>Log age limit</span><b>{age_summary}</b></div>
-          <div><span>Log row limit</span><b>{int(retention):,}</b></div>
-          <div><span>Default timezone</span><b class="mono">{esc(default_timezone)}</b></div>
-          <div><span>TLS mode</span><b>{esc(tls_mode_label)}</b></div>
-          <div><span>Caddy</span><b>{"Reachable" if tls_status.caddy_reachable else "Unavailable"}</b></div>
-          <div><span>HTTPS port</span><b class="mono">{esc(https_port)}</b></div>
-          <div><span>HTTP behavior</span><b>{esc(http_behavior_label)}</b></div>
-          <div><span>Last TLS apply</span><b class="mono">{esc(tls_status.last_applied or "Never")}</b></div>
-        </div>
+      <section id="settings-runtime" class="settings-tab-panel" role="tabpanel" data-settings-panel="runtime" hidden>
+        <section class="panel">
+          <div class="panel-kicker">Service details</div><h3>Runtime</h3>
+          <p class="panel-help">Current application, proxy, and storage information for this Blockinator instance.</p>
+          <div class="info-grid">
+            <div><span>Version</span><b>{APP_VERSION}</b></div>
+            <div><span>Database</span><b class="mono">{esc(db.path)}</b></div>
+            <div><span>Decision API</span><b class="mono">/api/v1/decision</b></div>
+            <div><span>Service</span><b>Blockinator</b></div>
+            <div><span>Log age limit</span><b>{age_summary}</b></div>
+            <div><span>Log row limit</span><b>{int(retention):,}</b></div>
+            <div><span>Default timezone</span><b class="mono">{esc(default_timezone)}</b></div>
+            <div><span>TLS mode</span><b>{esc(tls_mode_label)}</b></div>
+            <div><span>Caddy</span><b>{"Reachable" if tls_status.caddy_reachable else "Unavailable"}</b></div>
+            <div><span>HTTPS port</span><b class="mono">{esc(https_port)}</b></div>
+            <div><span>HTTP behavior</span><b>{esc(http_behavior_label)}</b></div>
+            <div><span>Last TLS apply</span><b class="mono">{esc(tls_status.last_applied or "Never")}</b></div>
+          </div>
+        </section>
       </section>
     </div>'''
     return page(request, "System Settings", "settings", body, s)
@@ -2231,7 +2319,7 @@ async def save_settings(request: Request):
     except Exception:
         notice = "Settings saved; automatic retention will apply on the next logged query"
 
-    return redirect("/settings", notice=notice)
+    return redirect("/settings#general", notice=notice)
 
 
 async def _optional_upload_bytes(form, field_name: str, max_bytes: int = 1024 * 1024) -> bytes | None:
@@ -2258,7 +2346,7 @@ async def save_tls_settings(request: Request):
             request.url.scheme == "https",
         )
     except ValueError as exc:
-        return redirect("/settings", error=str(exc))
+        return redirect("/settings#tls", error=str(exc))
 
     settings = TlsSettings(
         mode=str(form.get("tls_mode", "http")).strip().lower(),
@@ -2286,7 +2374,7 @@ async def save_tls_settings(request: Request):
             remove_eab_hmac=str(form.get("remove_acme_eab_hmac", "")) == "1",
         )
     except Exception as exc:
-        return redirect("/settings", error=f"TLS settings were not applied: {exc}")
+        return redirect("/settings#tls", error=f"TLS settings were not applied: {exc}")
 
     mode_label = {
         "http": "HTTP-only mode",
@@ -2299,6 +2387,6 @@ async def save_tls_settings(request: Request):
         else "direct HTTP remains enabled"
     )
     return redirect(
-        "/settings",
+        "/settings#tls",
         notice=f"Applied {mode_label}; {redirect_label}; Caddy reloaded without restarting Blockinator",
     )
