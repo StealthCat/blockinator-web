@@ -22,9 +22,10 @@ from .policy import PolicyEngine, normalize_hostname_pattern
 from .rdns import ReverseDnsResolver
 from .refresher import BlocklistRefresher
 from .timeutil import format_timestamp_for_timezone
+from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.14.1"
+APP_VERSION = "1.15.0"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -34,15 +35,18 @@ auth = AuthManager(db)
 engine = PolicyEngine(db)
 rdns = ReverseDnsResolver()
 refresher = BlocklistRefresher(db, engine)
+tls_manager = TlsManager(db)
 
 
 @app.on_event("startup")
 def start_background_workers() -> None:
     refresher.start()
+    tls_manager.start()
 
 
 @app.on_event("shutdown")
 def stop_background_workers() -> None:
+    tls_manager.stop()
     refresher.stop()
 
 
@@ -531,7 +535,7 @@ def login_page(request: Request):
 <button class="primary-button wide" type="submit">Sign in</button><small>Blockinator v{APP_VERSION}</small></form></section></body></html>""")
 
 @app.post("/login")
-def login(username: str = Form(...), password: str = Form(...)):
+def login(request: Request, username: str = Form(...), password: str = Form(...)):
     result = auth.authenticate(username, password)
     if not result:
         return redirect("/login", error="Invalid username or password")
@@ -540,7 +544,7 @@ def login(username: str = Form(...), password: str = Form(...)):
     response = RedirectResponse("/", status_code=303)
     response.set_cookie(
         SESSION_COOKIE, s.token, max_age=SESSION_TTL_SECONDS, httponly=True,
-        secure=os.getenv("ADMIN_COOKIE_SECURE", "0").lower() in {"1","true","yes","on"},
+        secure=(request.url.scheme == "https" or os.getenv("ADMIN_COOKIE_SECURE", "0").lower() in {"1","true","yes","on"}),
         samesite="strict", path="/",
     )
     return response
