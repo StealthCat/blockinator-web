@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.15.7 — Global block-list scope mode
+
+- Added a System Settings option controlling whether globally assigned block lists apply to all clients or only clients with a matching active policy target.
+- Existing installations default to All clients, preserving current behavior.
+- In Matched policy targets only mode, unmatched clients skip global block lists and then use the configured unmatched Allow/Deny fallback.
+- Matching endpoint, reverse-DNS hostname, and network targets continue to receive globally assigned lists normally.
+- Added policy, persistence, and UI regression coverage for both modes.
+- Updated the application version to 1.15.7.
+
 ## 1.15.6 — Configurable unmatched-scope fallback
 
 - Added a System Settings control for the default action when no active policy target matches a client.
