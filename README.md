@@ -14,6 +14,7 @@ The application is packaged as a Docker service and includes a responsive, multi
 - Optional HTTPS termination through a managed Caddy sidecar, with uploaded PEM certificates or ACME issuance.
 - Custom ACME directory URLs, private CA root certificates, and External Account Binding (EAB) are supported from System Settings.
 - Global pause/resume for DNS blocking.
+- Configurable Allow/Deny fallback for otherwise-allowed queries from clients with no matching active policy target.
 - Editable policy targets for networks, exact client IPs, and reverse-DNS hostnames, with block-list assignment directly from the Policy Targets page.
 - A single Network target can carry dual-stack IPv4 and IPv6 CIDRs concurrently, sharing one state, schedule, and block-list assignment set.
 - Reverse-DNS hostname targets support exact PTR names and wildcard suffixes such as `*.kids.home.arpa`.
@@ -41,7 +42,7 @@ The application is packaged as a Docker service and includes a responsive, multi
 
 System Settings is organized into three tabs:
 
-- **DNS & logs** — blocked-response behavior, query-log retention, and default timezone.
+- **DNS & logs** — blocked-response behavior, unmatched-policy-target fallback, query-log retention, and default timezone.
 - **HTTPS & TLS** — HTTP-only, uploaded-certificate, and ACME configuration.
 - **Runtime** — application, proxy, storage, and current TLS status.
 
@@ -480,9 +481,11 @@ Blocking state is evaluated in this order:
 2. Exact client-IP endpoint.
 3. Matching reverse-DNS hostname scope.
 4. Most-specific matching network scope.
-5. No matching scope: blocking remains active by default.
+5. No matching scope: enabled global block lists are evaluated normally, then the configured unmatched-target fallback is applied if the query would otherwise be allowed.
 
 The active block-list set is the union of enabled global lists and lists assigned to every matching active layer: network, reverse-DNS hostname, and exact client.
+
+Under **System Settings → DNS & logs**, **Default action** controls the unmatched-target fallback. **Allow** is the upgrade-safe default and preserves existing behavior. **Deny** blocks an otherwise-allowed query whenever no active endpoint, reverse-DNS hostname, or network target matched the client. Queries already blocked by a global block list keep their normal `blocklist_match` result.
 
 
 
