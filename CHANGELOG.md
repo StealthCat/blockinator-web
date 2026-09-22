@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.15.2 — Tabbed System Settings
+
+- Reorganized **System Settings** into **DNS & logs**, **HTTPS & TLS**, and **Runtime** tabs.
+- Tab selection is retained in the URL fragment so saves and validation errors return to the relevant configuration area.
+- Added keyboard left/right navigation between settings tabs.
+- Simplified the HTTPS setup workflow around a single setup-type selector.
+- TLS configuration now renders separate HTTP-only, uploaded-certificate, and ACME fieldsets.
+- Only the selected TLS setup type is visible and enabled; irrelevant controls are hidden and excluded from form submission.
+- Added contextual setup descriptions for each TLS mode.
+- Split uploaded-certificate and ACME settings into clearer identity, certificate/issuer, EAB, and HTTP-access sections.
+- Added regression checks for the tab and TLS mode-selection hooks.
+- Updated the application version to 1.15.2.
+
 ## 1.15.1 — HTTPS redirect-only HTTP mode
 
 - Added a control under **System Settings → HTTPS & certificates** to disable direct HTTP access after HTTPS is working.
