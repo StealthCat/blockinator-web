@@ -84,13 +84,15 @@ ACME mode supports:
 
 The EAB HMAC secret is stored as a protected file under `/data/tls`; it is not stored in SQLite. Caddy configuration persistence is disabled so the generated Caddy configuration is not autosaved with the EAB secret embedded. Caddy's certificate storage under `./data/caddy` remains persistent for normal ACME account/certificate lifecycle data.
 
-Blockinator validates candidate Caddy configuration through the internal Caddy admin API before loading it. If activation fails, uploaded TLS material is restored and the previous Caddy configuration is re-applied. The Caddy admin API is available only on the Compose network and is not published to the host.
+Blockinator generates native Caddy JSON and submits it atomically through Caddy's internal `/load` API. Caddy validates the candidate before activation; if activation fails, uploaded TLS material is restored and the previous configuration is re-applied. The Caddy admin API is available only on the Compose network and is not published to the host.
 
-A background TLS reconciler reapplies the saved configuration after an independent Caddy restart. Its default interval is 30 seconds:
+A background TLS state check detects an independent Caddy restart or a changed desired configuration. In steady state it performs only a lightweight read and does **not** reload Caddy or rewrite TLS status timestamps. Its default interval is 30 seconds:
 
 ```env
 TLS_RECONCILE_SECONDS=30
 ```
+
+TLS settings are read/written in batches, repeated errors are de-duplicated, and certificate parsing dependencies are loaded only when X.509 work is actually required. Applying TLS settings runs outside FastAPI's async request loop so a slow Caddy operation cannot stall the DNS decision API.
 
 For public ACME HTTP-01/TLS-ALPN-01 validation, the public challenge ports normally need to reach Caddy on standard ports 80 and/or 443. Set `POLICY_PORT=80` and `HTTPS_PORT=443` where required. DNS-01 provider plugins are intentionally not included in this first implementation.
 
@@ -170,11 +172,24 @@ The first startup seeds the database administrator and initial API key using `AD
 │   ├── db.py
 │   └── static/
 ├── caddy/
-│   └── Caddyfile.bootstrap
+│   └── caddy.bootstrap.json
 ├── docs/
 │   └── ACME_TLS_PLAN.md
 └── tests/
 ```
+
+
+## Policy proxy latency benchmark
+
+The repository includes `tools/benchmark_policy_latency.py` to compare the decision API directly against Uvicorn and through the Caddy sidecar using persistent HTTP connections.
+
+Inside the Blockinator container:
+
+```bash
+python /srv/tools/benchmark_policy_latency.py --requests 200 --warmup 20
+```
+
+CI runs a shorter smoke benchmark after starting the real Compose stack. The benchmark is informational rather than a hard performance threshold because shared CI runners vary. On the optimization validation run, 50 requests averaged about **0.431 ms direct** and **0.592 ms through Caddy**, roughly **0.16 ms mean proxy overhead**.
 
 ## Decision API
 
@@ -550,7 +565,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **55 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **59 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
