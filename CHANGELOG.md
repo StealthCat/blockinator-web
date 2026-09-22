@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.15.6 — Configurable unmatched-scope fallback
+
+- Added a System Settings control for the default action when no active policy target matches a client.
+- The fallback can be set to Allow or Deny and defaults to Allow for backward-compatible upgrades.
+- Global block-list matches are evaluated before the unmatched-scope fallback, preserving existing global-list enforcement.
+- Deny returns the configured block response with reason `no_scope_default_deny`.
+- Added policy, settings, and UI regression coverage for the new fallback.
+- Updated the application version to 1.15.6.
+
 ## 1.15.5 — Query log policy-target filter
 
 - Added a Policy Target selector to the Query Log filters.
