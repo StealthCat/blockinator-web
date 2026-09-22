@@ -395,7 +395,7 @@ class TlsManager:
                 https_port = 8443
             port_suffix = "" if https_port == 443 else f":{https_port}"
             redirect_target = f"https://{settings.hostname}{port_suffix}{{uri}}"
-            lines.append(f"  redir {redirect_target} permanent")
+            lines.append(f"  redir {redirect_target} 308")
         else:
             lines.append("  reverse_proxy blockinator:8080")
         lines.append("}")
