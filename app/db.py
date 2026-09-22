@@ -71,13 +71,21 @@ class Database:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
 
-                CREATE TABLE IF NOT EXISTS block_entries (
+                CREATE TABLE IF NOT EXISTS domains (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain TEXT NOT NULL UNIQUE
+                );
+                CREATE INDEX IF NOT EXISTS idx_domains_domain ON domains(domain);
+
+                CREATE TABLE IF NOT EXISTS blocklist_domain_memberships (
                     blocklist_id INTEGER NOT NULL,
-                    domain TEXT NOT NULL,
-                    PRIMARY KEY (blocklist_id, domain),
-                    FOREIGN KEY (blocklist_id) REFERENCES blocklists(id) ON DELETE CASCADE
+                    domain_id INTEGER NOT NULL,
+                    PRIMARY KEY (blocklist_id, domain_id),
+                    FOREIGN KEY (blocklist_id) REFERENCES blocklists(id) ON DELETE CASCADE,
+                    FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
                 ) WITHOUT ROWID;
-                CREATE INDEX IF NOT EXISTS idx_block_entries_domain ON block_entries(domain);
+                CREATE INDEX IF NOT EXISTS idx_blocklist_domain_memberships_domain
+                    ON blocklist_domain_memberships(domain_id);
 
                 CREATE TABLE IF NOT EXISTS scopes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,6 +173,91 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_api_keys_enabled ON api_keys(enabled);
                 """
             )
+            # Normalize block-list domain storage. Older databases stored the domain
+            # text once per list in block_entries. New databases keep one canonical
+            # domain row and store only integer list memberships. A compatibility
+            # view preserves the existing block_entries SQL surface for the rest of
+            # the application and for upgrades.
+            block_entries_object = con.execute(
+                "SELECT type FROM sqlite_master WHERE name='block_entries'"
+            ).fetchone()
+            if block_entries_object is not None and block_entries_object["type"] == "table":
+                con.execute("BEGIN IMMEDIATE")
+                try:
+                    con.execute(
+                        """
+                        INSERT OR IGNORE INTO domains(domain)
+                        SELECT DISTINCT domain
+                        FROM block_entries
+                        """
+                    )
+                    con.execute(
+                        """
+                        INSERT OR IGNORE INTO blocklist_domain_memberships(blocklist_id,domain_id)
+                        SELECT legacy.blocklist_id, domains.id
+                        FROM block_entries AS legacy
+                        JOIN domains ON domains.domain=legacy.domain
+                        """
+                    )
+                    con.execute("DROP TABLE block_entries")
+                    con.execute("COMMIT")
+                except Exception:
+                    con.execute("ROLLBACK")
+                    raise
+
+            con.executescript(
+                """
+                CREATE VIEW IF NOT EXISTS block_entries AS
+                SELECT memberships.blocklist_id, domains.domain
+                FROM blocklist_domain_memberships AS memberships
+                JOIN domains ON domains.id=memberships.domain_id;
+
+                CREATE TRIGGER IF NOT EXISTS block_entries_insert
+                INSTEAD OF INSERT ON block_entries
+                BEGIN
+                    INSERT OR IGNORE INTO domains(domain) VALUES(NEW.domain);
+                    INSERT OR IGNORE INTO blocklist_domain_memberships(blocklist_id,domain_id)
+                    SELECT NEW.blocklist_id,id
+                    FROM domains
+                    WHERE domain=NEW.domain;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS block_entries_delete
+                INSTEAD OF DELETE ON block_entries
+                BEGIN
+                    DELETE FROM blocklist_domain_memberships
+                    WHERE blocklist_id=OLD.blocklist_id
+                      AND domain_id=(
+                          SELECT id FROM domains WHERE domain=OLD.domain
+                      );
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS blocklist_domain_membership_cleanup
+                AFTER DELETE ON blocklist_domain_memberships
+                BEGIN
+                    DELETE FROM domains
+                    WHERE id=OLD.domain_id
+                      AND NOT EXISTS(
+                          SELECT 1
+                          FROM blocklist_domain_memberships
+                          WHERE domain_id=OLD.domain_id
+                      );
+                END;
+                """
+            )
+
+            # Keep cached per-list counts synchronized after migration.
+            con.execute(
+                """
+                UPDATE blocklists
+                SET entry_count=(
+                    SELECT COUNT(*)
+                    FROM blocklist_domain_memberships AS memberships
+                    WHERE memberships.blocklist_id=blocklists.id
+                )
+                """
+            )
+
             # Lightweight forward migration for databases created by older Blockinator releases.
             blocklist_columns = {
                 row["name"] for row in con.execute("PRAGMA table_info(blocklists)")
