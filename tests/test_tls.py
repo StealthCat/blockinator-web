@@ -111,15 +111,17 @@ def test_wildcard_certificate_matches_one_label():
         validate_certificate_and_key(cert_pem, key_pem, "deep.blockinator.example.com")
 
 
-def test_http_and_acme_caddyfile_rendering(tmp_path):
+def test_http_and_acme_native_json_rendering(tmp_path):
     _, manager = _manager(tmp_path)
 
-    http_config = manager.render_caddyfile(TlsSettings(mode="http"))
-    assert "persist_config off" in http_config
-    assert "auto_https off" in http_config
-    assert ":80 {" in http_config
-    assert "reverse_proxy blockinator:8080" in http_config
-    assert ":443" not in http_config
+    http_config = manager.render_caddy_json(TlsSettings(mode="http"))
+    assert http_config["admin"]["config"]["persist"] is False
+    http_server = http_config["apps"]["http"]["servers"]["blockinator_http"]
+    assert http_server["listen"] == [":80"]
+    handler = http_server["routes"][0]["handle"][0]
+    assert handler["handler"] == "reverse_proxy"
+    assert handler["upstreams"] == [{"dial": "blockinator:8080"}]
+    assert "tls" not in http_config["apps"]
 
     manager._write_atomic(
         manager.ca_root_path,
@@ -127,7 +129,7 @@ def test_http_and_acme_caddyfile_rendering(tmp_path):
         0o644,
     )
     manager._write_atomic(manager.eab_hmac_path, b"secret-hmac\n", 0o600)
-    acme = manager.render_caddyfile(
+    acme = manager.render_caddy_json(
         TlsSettings(
             mode="acme",
             hostname="blockinator.example.com",
@@ -136,21 +138,24 @@ def test_http_and_acme_caddyfile_rendering(tmp_path):
             acme_eab_key_id="kid-123",
         )
     )
-    assert "auto_https disable_redirects" in acme
-    assert 'acme_ca "https://ca.example.com/acme/directory"' in acme
-    assert "acme_ca_root /blockinator-tls/acme-ca-root.pem" in acme
-    assert 'key_id "kid-123"' in acme
-    assert 'mac_key "secret-hmac"' in acme
-    assert "blockinator.example.com {" in acme
+    https_server = acme["apps"]["http"]["servers"]["blockinator_https"]
+    assert https_server["listen"] == [":443"]
+    assert https_server["automatic_https"]["disable_redirects"] is True
+    issuer = acme["apps"]["tls"]["automation"]["policies"][0]["issuers"][0]
+    assert issuer["module"] == "acme"
+    assert issuer["ca"] == "https://ca.example.com/acme/directory"
+    assert issuer["trusted_roots_pem_files"] == ["/blockinator-tls/acme-ca-root.pem"]
+    assert issuer["external_account"] == {
+        "key_id": "kid-123",
+        "mac_key": "secret-hmac",
+    }
 
 
 def test_configure_uploaded_certificate_applies_and_persists(tmp_path, monkeypatch):
     db, manager = _manager(tmp_path)
     cert_pem, key_pem = _certificate_pair()
-    adapted: list[str] = []
-    loaded: list[str] = []
+    loaded: list[dict] = []
 
-    monkeypatch.setattr(manager, "_adapt", lambda config: adapted.append(config))
     monkeypatch.setattr(manager, "_load", lambda config: loaded.append(config))
 
     info = manager.configure(
@@ -167,8 +172,10 @@ def test_configure_uploaded_certificate_applies_and_persists(tmp_path, monkeypat
     assert db.get_setting("tls_mode") == "upload"
     assert db.get_setting("tls_hostname") == "blockinator.example.com"
     assert db.get_setting("tls_http_redirect") == "1"
-    assert adapted and loaded
-    assert "tls /blockinator-tls/uploaded-cert.pem /blockinator-tls/uploaded-key.pem" in loaded[-1]
+    assert loaded
+    tls_loader = loaded[-1]["apps"]["tls"]["certificates"]["load_files"][0]
+    assert tls_loader["certificate"] == "/blockinator-tls/uploaded-cert.pem"
+    assert tls_loader["key"] == "/blockinator-tls/uploaded-key.pem"
     assert stat.S_IMODE(os.stat(manager.cert_path).st_mode) == 0o644
     assert stat.S_IMODE(os.stat(manager.key_path).st_mode) == 0o600
 
@@ -176,8 +183,7 @@ def test_configure_uploaded_certificate_applies_and_persists(tmp_path, monkeypat
 def test_configure_acme_custom_root_and_eab(tmp_path, monkeypatch):
     db, manager = _manager(tmp_path)
     ca_pem, _ = _certificate_pair("ca.example.com")
-    loaded: list[str] = []
-    monkeypatch.setattr(manager, "_adapt", lambda config: None)
+    loaded: list[dict] = []
     monkeypatch.setattr(manager, "_load", lambda config: loaded.append(config))
 
     manager.configure(
@@ -197,7 +203,8 @@ def test_configure_acme_custom_root_and_eab(tmp_path, monkeypatch):
     assert manager.ca_root_path.exists()
     assert manager.eab_hmac_path.exists()
     assert stat.S_IMODE(os.stat(manager.eab_hmac_path).st_mode) == 0o600
-    assert 'mac_key "hmac-secret"' in loaded[-1]
+    issuer = loaded[-1]["apps"]["tls"]["automation"]["policies"][0]["issuers"][0]
+    assert issuer["external_account"]["mac_key"] == "hmac-secret"
 
 
 def test_failed_caddy_load_restores_previous_files_and_settings(tmp_path, monkeypatch):
@@ -210,11 +217,9 @@ def test_failed_caddy_load_restores_previous_files_and_settings(tmp_path, monkey
     db.set_setting("tls_mode", "upload")
     db.set_setting("tls_hostname", "old.example.com")
 
-    monkeypatch.setattr(manager, "_adapt", lambda config: None)
-
     calls = {"count": 0}
 
-    def fail_first_load(config: str):
+    def fail_first_load(config: dict):
         calls["count"] += 1
         if calls["count"] == 1:
             raise RuntimeError("candidate rejected")
@@ -243,7 +248,7 @@ def test_http_redirect_uses_configured_external_https_port(tmp_path, monkeypatch
     _, manager = _manager(tmp_path)
     monkeypatch.setenv("HTTPS_PORT", "8443")
 
-    config = manager.render_caddyfile(
+    config = manager.render_caddy_json(
         TlsSettings(
             mode="acme",
             hostname="blockinator.example.com",
@@ -251,16 +256,19 @@ def test_http_redirect_uses_configured_external_https_port(tmp_path, monkeypatch
         )
     )
 
-    assert ":80 {" in config
-    assert "redir https://blockinator.example.com:8443{uri} 308" in config
-    assert ":80 {\n  reverse_proxy blockinator:8080" not in config
+    handler = config["apps"]["http"]["servers"]["blockinator_http"]["routes"][0]["handle"][0]
+    assert handler["handler"] == "static_response"
+    assert handler["status_code"] == 308
+    assert handler["headers"]["Location"] == [
+        "https://blockinator.example.com:8443{http.request.uri}"
+    ]
 
 
 def test_http_redirect_omits_standard_https_port(tmp_path, monkeypatch):
     _, manager = _manager(tmp_path)
     monkeypatch.setenv("HTTPS_PORT", "443")
 
-    config = manager.render_caddyfile(
+    config = manager.render_caddy_json(
         TlsSettings(
             mode="acme",
             hostname="blockinator.example.com",
@@ -268,20 +276,23 @@ def test_http_redirect_omits_standard_https_port(tmp_path, monkeypatch):
         )
     )
 
-    assert "redir https://blockinator.example.com{uri} 308" in config
-    assert "https://blockinator.example.com:443{uri}" not in config
+    handler = config["apps"]["http"]["servers"]["blockinator_http"]["routes"][0]["handle"][0]
+    assert handler["headers"]["Location"] == [
+        "https://blockinator.example.com{http.request.uri}"
+    ]
 
 
 def test_http_only_mode_never_redirects(tmp_path, monkeypatch):
     _, manager = _manager(tmp_path)
     monkeypatch.setenv("HTTPS_PORT", "443")
 
-    config = manager.render_caddyfile(
+    config = manager.render_caddy_json(
         TlsSettings(mode="http", http_redirect=True)
     )
 
-    assert "redir https://" not in config
-    assert ":80 {\n  reverse_proxy blockinator:8080\n}" in config
+    handler = config["apps"]["http"]["servers"]["blockinator_http"]["routes"][0]["handle"][0]
+    assert handler["handler"] == "reverse_proxy"
+    assert handler["upstreams"] == [{"dial": "blockinator:8080"}]
 
 
 def test_http_redirect_change_requires_https():
@@ -295,3 +306,65 @@ def test_http_redirect_change_requires_https():
 
     with pytest.raises(ValueError, match="only be changed"):
         validate_http_redirect_change(True, False, False)
+
+
+
+def test_reconcile_skips_load_when_config_is_unchanged(tmp_path, monkeypatch):
+    _, manager = _manager(tmp_path)
+    config = manager.render_caddy_json(TlsSettings(mode="http"))
+    manager._last_applied_hash = __import__("hashlib").sha256(
+        __import__("json").dumps(
+            config,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    manager._caddy_reachable = True
+    manager._managed_config_present = True
+
+    loaded: list[dict] = []
+    monkeypatch.setattr(manager, "_load", lambda candidate: loaded.append(candidate))
+
+    applied = manager.apply_saved()
+
+    assert applied is False
+    assert loaded == []
+
+
+def test_reconcile_restores_bootstrap_config_once(tmp_path, monkeypatch):
+    _, manager = _manager(tmp_path)
+    loaded: list[dict] = []
+    monkeypatch.setattr(manager, "_load", lambda candidate: loaded.append(candidate))
+
+    manager._caddy_reachable = True
+    manager._managed_config_present = False
+
+    applied = manager.apply_saved(force=True)
+
+    assert applied is True
+    assert len(loaded) == 1
+    assert "blockinator_http" in loaded[0]["apps"]["http"]["servers"]
+
+    applied_again = manager.apply_saved()
+
+    assert applied_again is False
+    assert len(loaded) == 1
+
+
+def test_tls_error_write_is_deduplicated(tmp_path, monkeypatch):
+    db, manager = _manager(tmp_path)
+    writes: list[dict[str, str]] = []
+    original = db.set_settings
+
+    def capture(values: dict[str, str]):
+        writes.append(dict(values))
+        original(values)
+
+    monkeypatch.setattr(db, "set_settings", capture)
+
+    manager._set_last_error("same error")
+    manager._set_last_error("same error")
+
+    error_writes = [values for values in writes if "tls_last_error" in values]
+    assert error_writes == [{"tls_last_error": "same error"}]
