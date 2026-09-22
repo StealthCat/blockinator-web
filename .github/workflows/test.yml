@@ -27,8 +27,8 @@ jobs:
       - name: Validate Docker Compose
         run: docker compose config >/dev/null
 
-      - name: Validate bootstrap Caddyfile
-        run: docker run --rm -v "$PWD/caddy/Caddyfile.bootstrap:/etc/caddy/Caddyfile:ro" caddy:2.11.4-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: Validate bootstrap Caddy JSON
+        run: docker run --rm -v "$PWD/caddy/caddy.bootstrap.json:/etc/caddy/caddy.json:ro" caddy:2.11.4-alpine caddy validate --config /etc/caddy/caddy.json
 
       - name: Build Blockinator Docker image
         run: docker compose build blockinator
