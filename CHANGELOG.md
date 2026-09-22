@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.15.0 — Managed HTTPS and ACME
+
+- Added a Caddy 2.11.4 sidecar as Blockinator's host-facing HTTP/HTTPS reverse proxy.
+- Preserved HTTP access on `POLICY_PORT` and added configurable `HTTPS_PORT`.
+- Added **HTTP only**, **Uploaded certificate**, and **ACME** TLS modes under System Settings.
+- Added PEM certificate/full-chain and private-key uploads with X.509 validity, SAN, and key-match validation.
+- Added custom ACME directory URL support.
+- Added optional private/internal ACME CA root PEM support.
+- Added ACME External Account Binding (EAB) key ID and protected HMAC-secret storage.
+- TLS private keys and EAB secrets are stored under `/data/tls`, not in SQLite.
+- Disabled Caddy config persistence so EAB secrets are not written into Caddy's autosaved configuration.
+- Added Caddy config adaptation/loading through its Docker-internal admin API with rollback on failure.
+- Added a TLS reconciler that restores the saved configuration after independent Caddy restarts.
+- Added automatic Secure cookies when administrator sessions are established over HTTPS.
+- Added TLS status, certificate metadata, and last-error information to System Settings.
+- Added X.509, ACME rendering, file-permission, and rollback regression tests.
+- Added `docs/ACME_TLS_PLAN.md` describing architecture, work items, and non-goals.
+- Updated the application version to 1.15.0.
+
 ## 1.14.1 — Dashboard allow-reason cleanup
 
 - Dashboard recent DNS activity now leaves the **Reason** column blank for allowed queries.
