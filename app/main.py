@@ -1991,6 +1991,26 @@ def settings_page(request: Request):
     retention = db.get_setting("max_query_logs", "25000")
     retention_days = db.get_setting("max_query_log_age_days", "0")
     default_timezone = system_default_timezone()
+    tls_status = tls_manager.status()
+    tls_settings = tls_status.settings
+    https_port = os.getenv("HTTPS_PORT", "8443")
+    tls_mode_label = {
+        "http": "HTTP only",
+        "upload": "Uploaded certificate",
+        "acme": "ACME",
+    }.get(tls_settings.mode, "HTTP only")
+    cert_info = tls_status.uploaded_certificate
+    cert_expiry = (
+        cert_info.not_after.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        if cert_info is not None
+        else "—"
+    )
+    cert_sans = ", ".join(cert_info.dns_names) if cert_info and cert_info.dns_names else "—"
+    tls_error_html = (
+        f'<div class="list-warning"><b>Last TLS error:</b> {esc(tls_status.last_error)}</div>'
+        if tls_status.last_error
+        else ""
+    )
     age_summary = (
         "Disabled"
         if str(retention_days) == "0"
@@ -2053,6 +2073,77 @@ def settings_page(request: Request):
         </form>
       </section>
 
+      <section class="panel action-panel tls-settings-panel">
+        <div class="panel-kicker">Transport security</div>
+        <h3>HTTPS & certificates</h3>
+        <p class="panel-help">Caddy terminates TLS in front of Blockinator. HTTP remains available on the configured policy port while HTTPS is enabled separately.</p>
+        {tls_error_html}
+        <form method="post" action="/admin/settings/tls" enctype="multipart/form-data" class="form-grid" data-tls-settings-form>
+          <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+          <label>TLS mode
+            <select name="tls_mode" data-tls-mode-select>
+              <option value="http" {"selected" if tls_settings.mode=="http" else ""}>HTTP only</option>
+              <option value="upload" {"selected" if tls_settings.mode=="upload" else ""}>Uploaded certificate</option>
+              <option value="acme" {"selected" if tls_settings.mode=="acme" else ""}>ACME / custom ACME server</option>
+            </select>
+          </label>
+          <label data-tls-host-field>HTTPS hostname
+            <input name="tls_hostname" value="{esc(tls_settings.hostname)}" placeholder="blockinator.example.com">
+            <small>Use a fully qualified DNS hostname. HTTPS is published on host port {esc(https_port)}.</small>
+          </label>
+
+          <div class="form-section full" data-tls-upload-fields>
+            <div class="form-section-head">
+              <div><b>Uploaded certificate</b><p>Upload PEM certificate/full-chain and an unencrypted PEM private key. Leave a field blank to keep the stored file.</p></div>
+              <span>{"Certificate + key stored" if tls_status.uploaded_cert_present and tls_status.uploaded_key_present else "Incomplete"}</span>
+            </div>
+            <label>Certificate / full chain
+              <input type="file" name="tls_certificate" accept=".pem,.crt,.cer,application/x-pem-file">
+              <small>{"Stored certificate available." if tls_status.uploaded_cert_present else "No certificate stored."}</small>
+            </label>
+            <label>Private key
+              <input type="file" name="tls_private_key" accept=".pem,.key,application/x-pem-file">
+              <small>{"Stored private key available." if tls_status.uploaded_key_present else "No private key stored."}</small>
+            </label>
+            <div class="tls-cert-summary full">
+              <span><b>Subject</b><small>{esc(cert_info.subject if cert_info else "—")}</small></span>
+              <span><b>Issuer</b><small>{esc(cert_info.issuer if cert_info else "—")}</small></span>
+              <span><b>Expires</b><small>{esc(cert_expiry)}</small></span>
+              <span><b>DNS SANs</b><small>{esc(cert_sans)}</small></span>
+            </div>
+          </div>
+
+          <div class="form-section full" data-tls-acme-fields>
+            <div class="form-section-head">
+              <div><b>ACME issuer</b><p>Use Let's Encrypt by default or supply any compatible ACME directory, including an internal/private CA.</p></div>
+              <span>{"Custom directory" if tls_settings.acme_directory != DEFAULT_ACME_DIRECTORY else "Let's Encrypt"}</span>
+            </div>
+            <label>Account email
+              <input type="email" name="tls_acme_email" value="{esc(tls_settings.acme_email)}" placeholder="admin@example.com">
+            </label>
+            <label>ACME directory URL
+              <input name="tls_acme_directory" value="{esc(tls_settings.acme_directory)}" placeholder="{esc(DEFAULT_ACME_DIRECTORY)}">
+            </label>
+            <label>Custom CA root PEM
+              <input type="file" name="tls_acme_ca_root" accept=".pem,.crt,.cer,application/x-pem-file">
+              <small>{"Custom root stored." if tls_status.acme_ca_root_present else "Uses the container trust store."}</small>
+            </label>
+            <label class="check"><input type="checkbox" name="remove_acme_ca_root" value="1"> Remove stored custom CA root</label>
+            <label>EAB key ID
+              <input name="tls_acme_eab_key_id" value="{esc(tls_settings.acme_eab_key_id)}" autocomplete="off">
+            </label>
+            <label>EAB HMAC key
+              <input type="password" name="tls_acme_eab_hmac" value="" autocomplete="new-password" placeholder="Leave blank to keep stored secret">
+              <small>{"HMAC secret stored." if tls_status.acme_eab_hmac_present else "No HMAC secret stored."}</small>
+            </label>
+            <label class="check full"><input type="checkbox" name="remove_acme_eab_hmac" value="1"> Remove stored EAB HMAC secret</label>
+            <p class="schedule-help full">Public ACME HTTP-01/TLS-ALPN-01 validation normally requires the host's public ports 80 and/or 443 to reach Caddy. Set POLICY_PORT=80 and HTTPS_PORT=443 when those standard ports are required. DNS-01 provider plugins are not included in this branch.</p>
+          </div>
+
+          <button class="primary-button full" type="submit">Apply TLS settings</button>
+        </form>
+      </section>
+
       <section class="panel">
         <div class="panel-kicker">Service details</div><h3>Runtime</h3>
         <p class="panel-help">Current application and storage information for this Blockinator instance.</p>
@@ -2064,6 +2155,10 @@ def settings_page(request: Request):
           <div><span>Log age limit</span><b>{age_summary}</b></div>
           <div><span>Log row limit</span><b>{int(retention):,}</b></div>
           <div><span>Default timezone</span><b class="mono">{esc(default_timezone)}</b></div>
+          <div><span>TLS mode</span><b>{esc(tls_mode_label)}</b></div>
+          <div><span>Caddy</span><b>{"Reachable" if tls_status.caddy_reachable else "Unavailable"}</b></div>
+          <div><span>HTTPS port</span><b class="mono">{esc(https_port)}</b></div>
+          <div><span>Last TLS apply</span><b class="mono">{esc(tls_status.last_applied or "Never")}</b></div>
         </div>
       </section>
     </div>'''
@@ -2111,3 +2206,56 @@ async def save_settings(request: Request):
         notice = "Settings saved; automatic retention will apply on the next logged query"
 
     return redirect("/settings", notice=notice)
+
+
+async def _optional_upload_bytes(form, field_name: str, max_bytes: int = 1024 * 1024) -> bytes | None:
+    upload = form.get(field_name)
+    if not getattr(upload, "filename", None):
+        return None
+    data = await upload.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"{field_name} exceeds the 1 MiB upload limit")
+    if not data.strip():
+        raise ValueError(f"{field_name} is empty")
+    return data
+
+
+@app.post("/admin/settings/tls")
+async def save_tls_settings(request: Request):
+    _, form = await require_post_session(request)
+    settings = TlsSettings(
+        mode=str(form.get("tls_mode", "http")).strip().lower(),
+        hostname=str(form.get("tls_hostname", "")).strip(),
+        acme_email=str(form.get("tls_acme_email", "")).strip(),
+        acme_directory=str(
+            form.get("tls_acme_directory", DEFAULT_ACME_DIRECTORY)
+        ).strip(),
+        acme_eab_key_id=str(form.get("tls_acme_eab_key_id", "")).strip(),
+    )
+    try:
+        certificate_pem = await _optional_upload_bytes(form, "tls_certificate")
+        private_key_pem = await _optional_upload_bytes(form, "tls_private_key")
+        ca_root_pem = await _optional_upload_bytes(form, "tls_acme_ca_root")
+        eab_hmac_raw = str(form.get("tls_acme_eab_hmac", ""))
+        eab_hmac = eab_hmac_raw if eab_hmac_raw.strip() else None
+        tls_manager.configure(
+            settings,
+            certificate_pem=certificate_pem,
+            private_key_pem=private_key_pem,
+            ca_root_pem=ca_root_pem,
+            eab_hmac=eab_hmac,
+            remove_ca_root=str(form.get("remove_acme_ca_root", "")) == "1",
+            remove_eab_hmac=str(form.get("remove_acme_eab_hmac", "")) == "1",
+        )
+    except Exception as exc:
+        return redirect("/settings", error=f"TLS settings were not applied: {exc}")
+
+    mode_label = {
+        "http": "HTTP-only mode",
+        "upload": "uploaded-certificate HTTPS",
+        "acme": "ACME-managed HTTPS",
+    }.get(settings.mode, "TLS configuration")
+    return redirect(
+        "/settings",
+        notice=f"Applied {mode_label}; Caddy reloaded without restarting Blockinator",
+    )
