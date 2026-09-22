@@ -324,6 +324,7 @@ class Database:
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('global_blocking','1')")
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('block_response','nxdomain')")
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('unmatched_scope_action','allow')")
+            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('global_blocklist_scope_mode','all_clients')")
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('max_query_logs','25000')")
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('max_query_log_age_days','0')")
             bootstrap_timezone = os.getenv("TZ", "UTC").strip() or "UTC"
