@@ -1,17 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
-import shutil
 import tempfile
 import threading
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
@@ -21,6 +21,17 @@ from .db import Database
 
 DEFAULT_ACME_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory"
 TLS_MODES = {"http", "upload", "acme"}
+
+_TLS_SETTING_DEFAULTS = {
+    "tls_mode": "http",
+    "tls_hostname": "",
+    "tls_acme_email": "",
+    "tls_acme_directory": DEFAULT_ACME_DIRECTORY,
+    "tls_acme_eab_key_id": "",
+    "tls_http_redirect": "0",
+    "tls_last_applied": "",
+    "tls_last_error": "",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,14 +128,7 @@ def _dnsname_matches(hostname: str, pattern: str) -> bool:
     return hostname == pattern
 
 
-def parse_certificate(pem: bytes) -> CertificateInfo:
-    try:
-        certs = x509.load_pem_x509_certificates(pem)
-    except ValueError as exc:
-        raise ValueError("Certificate file does not contain valid PEM X.509 certificates") from exc
-    if not certs:
-        raise ValueError("Certificate file contains no X.509 certificates")
-    cert = certs[0]
+def _certificate_info(cert: x509.Certificate) -> CertificateInfo:
     try:
         sans = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
         dns_names = tuple(sans.value.get_values_for_type(x509.DNSName))
@@ -140,14 +144,28 @@ def parse_certificate(pem: bytes) -> CertificateInfo:
     )
 
 
+def _load_leaf_certificate(pem: bytes) -> tuple[x509.Certificate, CertificateInfo]:
+    try:
+        certs = x509.load_pem_x509_certificates(pem)
+    except ValueError as exc:
+        raise ValueError("Certificate file does not contain valid PEM X.509 certificates") from exc
+    if not certs:
+        raise ValueError("Certificate file contains no X.509 certificates")
+    cert = certs[0]
+    return cert, _certificate_info(cert)
+
+
+def parse_certificate(pem: bytes) -> CertificateInfo:
+    return _load_leaf_certificate(pem)[1]
+
+
 def validate_certificate_and_key(
     cert_pem: bytes,
     key_pem: bytes,
     hostname: str,
 ) -> CertificateInfo:
-    info = parse_certificate(cert_pem)
+    cert, info = _load_leaf_certificate(cert_pem)
     try:
-        cert = x509.load_pem_x509_certificates(cert_pem)[0]
         key = serialization.load_pem_private_key(key_pem, password=None)
     except (TypeError, ValueError) as exc:
         raise ValueError("Private key must be a valid unencrypted PEM private key") from exc
@@ -180,8 +198,24 @@ def validate_ca_root(pem: bytes) -> None:
         raise ValueError("ACME CA root file contains no certificates")
 
 
-def _caddy_quote(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+def _config_bytes(config: dict[str, Any]) -> bytes:
+    return json.dumps(
+        config,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def _config_hash(config: dict[str, Any]) -> str:
+    return hashlib.sha256(_config_bytes(config)).hexdigest()
+
+
+def _reverse_proxy_handler() -> dict[str, Any]:
+    return {
+        "handler": "reverse_proxy",
+        "upstreams": [{"dial": "blockinator:8080"}],
+    }
 
 
 class TlsManager:
@@ -189,6 +223,8 @@ class TlsManager:
     KEY_FILE = "uploaded-key.pem"
     CA_ROOT_FILE = "acme-ca-root.pem"
     EAB_HMAC_FILE = "acme-eab-hmac"
+    HTTP_SERVER_NAME = "blockinator_http"
+    HTTPS_SERVER_NAME = "blockinator_https"
 
     def __init__(
         self,
@@ -214,6 +250,16 @@ class TlsManager:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        initial = self.db.get_settings(
+            {
+                "tls_last_error": "",
+                "tls_last_applied": "",
+            }
+        )
+        self._last_error_cache = initial["tls_last_error"]
+        self._last_applied_hash: str | None = None
+        self._caddy_reachable = False
+        self._managed_config_present = False
 
     @property
     def cert_path(self) -> Path:
@@ -231,40 +277,66 @@ class TlsManager:
     def eab_hmac_path(self) -> Path:
         return self.tls_dir / self.EAB_HMAC_FILE
 
-    def load_settings(self) -> TlsSettings:
-        mode = self.db.get_setting("tls_mode", "http")
+    @staticmethod
+    def _settings_from_values(values: dict[str, str]) -> TlsSettings:
+        mode = values.get("tls_mode", "http")
         if mode not in TLS_MODES:
             mode = "http"
         return TlsSettings(
             mode=mode,
-            hostname=self.db.get_setting("tls_hostname", ""),
-            acme_email=self.db.get_setting("tls_acme_email", ""),
-            acme_directory=self.db.get_setting(
+            hostname=values.get("tls_hostname", ""),
+            acme_email=values.get("tls_acme_email", ""),
+            acme_directory=values.get(
                 "tls_acme_directory",
                 DEFAULT_ACME_DIRECTORY,
             )
             or DEFAULT_ACME_DIRECTORY,
-            acme_eab_key_id=self.db.get_setting("tls_acme_eab_key_id", ""),
-            http_redirect=self.db.get_setting("tls_http_redirect", "0") == "1",
+            acme_eab_key_id=values.get("tls_acme_eab_key_id", ""),
+            http_redirect=values.get("tls_http_redirect", "0") == "1",
         )
 
-    def _save_settings(self, settings: TlsSettings) -> None:
-        self.db.set_setting("tls_mode", settings.mode)
-        self.db.set_setting("tls_hostname", settings.hostname)
-        self.db.set_setting("tls_acme_email", settings.acme_email)
-        self.db.set_setting("tls_acme_directory", settings.acme_directory)
-        self.db.set_setting("tls_acme_eab_key_id", settings.acme_eab_key_id)
-        self.db.set_setting("tls_http_redirect", "1" if settings.http_redirect else "0")
+    @staticmethod
+    def _settings_values(settings: TlsSettings) -> dict[str, str]:
+        return {
+            "tls_mode": settings.mode,
+            "tls_hostname": settings.hostname,
+            "tls_acme_email": settings.acme_email,
+            "tls_acme_directory": settings.acme_directory,
+            "tls_acme_eab_key_id": settings.acme_eab_key_id,
+            "tls_http_redirect": "1" if settings.http_redirect else "0",
+        }
+
+    def load_settings(self) -> TlsSettings:
+        values = self.db.get_settings(
+            {key: value for key, value in _TLS_SETTING_DEFAULTS.items() if not key.startswith("tls_last_")}
+        )
+        return self._settings_from_values(values)
 
     def _set_last_error(self, value: str) -> None:
-        self.db.set_setting("tls_last_error", value[:4000])
+        normalized = value[:4000]
+        if normalized == self._last_error_cache:
+            return
+        self.db.set_settings({"tls_last_error": normalized})
+        self._last_error_cache = normalized
 
-    def _set_applied(self) -> None:
-        self.db.set_setting(
-            "tls_last_applied",
-            datetime.now(timezone.utc).isoformat(),
-        )
-        self._set_last_error("")
+    def _record_success(
+        self,
+        settings: TlsSettings,
+        config_hash: str,
+        *,
+        save_settings: bool,
+    ) -> None:
+        values = {
+            "tls_last_applied": datetime.now(timezone.utc).isoformat(),
+            "tls_last_error": "",
+        }
+        if save_settings:
+            values.update(self._settings_values(settings))
+        self.db.set_settings(values)
+        self._last_error_cache = ""
+        self._last_applied_hash = config_hash
+        self._caddy_reachable = True
+        self._managed_config_present = True
 
     def _write_atomic(self, path: Path, data: bytes, mode: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -332,12 +404,17 @@ class TlsManager:
         except OSError as exc:
             raise RuntimeError(f"Could not reach Caddy admin API: {exc}") from exc
 
-    def caddy_reachable(self) -> bool:
+    def _probe_caddy_state(self) -> tuple[bool, bool, str]:
         try:
-            self._request("/config/", timeout=2.0)
-            return True
-        except Exception:
-            return False
+            raw = self._request("/config/apps/http/servers", timeout=2.0)
+            servers = json.loads(raw.decode("utf-8") or "{}")
+            managed = isinstance(servers, dict) and self.HTTP_SERVER_NAME in servers
+            return True, managed, ""
+        except Exception as exc:
+            return False, False, str(exc)
+
+    def caddy_reachable(self) -> bool:
+        return self._caddy_reachable
 
     def _validate_settings(self, settings: TlsSettings) -> TlsSettings:
         if settings.mode not in TLS_MODES:
@@ -368,92 +445,156 @@ class TlsManager:
             http_redirect=bool(settings.http_redirect),
         )
 
-    def render_caddyfile(self, settings: TlsSettings | None = None) -> str:
-        settings = self._validate_settings(settings or self.load_settings())
-        lines = [
-            "{",
-            "  admin 0.0.0.0:2019",
-            "  persist_config off",
-        ]
-
-        if settings.mode == "acme":
-            lines.append("  auto_https disable_redirects")
-            if settings.acme_email:
-                lines.append(f"  email {_caddy_quote(settings.acme_email)}")
-            if settings.acme_directory:
-                lines.append(f"  acme_ca {_caddy_quote(settings.acme_directory)}")
-            if self.ca_root_path.exists():
-                lines.append("  acme_ca_root /blockinator-tls/acme-ca-root.pem")
-            if settings.acme_eab_key_id:
-                if not self.eab_hmac_path.exists():
-                    raise ValueError("ACME EAB key ID is set but no EAB HMAC key is stored")
-                mac_key = self.eab_hmac_path.read_text(encoding="utf-8").strip()
-                if not mac_key:
-                    raise ValueError("Stored ACME EAB HMAC key is empty")
-                lines.extend([
-                    "  acme_eab {",
-                    f"    key_id {_caddy_quote(settings.acme_eab_key_id)}",
-                    f"    mac_key {_caddy_quote(mac_key)}",
-                    "  }",
-                ])
-        else:
-            lines.append("  auto_https off")
-        lines.extend(["}", "", ":80 {"])
+    def _http_handler(self, settings: TlsSettings) -> dict[str, Any]:
         if settings.mode != "http" and settings.http_redirect:
             try:
                 https_port = int(os.getenv("HTTPS_PORT", "8443"))
             except ValueError:
                 https_port = 8443
             port_suffix = "" if https_port == 443 else f":{https_port}"
-            redirect_target = f"https://{settings.hostname}{port_suffix}{{uri}}"
-            lines.append(f"  redir {redirect_target} 308")
-        else:
-            lines.append("  reverse_proxy blockinator:8080")
-        lines.append("}")
+            return {
+                "handler": "static_response",
+                "headers": {
+                    "Location": [
+                        f"https://{settings.hostname}{port_suffix}{{http.request.uri}}"
+                    ]
+                },
+                "status_code": 308,
+            }
+        return _reverse_proxy_handler()
+
+    def render_caddy_json(
+        self,
+        settings: TlsSettings | None = None,
+    ) -> dict[str, Any]:
+        settings = self._validate_settings(settings or self.load_settings())
+        http_app: dict[str, Any] = {
+            "servers": {
+                self.HTTP_SERVER_NAME: {
+                    "listen": [":80"],
+                    "routes": [
+                        {
+                            "handle": [self._http_handler(settings)],
+                        }
+                    ],
+                }
+            }
+        }
+        config: dict[str, Any] = {
+            "admin": {
+                "listen": "0.0.0.0:2019",
+                "config": {"persist": False},
+            },
+            "apps": {
+                "http": http_app,
+            },
+        }
+
+        if settings.mode == "http":
+            return config
+
+        https_server: dict[str, Any] = {
+            "listen": [":443"],
+            "routes": [
+                {
+                    "match": [{"host": [settings.hostname]}],
+                    "handle": [_reverse_proxy_handler()],
+                    "terminal": True,
+                }
+            ],
+        }
+        http_app["servers"][self.HTTPS_SERVER_NAME] = https_server
 
         if settings.mode == "upload":
             if not self.cert_path.exists() or not self.key_path.exists():
                 raise ValueError("Uploaded certificate mode requires both certificate and private key")
-            lines.extend([
-                "",
-                f"https://{settings.hostname} {{",
-                "  tls /blockinator-tls/uploaded-cert.pem /blockinator-tls/uploaded-key.pem",
-                "  reverse_proxy blockinator:8080",
-                "}",
-            ])
-        elif settings.mode == "acme":
-            lines.extend([
-                "",
-                f"{settings.hostname} {{",
-                "  reverse_proxy blockinator:8080",
-                "}",
-            ])
-        return "\n".join(lines) + "\n"
+            https_server["tls_connection_policies"] = [
+                {
+                    "match": {"sni": [settings.hostname]},
+                    "certificate_selection": {"any_tag": ["blockinator-upload"]},
+                }
+            ]
+            https_server["automatic_https"] = {"disable": True}
+            config["apps"]["tls"] = {
+                "certificates": {
+                    "load_files": [
+                        {
+                            "certificate": "/blockinator-tls/uploaded-cert.pem",
+                            "key": "/blockinator-tls/uploaded-key.pem",
+                            "tags": ["blockinator-upload"],
+                        }
+                    ]
+                }
+            }
+            return config
 
-    def _adapt(self, caddyfile: str) -> None:
-        self._request(
-            "/adapt",
-            method="POST",
-            body=caddyfile.encode("utf-8"),
-            content_type="text/caddyfile",
-        )
+        https_server["tls_connection_policies"] = [
+            {"match": {"sni": [settings.hostname]}}
+        ]
+        https_server["automatic_https"] = {"disable_redirects": True}
 
-    def _load(self, caddyfile: str) -> None:
+        issuer: dict[str, Any] = {
+            "module": "acme",
+            "ca": settings.acme_directory,
+        }
+        if settings.acme_email:
+            issuer["email"] = settings.acme_email
+        if self.ca_root_path.exists():
+            issuer["trusted_roots_pem_files"] = [
+                "/blockinator-tls/acme-ca-root.pem"
+            ]
+        if settings.acme_eab_key_id:
+            if not self.eab_hmac_path.exists():
+                raise ValueError("ACME EAB key ID is set but no EAB HMAC key is stored")
+            mac_key = self.eab_hmac_path.read_text(encoding="utf-8").strip()
+            if not mac_key:
+                raise ValueError("Stored ACME EAB HMAC key is empty")
+            issuer["external_account"] = {
+                "key_id": settings.acme_eab_key_id,
+                "mac_key": mac_key,
+            }
+
+        config["apps"]["tls"] = {
+            "automation": {
+                "policies": [
+                    {
+                        "subjects": [settings.hostname],
+                        "issuers": [issuer],
+                    }
+                ]
+            }
+        }
+        return config
+
+    def _load(self, config: dict[str, Any]) -> None:
         self._request(
             "/load",
             method="POST",
-            body=caddyfile.encode("utf-8"),
-            content_type="text/caddyfile",
+            body=_config_bytes(config),
+            content_type="application/json",
             timeout=20.0,
         )
 
-    def apply_saved(self) -> None:
+    def apply_saved(self, *, force: bool = False) -> bool:
         with self._lock:
+            settings = self.load_settings()
+            config = self.render_caddy_json(settings)
+            desired_hash = _config_hash(config)
+            if (
+                not force
+                and self._caddy_reachable
+                and self._managed_config_present
+                and desired_hash == self._last_applied_hash
+            ):
+                return False
             try:
-                caddyfile = self.render_caddyfile(self.load_settings())
-                self._adapt(caddyfile)
-                self._load(caddyfile)
-                self._set_applied()
+                self._load(config)
+                self._record_success(
+                    settings,
+                    desired_hash,
+                    save_settings=False,
+                )
+                return True
             except Exception as exc:
                 self._set_last_error(str(exc))
                 raise
@@ -478,6 +619,8 @@ class TlsManager:
         ]
         backups = self._backups(secret_paths)
         previous = self.load_settings()
+        previous_config = self.render_caddy_json(previous)
+        previous_hash = _config_hash(previous_config)
 
         with self._lock:
             try:
@@ -523,24 +666,30 @@ class TlsManager:
                             "ACME EAB requires both a key ID and an HMAC key, or neither"
                         )
 
-                caddyfile = self.render_caddyfile(candidate)
-                self._adapt(caddyfile)
-                self._load(caddyfile)
-                self._save_settings(candidate)
-                self._set_applied()
+                config = self.render_caddy_json(candidate)
+                config_hash = _config_hash(config)
+                self._load(config)
+                self._record_success(
+                    candidate,
+                    config_hash,
+                    save_settings=True,
+                )
                 return cert_info
             except Exception as exc:
                 self._restore(backups)
                 self._set_last_error(str(exc))
                 try:
-                    previous_config = self.render_caddyfile(previous)
                     self._load(previous_config)
+                    self._last_applied_hash = previous_hash
+                    self._caddy_reachable = True
+                    self._managed_config_present = True
                 except Exception:
                     pass
                 raise
 
     def status(self) -> TlsStatus:
-        settings = self.load_settings()
+        values = self.db.get_settings(_TLS_SETTING_DEFAULTS)
+        settings = self._settings_from_values(values)
         cert_info: CertificateInfo | None = None
         if self.cert_path.exists():
             try:
@@ -549,14 +698,14 @@ class TlsManager:
                 cert_info = None
         return TlsStatus(
             settings=settings,
-            caddy_reachable=self.caddy_reachable(),
+            caddy_reachable=self._caddy_reachable,
             uploaded_certificate=cert_info,
             uploaded_cert_present=self.cert_path.exists(),
             uploaded_key_present=self.key_path.exists(),
             acme_ca_root_present=self.ca_root_path.exists(),
             acme_eab_hmac_present=self.eab_hmac_path.exists(),
-            last_applied=self.db.get_setting("tls_last_applied", ""),
-            last_error=self.db.get_setting("tls_last_error", ""),
+            last_applied=values["tls_last_applied"],
+            last_error=values["tls_last_error"],
         )
 
     def start(self) -> None:
@@ -578,11 +727,32 @@ class TlsManager:
         self._thread = None
 
     def _run(self) -> None:
-        # Caddy is expected to be healthy before Blockinator starts, but an
-        # independent Caddy restart is also reconciled here.
         while not self._stop.is_set():
-            try:
-                self.apply_saved()
-            except Exception:
-                pass
+            was_reachable = self._caddy_reachable
+            reachable, managed, probe_error = self._probe_caddy_state()
+            self._caddy_reachable = reachable
+            self._managed_config_present = managed
+
+            if not reachable:
+                self._set_last_error(probe_error)
+            else:
+                try:
+                    settings = self.load_settings()
+                    config = self.render_caddy_json(settings)
+                    desired_hash = _config_hash(config)
+                    should_apply = (
+                        not was_reachable
+                        or not managed
+                        or desired_hash != self._last_applied_hash
+                    )
+                    if should_apply:
+                        self._load(config)
+                        self._record_success(
+                            settings,
+                            desired_hash,
+                            save_settings=False,
+                        )
+                except Exception as exc:
+                    self._set_last_error(str(exc))
+
             self._stop.wait(self.reconcile_seconds)
