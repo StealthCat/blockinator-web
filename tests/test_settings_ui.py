@@ -31,3 +31,12 @@ def test_system_settings_exposes_unmatched_scope_default_action():
     assert '<option value="allow"' in source
     assert '<option value="deny"' in source
     assert 'No matching policy target' in source
+
+
+def test_system_settings_exposes_global_blocklist_scope_mode():
+    source = Path("app/main.py").read_text(encoding="utf-8")
+
+    assert 'name="global_blocklist_scope_mode"' in source
+    assert 'value="all_clients"' in source
+    assert 'value="matched_scopes"' in source
+    assert 'Global block-list reach' in source
