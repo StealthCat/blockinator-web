@@ -4,146 +4,404 @@
 
 # Blockinator
 
-**Blockinator** is a self-hosted DNS policy-control service designed to sit behind DNS servers such as Technitium DNS Server. It receives DNS request metadata over an authenticated API and returns an allow/block decision based on global policy, network, exact-client, reverse-DNS hostname scopes, and imported block lists.
+**Blockinator** is a self-hosted DNS policy and block-list management service designed to work with DNS servers such as Technitium DNS Server.
 
-The application is packaged as a Docker service and includes a responsive, multi-page administration console.
+It accepts DNS query metadata through an authenticated policy API, determines which policy applies to the client, evaluates configured block lists, and returns an allow/block decision. A responsive web console provides policy management, block-list imports, schedules, query logging, security controls, and managed HTTPS.
 
-## Features
+Blockinator is packaged for Docker Compose, uses SQLite for persistent configuration and history, and automatically migrates existing databases as features are added.
 
-- Polished Blockinator web console with dashboard, block-list, scope, query-log, security, and settings pages.
-- Optional HTTPS termination through a managed Caddy sidecar, with uploaded PEM certificates or ACME issuance.
-- Custom ACME directory URLs, private CA root certificates, and External Account Binding (EAB) are supported from System Settings.
-- Global pause/resume for DNS blocking.
-- Configurable Allow/Deny fallback for otherwise-allowed queries from clients with no matching active policy target.
-- Configurable global block-list reach: apply Global lists to every client or only to clients with a matching active policy target.
-- Editable policy targets for networks, exact client IPs, and reverse-DNS hostnames, with block-list assignment directly from the Policy Targets page.
-- A single Network target can carry dual-stack IPv4 and IPv6 CIDRs concurrently, sharing one state, schedule, and block-list assignment set.
-- Reverse-DNS hostname targets support exact PTR names and wildcard suffixes such as `*.kids.home.arpa`.
-- Networks, exact endpoints, and reverse-DNS hostname targets can have recurring weekly schedules with selectable days, times, overnight windows, and IANA timezones.
-- Policy precedence is exact IP endpoint → reverse-DNS hostname → most-specific network → global policy.
-- Multiple independent block lists with URL, upload, and pasted-text imports.
-- URL-backed block lists refresh automatically on each list's independently configured interval.
-- Block lists are editable directly from the Block Lists page, including name, source URL, format, refresh interval, enabled state, and optional content replacement.
-- Manual lists can be edited one domain at a time on a dedicated page, with search, pagination, add, and remove controls.
-- Per-list global assignment plus editable per-network/per-client/per-hostname assignments from the same Block Lists screen.
-- Recurring weekly enforcement schedules per block list, with selectable days, start/end times, overnight windows, and IANA timezones.
-- Hosts-file, one-domain-per-line, and common DNS-oriented Adblock rule parsing.
-- Database-backed administrator credentials with salted `scrypt` password hashes.
-- Database-backed login sessions, HTTP-only cookies, and CSRF-protected admin forms.
-- Multiple named API keys with enable/disable, rotation, deletion, fingerprints, and last-used timestamps.
-- API keys stored only as SHA-256 hashes.
-- In-memory API-key cache keeps the DNS decision path lightweight.
-- Query audit log with filtering and full request-detail inspection, including the querying DNS server on every log row.
-- Client filter accepts either an IP address or reverse-DNS hostname, including partial hostname matches.
-- Configurable row-count and time-based query-log retention, enforced together with immediate pruning when settings change.
-- Reverse-DNS client names displayed alongside client IP addresses, with bounded lookups and caching.
-- SQLite persistence and automatic schema migration.
+> The companion Technitium integration is maintained separately in the `blockinator-technitium` repository.
 
-## System Settings layout
+## Highlights
 
-System Settings is organized into three tabs:
+### Policy targeting
 
-- **DNS & logs** — blocked-response behavior, global block-list reach, unmatched-policy-target fallback, query-log retention, and default timezone.
-- **HTTPS & TLS** — HTTP-only, uploaded-certificate, and ACME configuration.
-- **Runtime** — application, proxy, storage, and current TLS status.
+Blockinator can apply policy by:
 
-The HTTPS & TLS tab shows only the controls required for the currently selected setup type. Hidden modes are also disabled, so irrelevant fields are not submitted with the form.
+- **Network** — IPv4 CIDR, IPv6 CIDR, or both on the same target.
+- **Endpoint** — one exact IPv4 or IPv6 client address.
+- **Reverse-DNS hostname** — exact PTR names such as `desktop-01.home.arpa`.
+- **Reverse-DNS wildcard** — suffix patterns such as `*.kids.home.arpa`.
+- **Global policy** — settings and block lists that apply beyond individually defined targets.
 
-## HTTPS, uploaded certificates, and ACME
+A dual-stack Network target shares one name, state, schedule, and block-list assignment set across both address families.
 
-The `acme-tls` branch adds a Caddy sidecar in front of Blockinator. Blockinator itself continues to listen only on the Docker-internal HTTP port, while Caddy owns the host-facing HTTP and HTTPS ports.
+### Policy precedence
 
-Default port mappings are:
+Client policy state is evaluated in this order:
 
-```text
-HTTP   host:8080 -> Caddy:80
-HTTPS  host:8443 -> Caddy:443
+1. Global pause.
+2. Exact client-IP Endpoint.
+3. Matching reverse-DNS hostname.
+4. Most-specific matching Network.
+5. Unmatched-client fallback.
+
+A paused matching target permits the query rather than continuing to a lower-priority target.
+
+Block-list assignments are **additive**. The active list set can contain:
+
+- enabled Global lists;
+- lists assigned to the matching Network;
+- lists assigned to the matching reverse-DNS hostname; and
+- lists assigned to the matching Endpoint.
+
+All active lists are still subject to their own enabled state and schedule.
+
+### Unmatched clients
+
+Under **System Settings → DNS & logs**, Blockinator provides two controls for clients that do not match any active policy target:
+
+- **Global block-list reach**
+  - **All clients** — Global lists are evaluated for every client.
+  - **Matched policy targets only** — Global lists are evaluated only when an active Network, Endpoint, or hostname target matched.
+- **Default action**
+  - **Allow** — permit an unmatched query after any applicable lists are evaluated.
+  - **Deny** — block an otherwise-allowed unmatched query with `no_scope_default_deny`.
+
+This makes it possible to run either an open-by-default or closed-by-default policy model.
+
+## Block-list management
+
+Blockinator supports multiple independent block lists with their own source, parser, assignments, state, and schedule.
+
+### Sources
+
+Lists can be created from:
+
+- a remote URL;
+- an uploaded file;
+- pasted rules; or
+- a manually maintained domain list.
+
+Supported input formats include:
+
+- one domain per line;
+- hosts-file style entries; and
+- common DNS-oriented Adblock rules.
+
+Imported domains are normalized before storage. IDNs are stored in ASCII/punycode form, and wildcard-style inputs such as `*.example.com` are normalized to the blockable domain.
+
+A stored entry for `example.com` also matches subdomains such as `ads.example.com`.
+
+### Assignments
+
+Each list can be:
+
+- enabled or disabled;
+- applied globally; or
+- assigned to individual Networks, Endpoints, and reverse-DNS hostname targets.
+
+Assignments can be managed from either side:
+
+- **Block Lists → Edit & assign** shows every target for a selected list.
+- **Policy Targets → Edit & assign** shows every list for a selected target.
+
+Global lists cannot be redundantly assigned to individual targets while **Apply globally** is enabled.
+
+Assignment and policy changes reload the in-memory policy engine immediately.
+
+### Manual list editor
+
+Manual lists have a dedicated **Manage domains** page with:
+
+- single-domain add and remove;
+- search;
+- alphabetical sorting;
+- pagination; and
+- immediate policy reload after changes.
+
+### Automatic URL refresh
+
+Every URL-backed list can have its own automatic refresh interval.
+
+On a successful refresh, Blockinator:
+
+- downloads and parses the source;
+- atomically replaces that list's entries;
+- updates timestamps and entry counts;
+- clears the previous refresh error; and
+- reloads the policy engine.
+
+If a download or parse fails, the last known-good list remains active. An upstream response containing no usable domains is rejected rather than replacing a working list with an empty one.
+
+**Save & refresh URL** performs an immediate import and resets that list's refresh interval clock.
+
+The scheduler scan frequency is controlled by:
+
+```env
+BLOCKLIST_REFRESH_POLL_SECONDS=30
 ```
 
-Change these in `.env` when desired:
+## Scheduling
+
+Recurring weekly schedules can be applied independently to:
+
+- Block Lists;
+- Networks;
+- Endpoints; and
+- Reverse-DNS hostname targets.
+
+Each schedule supports:
+
+- selectable weekdays;
+- start and end times;
+- overnight windows; and
+- an IANA timezone such as `America/New_York`.
+
+Selected weekdays represent the day the window **starts**. For example, a Monday `22:00–06:00` schedule remains active through Tuesday at 06:00.
+
+If start and end times are equal, the schedule covers the entire selected day.
+
+When a target is outside its schedule, it is ignored and policy falls back to the next applicable layer. When a paused target has a schedule, its pause applies only while that schedule is active.
+
+**System Settings → Default timezone** controls query-log display and becomes the default timezone for newly created schedules. Existing schedules retain the timezone already saved with them.
+
+## Reverse DNS
+
+Blockinator resolves client PTR records outside the DNS decision path.
+
+Resolved hostnames are used for:
+
+- reverse-DNS hostname policy targets;
+- Dashboard client display;
+- Query Log client display;
+- Endpoint selectors; and
+- Query Log client searching.
+
+The asynchronous query logger learns and persists IP-to-hostname identities in SQLite, then updates the in-memory policy cache. A new client may initially use only its IP/network/global policy until its PTR identity has been learned.
+
+Exact hostname targets match one normalized PTR name. A pattern such as:
+
+```text
+*.kids.home.arpa
+```
+
+matches `tablet.kids.home.arpa`, but not the bare `kids.home.arpa` suffix itself.
+
+For internal reverse zones, custom resolvers can be configured in `.env`:
+
+```env
+RDNS_NAMESERVERS=192.168.1.2,192.168.1.3
+```
+
+Reverse-DNS identity is only as trustworthy as the resolver and reverse zones providing it, so hostname policy is best suited to networks where you control PTR data.
+
+## Query logging and Dashboard
+
+DNS decisions are written asynchronously so logging does not block the policy path.
+
+The Dashboard shows recent DNS activity, and the full Query Log records:
+
+- timestamp;
+- originating DNS server (`server_id`);
+- client IP and learned PTR hostname;
+- client port;
+- DNS transport/protocol;
+- whether the policy request arrived over HTTP or HTTPS;
+- query name, type, and class;
+- allow/block result;
+- block reason;
+- matched policy target;
+- matched block list; and
+- the original request payload for detail inspection.
+
+Allowed queries intentionally leave the **Reason/Match** display blank. Blocked queries show the relevant blocking reason or list.
+
+### Query Log filters
+
+The Query Log supports filtering by information including:
+
+- querying DNS server;
+- client IP or partial/full PTR hostname;
+- matched block list; and
+- matched policy target.
+
+Policy-target matching is exact, while client hostname filtering supports partial names.
+
+Optional auto-refresh intervals are available at **5, 10, 15, 30, or 60 seconds**. Active filters remain in the URL and are preserved during refresh.
+
+### Retention
+
+Two independent retention controls are available:
+
+- **Maximum age (days)** — `0` disables age-based pruning.
+- **Maximum rows** — keeps only the newest configured number of rows.
+
+When both are enabled, both limits apply. Saving new retention settings immediately prunes existing history, and the same limits are enforced as new query batches are written.
+
+Query timestamps are stored in UTC and converted for display using the configured System Settings timezone, including daylight-saving-time handling.
+
+## Administration and security
+
+The administration console includes Dashboard, Block Lists, Policy Targets, Query Log, Access & Security, and System Settings pages with responsive desktop/mobile layouts.
+
+Security features include:
+
+- SQLite-backed administrator accounts;
+- salted `scrypt` password hashes;
+- database-backed login sessions;
+- HTTP-only session cookies;
+- automatic Secure cookies when the login arrives over HTTPS;
+- CSRF protection for administrative forms;
+- configurable administrator session lifetime;
+- multiple named API keys;
+- API-key enable/disable, rotation, deletion, fingerprints, and last-used timestamps;
+- API keys stored only as SHA-256 hashes; and
+- an in-memory API-key cache to keep authentication overhead off the hot path.
+
+Bootstrap credentials are used only when the database has no administrator or API-key records. After initialization, manage credentials from **Access & Security**.
+
+## HTTPS and TLS
+
+Blockinator uses a managed **Caddy 2.11.4** sidecar as the host-facing HTTP/HTTPS reverse proxy. The Blockinator application itself remains on the internal Compose network.
+
+Default host ports are:
+
+```text
+HTTP   8080
+HTTPS  8443
+```
+
+They can be changed in `.env`:
 
 ```env
 POLICY_PORT=80
 HTTPS_PORT=443
 ```
 
-Existing installations remain in **HTTP only** mode after upgrade.
+The HTTPS port is published for both TCP and UDP, allowing Caddy to use HTTP/3 where supported.
 
-Open **System Settings → HTTPS & certificates** to select one of three modes:
+### TLS modes
 
-- **HTTP only** — no TLS listener is configured.
-- **Uploaded certificate** — upload a PEM certificate/full-chain and matching unencrypted PEM private key.
-- **ACME / custom ACME server** — let Caddy issue and renew the certificate automatically.
+Under **System Settings → HTTPS & TLS**, choose one of:
 
-Uploaded certificates are validated before activation. Blockinator verifies that the certificate and private key match, checks the validity period, and confirms that the configured HTTPS hostname is covered by the certificate's DNS SANs. The private key is stored under `/data/tls` with restrictive filesystem permissions.
+- **HTTP only**
+- **Uploaded certificate**
+- **ACME / custom ACME server**
+
+Existing installations remain HTTP-only until TLS is configured.
+
+### Uploaded certificates
+
+Blockinator accepts a PEM certificate/full chain and matching unencrypted PEM private key.
+
+Before activation it validates:
+
+- certificate/key match;
+- certificate validity period; and
+- DNS SAN coverage for the configured HTTPS hostname.
+
+Private key material is stored under `/data/tls` with restrictive filesystem permissions.
+
+### ACME
 
 ACME mode supports:
 
 - account email;
 - a configurable ACME directory URL;
-- an optional PEM root certificate for a private/internal ACME CA;
+- an optional PEM trust root for a private/internal CA; and
 - optional External Account Binding (EAB) key ID and HMAC secret.
 
-The EAB HMAC secret is stored as a protected file under `/data/tls`; it is not stored in SQLite. Caddy configuration persistence is disabled so the generated Caddy configuration is not autosaved with the EAB secret embedded. Caddy's certificate storage under `./data/caddy` remains persistent for normal ACME account/certificate lifecycle data.
+The EAB HMAC secret is stored as a protected file under `/data/tls`, not in SQLite.
 
-Blockinator generates native Caddy JSON and submits it atomically through Caddy's internal `/load` API. Caddy validates the candidate before activation; if activation fails, uploaded TLS material is restored and the previous configuration is re-applied. The Caddy admin API is available only on the Compose network and is not published to the host.
+Caddy certificate/account state persists under `./data/caddy`.
 
-A background TLS state check detects an independent Caddy restart or a changed desired configuration. In steady state it performs only a lightweight read and does **not** reload Caddy or rewrite TLS status timestamps. Its default interval is 30 seconds:
+For public HTTP-01 or TLS-ALPN-01 validation, the normal public challenge ports generally need to reach Caddy on ports 80 and/or 443. Set `POLICY_PORT=80` and `HTTPS_PORT=443` where required.
+
+DNS-01 provider plugins are not included.
+
+### Safe apply and reconciliation
+
+Blockinator generates native Caddy JSON and loads it atomically through Caddy's Docker-internal admin API.
+
+If a new configuration fails to activate:
+
+- uploaded TLS material is restored; and
+- the previous Caddy configuration is re-applied.
+
+The Caddy admin API is not published to the host.
+
+A background reconciler also detects a restarted Caddy instance or changed desired state and restores the saved configuration when needed. In steady state it performs a lightweight health/configuration check without repeatedly reloading unchanged configuration.
+
+The default reconciliation interval is:
 
 ```env
 TLS_RECONCILE_SECONDS=30
 ```
 
-TLS settings are read/written in batches, repeated errors are de-duplicated, and certificate parsing dependencies are loaded only when X.509 work is actually required. Applying TLS settings runs outside FastAPI's async request loop so a slow Caddy operation cannot stall the DNS decision API.
-
-For public ACME HTTP-01/TLS-ALPN-01 validation, the public challenge ports normally need to reach Caddy on standard ports 80 and/or 443. Set `POLICY_PORT=80` and `HTTPS_PORT=443` where required. DNS-01 provider plugins are intentionally not included in this first implementation.
-
 ### Redirect-only HTTP
 
-After HTTPS is working, **System Settings → HTTPS & certificates** can disable direct HTTP access while leaving the HTTP listener available for redirects.
+After HTTPS is verified, direct HTTP application access can be disabled from the HTTPS-served control panel.
 
-The switch can only be changed while the control panel itself is being accessed over HTTPS. This prevents an administrator from enabling redirect-only mode before verifying that HTTPS is reachable.
+In redirect-only mode:
 
-When enabled:
+- the HTTP listener remains open;
+- application requests receive **308 Permanent Redirect** to HTTPS;
+- path and query string are preserved;
+- POST method/body semantics are preserved; and
+- non-standard `HTTPS_PORT` values are included in the redirect target.
 
-- requests arriving on the HTTP port receive a **308 Permanent Redirect** to the configured HTTPS hostname;
-- the original path and query string are preserved;
-- POST requests keep their method/body semantics across the redirect;
-- redirects include the configured external `HTTPS_PORT` when it is not the standard port 443; and
-- the Docker HTTP port remains open so browsers, API clients, and ACME HTTP challenge traffic can still reach Caddy.
+Keeping the HTTP listener available also allows normal HTTP-to-HTTPS navigation and ACME HTTP challenge traffic.
 
-For example, with:
+## System Settings
 
-```env
-POLICY_PORT=8080
-HTTPS_PORT=8443
-```
+System Settings is divided into three areas:
 
-a request to:
+### DNS & logs
 
-```text
-http://blockinator.example.com:8080/api/v1/decision
-```
+Controls include:
 
-is redirected to:
+- NXDOMAIN or REFUSED blocked responses;
+- global pause/resume;
+- Global block-list reach;
+- unmatched-client Allow/Deny fallback;
+- query-log age and row retention; and
+- default display/schedule timezone.
 
-```text
-https://blockinator.example.com:8443/api/v1/decision
-```
+### HTTPS & TLS
 
-With `HTTPS_PORT=443`, the redirect omits the explicit port.
+Controls include:
 
-Administrator session cookies automatically become Secure when the request arrives through HTTPS. Blockinator trusts forwarding headers from its internal reverse proxy so the application can correctly detect the original scheme.
+- TLS mode;
+- hostname and certificate identity;
+- uploaded certificate/key;
+- ACME server configuration;
+- private CA trust root;
+- EAB;
+- redirect-only HTTP; and
+- TLS status/error information.
+
+Only controls relevant to the selected TLS mode are submitted.
+
+### Runtime
+
+Shows application, proxy, storage, and current TLS/runtime information.
 
 ## Quick start
 
+### 1. Create local configuration
+
 ```bash
 cp .env.example .env
-# Set strong bootstrap values in .env before first startup.
+```
+
+Before first startup, replace at least:
+
+```env
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=replace-with-a-long-random-password
+POLICY_API_KEY=change-this-long-random-api-key
+```
+
+### 2. Start Blockinator
+
+```bash
 docker compose up -d --build
 ```
 
-Open:
+### 3. Open the control panel
+
+With the default ports:
 
 ```text
 http://DOCKER-HOST:8080/
@@ -152,57 +410,53 @@ http://DOCKER-HOST:8080/
 Persistent application data is stored under:
 
 ```text
+./data/
+```
+
+The SQLite database is:
+
+```text
 ./data/policy.db
 ```
 
-The first startup seeds the database administrator and initial API key using `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and `POLICY_API_KEY` from `.env`. Once records exist in SQLite, credentials and API keys are managed from **Access & Security** in the UI.
+On the first startup, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and `POLICY_API_KEY` seed the database. Once records exist, the values in `.env` no longer replace them.
 
-## Repository layout
+## Technitium integration
 
-```text
-.
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-├── .env.example
-├── app/
-│   ├── main.py
-│   ├── auth.py
-│   ├── policy.py
-│   ├── blocklists.py
-│   ├── tls.py
-│   ├── db.py
-│   └── static/
-├── caddy/
-│   └── caddy.bootstrap.json
-├── docs/
-│   └── ACME_TLS_PLAN.md
-└── tests/
+A companion Technitium DNS application can call Blockinator for each DNS request.
+
+Example configuration:
+
+```json
+{
+  "endpoint": "http://192.168.1.50:8080/api/v1/decision",
+  "apiKey": "one-enabled-blockinator-api-key",
+  "serverId": "technitium-1",
+  "timeoutMs": 250,
+  "failMode": "open"
+}
 ```
 
+When HTTPS is enabled, the endpoint can use the configured HTTPS hostname/port instead.
 
-## Policy proxy latency benchmark
+If Technitium and Blockinator share a Docker network and you intentionally want to call the application directly rather than through Caddy:
 
-The repository includes `tools/benchmark_policy_latency.py` to compare the decision API directly against Uvicorn and through the Caddy sidecar using persistent HTTP connections.
-
-Inside the Blockinator container:
-
-```bash
-python /srv/tools/benchmark_policy_latency.py --requests 200 --warmup 20
+```json
+{
+  "endpoint": "http://blockinator:8080/api/v1/decision"
+}
 ```
-
-CI runs a shorter smoke benchmark after starting the real Compose stack. The benchmark is informational rather than a hard performance threshold because shared CI runners vary. On the optimization validation run, 50 requests averaged about **0.431 ms direct** and **0.592 ms through Caddy**, roughly **0.16 ms mean proxy overhead**.
 
 ## Decision API
 
-Blockinator exposes an authenticated policy endpoint:
+### Authentication check
 
 ```text
-POST /api/v1/decision
+GET /api/v1/ping
 X-Api-Key: <enabled Blockinator API key>
 ```
 
-Health/authentication check:
+Example:
 
 ```bash
 curl -i \
@@ -210,13 +464,24 @@ curl -i \
   http://DOCKER-HOST:8080/api/v1/ping
 ```
 
-Example decision request:
+### Policy decision
+
+```text
+POST /api/v1/decision
+X-Api-Key: <enabled Blockinator API key>
+Content-Type: application/json
+```
+
+Example request:
 
 ```json
 {
   "server_id": "technitium-1",
   "protocol": "Udp",
-  "client": {"ip": "192.168.20.44", "port": 53012},
+  "client": {
+    "ip": "192.168.20.44",
+    "port": 53012
+  },
   "dns": {
     "identifier": 1234,
     "is_response": false,
@@ -227,13 +492,17 @@ Example decision request:
     "question_count": 1,
     "wire_base64": "EjQBAAABAAAAAAAB...",
     "questions": [
-      {"name": "ads.example.com", "type": "A", "class": "IN"}
+      {
+        "name": "ads.example.com",
+        "type": "A",
+        "class": "IN"
+      }
     ]
   }
 }
 ```
 
-Example response:
+Example blocked response:
 
 ```json
 {
@@ -246,333 +515,105 @@ Example response:
 }
 ```
 
+When multiple DNS questions are supplied, Blockinator evaluates them in order and returns the first blocking decision. If none block, the first allow decision is returned.
 
+## Environment variables
 
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `ADMIN_USERNAME` | Bootstrap administrator username | `admin` |
+| `ADMIN_PASSWORD` | Bootstrap administrator password | change-me value |
+| `POLICY_API_KEY` | Bootstrap API key | change-me value |
+| `POLICY_PORT` | Host-facing HTTP port | `8080` |
+| `HTTPS_PORT` | Host-facing HTTPS TCP/UDP port | `8443` |
+| `MAX_BLOCKLIST_BYTES` | Maximum accepted block-list size | `104857600` |
+| `BLOCKLIST_REFRESH_POLL_SECONDS` | Background due-list scan frequency | `30` |
+| `ADMIN_COOKIE_SECURE` | Force Secure admin cookies when appropriate | `0` |
+| `ADMIN_SESSION_TTL_SECONDS` | Administrator session lifetime | `43200` |
+| `TZ` | Bootstrap/default timezone for a new database | `UTC` |
+| `RDNS_NAMESERVERS` | Optional comma-separated PTR resolvers | blank |
+| `RDNS_TIMEOUT_SECONDS` | Per-lookup reverse-DNS timeout | `0.5` |
+| `RDNS_PAGE_BUDGET_SECONDS` | UI reverse-DNS render budget | `1.25` |
+| `RDNS_CACHE_TTL_SECONDS` | Positive PTR cache lifetime | `300` |
+| `RDNS_NEGATIVE_TTL_SECONDS` | Negative PTR cache lifetime | `60` |
+| `TLS_RECONCILE_SECONDS` | Caddy/TLS reconciliation interval | `30` |
 
+The persisted System Settings timezone becomes authoritative after initialization; changing `TZ` later does not rewrite existing schedule timezones.
 
+## Data and backups
 
-## Dual-stack network targets
+Blockinator stores persistent state under `./data`.
 
-A single **Network** policy target can contain an IPv4 CIDR, an IPv6 CIDR, or both at the same time.
-
-For example:
-
-```text
-Name: Home LAN
-IPv4 CIDR: 192.168.50.0/24
-IPv6 CIDR: 2001:db8:50::/64
-```
-
-Both address families share the same:
-
-- Active/Paused state;
-- recurring schedule;
-- block-list assignments; and
-- display name.
-
-Blockinator evaluates the most-specific matching network independently for the client's address family. An IPv4 query is compared against IPv4 members of network targets, and an IPv6 query is compared against IPv6 members. This means a dual-stack network can coexist with a more-specific IPv4-only or IPv6-only network without changing precedence behavior.
-
-Existing single-stack Network targets are migrated automatically into the new address-family storage. They remain single-stack until you add the other CIDR in **Policy Targets → Edit & assign**.
-
-## Reverse-DNS hostname policy targets
-
-The **Policy Targets** page supports a third target type in addition to Network and Endpoint: **Reverse-DNS Hostname**.
-
-Examples:
+Important paths include:
 
 ```text
-desktop-01.home.arpa
-*.kids.home.arpa
+./data/policy.db   SQLite configuration and query history
+./data/tls/        Uploaded TLS material and protected ACME EAB secret
+./data/caddy/      Caddy ACME account and certificate state
 ```
 
-An exact hostname target matches one learned PTR name. A leading `*.` creates a suffix target and matches names below that suffix, such as `tablet.kids.home.arpa`. The wildcard does not match the bare suffix `kids.home.arpa`.
+Treat the entire `./data` directory as private and include it in backups if you want to preserve configuration, credentials, logs, and certificate state.
 
-Hostname targets support the same controls as network and endpoint targets:
-
-- Active/Paused state;
-- recurring enforcement schedules;
-- per-target block-list assignments;
-- editing and deletion from the Policy Targets page; and
-- assignment from the Block Lists page.
-
-Policy state precedence is:
-
-1. Global pause.
-2. Exact client-IP endpoint.
-3. Reverse-DNS hostname.
-4. Most-specific matching network.
-5. Default/global policy.
-
-Block-list assignments remain additive: enabled global lists plus matching network, hostname, and exact-client assignments form the active set, subject to their schedules.
-
-### PTR identity learning
-
-PTR resolution remains outside the DNS decision path. The asynchronous query-log worker resolves client addresses, normalizes the PTR hostname, stores the IP→hostname identity in SQLite, and updates the in-memory policy cache.
-
-This means a completely new client may initially use its IP/network/global policy until Blockinator has learned its PTR name. Once learned, subsequent requests can match hostname policy without waiting on a reverse lookup. Learned identities persist across restarts and are refreshed when successful PTR lookups return a new name.
-
-Hostname identity is only as trustworthy as the reverse-DNS service supplying it. It is best suited to internal DNS environments where you control the reverse zones.
-
-## Network and endpoint schedules
-
-Networks, endpoints, and reverse-DNS hostname targets support the same recurring weekly schedule model as block lists.
-
-Open **Policy Targets → Edit & assign → Enforcement schedule** to configure:
-
-- one or more days of the week;
-- start and end times;
-- an IANA timezone such as `America/New_York`; and
-- whether scheduling is enabled.
-
-When scheduling is off, the scope participates in policy at all times. When scheduling is on, the scope only participates during its active window.
-
-This is important for precedence:
-
-- an endpoint outside its schedule is ignored, so hostname/network policy can apply;
-- a hostname target outside its schedule is ignored, so network/global policy can apply;
-- a network outside its schedule is ignored, allowing a broader matching network or global policy to apply;
-- a **Paused** target with a schedule only pauses blocking during that schedule; outside the window, normal fallback policy applies.
-
-Overnight behavior matches block-list schedules: selected days are the days the window begins. A Monday `22:00–06:00` schedule remains active until Tuesday 06:00. Equal start/end times cover the full selected day.
-
-## Editing networks and endpoints
-
-The **Policy Targets** page provides the reverse view of block-list assignments. Open **Edit & assign** on any scope to change:
-
-- display name;
-- scope type (**Network**, **Endpoint**, or **Reverse-DNS Hostname**);
-- IPv4/IPv6 CIDRs for Network targets, exact IPv4/IPv6 address, exact PTR hostname, or wildcard PTR suffix;
-- active/paused blocking state; and
-- every block list explicitly assigned to that scope.
-
-A target can be converted among Network, Endpoint, and Reverse-DNS Hostname. Network targets expose separate IPv4 and IPv6 CIDR fields and require at least one address family.
-
-The block-list picker shows each list's enabled state, entry count, format, and whether it is already global. Global lists apply automatically everywhere, so their per-scope assignment checkbox is shaded and disabled. Scoped lists remain selectable normally.
-
-New networks, endpoints, and hostname targets can also receive their initial block-list assignments during creation. All edits reload the in-memory policy engine immediately.
-
-
-## Manual list domain editor
-
-Manual block lists have a dedicated **Manage domains** action on the Block Lists page.
-
-The separate editor supports:
-
-- adding one domain at a time;
-- removing one domain at a time;
-- searching the current list;
-- alphabetical sorting;
-- pagination for larger manual lists; and
-- immediate policy-engine reload after every add/remove operation.
-
-Domains are normalized with the same Blockinator parser used for imports. For example, `*.example.com` is stored as `example.com`, and IDNs are stored in ASCII/punycode form.
-
-Only lists whose source type is **manual** expose this editor. URL-backed and uploaded lists remain managed through their normal source/import workflow.
-
-
-
-
-### Log timestamp timezone
-
-Query-log timestamps are stored in UTC for stable ordering and retention, then converted for display using **System Settings → Default timezone**.
-
-This applies to both the Dashboard's recent DNS activity and the full Query Log. The displayed timestamp includes the active timezone abbreviation, such as `EDT` or `EST`, and automatically follows daylight-saving-time rules for the configured IANA timezone.
-
-Older rows written by SQLite as timezone-less `CURRENT_TIMESTAMP` values are also interpreted as UTC before display conversion.
-
-### Default schedule timezone
-
-**System Settings** includes a **Default timezone** field. Enter any valid IANA timezone such as `America/New_York`.
-
-The saved system timezone is used for query-log display and to prefill the timezone for newly created block-list and policy-target schedules. Changing it does not rewrite existing schedules; each existing schedule keeps the timezone already saved with it.
-
-The `TZ` environment value remains a bootstrap/fallback value. On a new database, Blockinator seeds the persisted default timezone from `TZ`; after that, changes made in System Settings remain authoritative across restarts.
-
-## Block-list enforcement schedules
-
-Each block list can optionally be limited to a recurring weekly schedule from **Block Lists → Edit & assign → Enforcement schedule**.
-
-A schedule includes:
-
-- one or more days of the week;
-- a start time;
-- an end time; and
-- an IANA timezone such as `America/New_York`.
-
-When scheduling is disabled, the list behaves normally and is eligible for enforcement at all times. When scheduling is enabled, the list participates in policy decisions only while its window is active.
-
-Selected days represent the day the window **starts**. This makes overnight schedules intuitive. For example:
+## Repository layout
 
 ```text
-Days: Monday-Friday
-Start: 22:00
-End: 06:00
-Timezone: America/New_York
+.
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+├── .env.example
+├── CHANGELOG.md
+├── LICENSE
+├── app/
+│   ├── main.py
+│   ├── auth.py
+│   ├── policy.py
+│   ├── blocklists.py
+│   ├── refresher.py
+│   ├── rdns.py
+│   ├── tls.py
+│   ├── timeutil.py
+│   ├── db.py
+│   └── static/
+├── caddy/
+│   └── caddy.bootstrap.json
+├── docs/
+│   └── ACME_TLS_PLAN.md
+├── tests/
+└── tools/
 ```
-
-enforces from 10:00 PM Monday through 6:00 AM Tuesday, and repeats for each selected start day. A Friday 22:00 window therefore remains active until Saturday 06:00.
-
-If start and end are equal—for example `00:00–00:00`—the schedule covers the entire selected day.
-
-Timezone conversion uses Python's IANA timezone database and observes daylight-saving-time changes. The optional `TZ` value in `.env` controls the default timezone offered when creating a new schedule; each block list stores its own timezone after it is saved.
-
-Schedules apply equally to Global lists and lists assigned only to specific networks/endpoints. A list outside its schedule is treated as inactive for that DNS decision.
-
-
-## Automatic URL block-list refresh
-
-URL-backed block lists are refreshed automatically in the background using each list's own **Automatic refresh interval (minutes)** value on the Block Lists page.
-
-For example, these can coexist independently:
-
-```text
-Advertising list     60 minutes
-Malware list         15 minutes
-Telemetry list     1440 minutes
-```
-
-The background scheduler checks for due lists periodically and refreshes only those whose configured interval has elapsed. The default scheduler scan frequency is 30 seconds, so a list normally refreshes within roughly one scheduler scan after becoming due.
-
-On a successful refresh, Blockinator:
-
-- downloads the configured source URL;
-- parses it using that list's selected format;
-- atomically replaces that list's domain entries;
-- updates the entry count and refresh timestamps;
-- clears any prior refresh error; and
-- reloads the in-memory policy engine.
-
-A failed download or parse **does not remove the last known-good list**. Blockinator stores the error, records the attempt time, and waits for that list's configured interval before trying again. An upstream response containing no usable domains is also rejected rather than replacing a working list with an empty one.
-
-Using **Save & refresh URL** performs an immediate refresh and resets the same interval clock, preventing an automatic refresh from immediately following a manual one.
-
-Automatic refresh applies only to URL-backed lists. Uploaded and manual lists are not scheduled for remote refresh.
-
-The scheduler's internal scan frequency can be adjusted with:
-
-```text
-BLOCKLIST_REFRESH_POLL_SECONDS=30
-```
-
-This controls how often Blockinator checks whether lists are due; it does not replace the per-list refresh interval.
-
-## Editing block lists and scope assignments
-
-The **Block Lists** page is now the central place to manage both list settings and where each list applies.
-
-Open **Edit & assign** on any list to change:
-
-- list name and parser format;
-- source URL and refresh interval;
-- enabled/disabled state;
-- whether the list applies globally;
-- assigned network scopes;
-- assigned exact-client/endpoint and reverse-DNS hostname scopes; and
-- list contents by uploading or pasting replacement rules.
-
-For URL-backed lists, **Save & refresh URL** saves the edited metadata and immediately re-imports the list from the configured URL.
-
-Global and scoped assignments are mutually exclusive in the UI. When a list is marked **Global**, individual network/endpoint/hostname assignment controls are shaded and disabled because the list already applies everywhere. Unchecking **Apply globally** immediately re-enables the scope selectors. Global lists cannot be assigned redundantly to individual scopes. Assignment changes reload the in-memory policy engine immediately.
-
-## Policy precedence
-
-Blocking state is evaluated in this order:
-
-1. Global pause: all clients are allowed.
-2. Exact client-IP endpoint.
-3. Matching reverse-DNS hostname scope.
-4. Most-specific matching network scope.
-5. No matching scope: enabled global block lists are evaluated normally, then the configured unmatched-target fallback is applied if the query would otherwise be allowed.
-
-The active block-list set is the union of enabled global lists and lists assigned to every matching active layer: network, reverse-DNS hostname, and exact client.
-
-Under **System Settings → DNS & logs**, **Global block-list reach** controls whether lists marked Global apply to every client or only when an active endpoint, reverse-DNS hostname, or network target matched the client. **All clients** is the upgrade-safe default and preserves existing behavior. In **Matched policy targets only** mode, unmatched clients skip Global lists entirely.
-
-**Default action** then controls the unmatched-target fallback. **Allow** permits an unmatched query after applicable lists are evaluated. **Deny** blocks it with `no_scope_default_deny`. When Global lists are configured for All clients, a Global list match still takes precedence and keeps the normal `blocklist_match` result.
-
-
-
-
-### Reverse-DNS log filtering
-
-The **Query Log → Client** filter matches either the client IP address or its persisted PTR/reverse-DNS hostname. Full or partial hostname searches work, so both `desktop-01` and `desktop-01.home.arpa` can match the same client.
-
-PTR lookups remain outside the DNS decision path. New query-log rows are enriched asynchronously by the log writer, and older retained rows are backfilled opportunistically as their client identities are displayed or searched.
-
-### Querying server identity
-
-Every DNS log view includes the `server_id` supplied by the Technitium plugin, so deployments with multiple DNS resolvers can immediately see which server received each client request. The Dashboard recent-activity table and full Query Log both show the originating DNS server, and the Query Log can be filtered by server.
-
-If an older or custom client submits a request without `server_id`, Blockinator displays **Unknown server** rather than hiding the field.
-
-
-## Query log retention
-
-Blockinator supports two independent query-log retention limits under **System Settings**:
-
-- **Maximum age (days)** — removes query-log rows older than the configured age. Set this to `0` to disable time-based retention.
-- **Maximum rows** — retains only the newest configured number of query-log rows.
-
-When both limits are enabled, **both apply**. A row is removed as soon as it exceeds either threshold. For example, with a 30-day age limit and a 250,000-row cap, Blockinator retains no more than 30 days and no more than 250,000 rows.
-
-Changing retention settings triggers an immediate prune of existing log history. The same retention rules are also applied automatically as new query-log batches are written.
-
-Existing installations preserve their prior behavior after upgrade because time-based retention defaults to `0` (disabled) until you choose an age limit.
-
-## Reverse DNS client names
-
-Blockinator performs PTR lookups for client IP addresses shown in the administration UI. Resolved names appear above the original IP address on the Dashboard, Query Log, and exact client scopes.
-
-By default, PTR lookups use the container's normal DNS configuration. If your local reverse zones are hosted by Technitium or another internal resolver and Docker's resolver cannot reach them directly, set one or more DNS server IPs in `.env`:
-
-```text
-RDNS_NAMESERVERS=192.168.1.2
-```
-
-Multiple resolvers can be comma-separated:
-
-```text
-RDNS_NAMESERVERS=192.168.1.2,192.168.1.3
-```
-
-Lookups are intentionally kept off the DNS decision path. The defaults use a 0.5-second lookup timeout, a 1.25-second page-render budget, a five-minute positive cache, and a one-minute negative cache. These can be adjusted with `RDNS_TIMEOUT_SECONDS`, `RDNS_PAGE_BUDGET_SECONDS`, `RDNS_CACHE_TTL_SECONDS`, and `RDNS_NEGATIVE_TTL_SECONDS`.
-
-## Technitium integration
-
-The companion Technitium DNS application should point its policy endpoint at this container, for example:
-
-```json
-{
-  "endpoint": "http://192.168.1.50:8080/api/v1/decision",
-  "apiKey": "one-enabled-blockinator-api-key",
-  "serverId": "technitium-1",
-  "timeoutMs": 250,
-  "failMode": "open"
-}
-```
-
-If Technitium and Blockinator share a Docker network, use the Compose service name:
-
-```json
-"endpoint": "http://blockinator:8080/api/v1/decision"
-```
-
-## Security notes
-
-- Use a long random bootstrap password and API key before first startup.
-- Once the database has been initialized, rotate credentials through **Access & Security**.
-- Set `ADMIN_COOKIE_SECURE=1` when the panel is served exclusively over HTTPS.
-- API secrets are shown only when created or rotated; only hashes are stored.
-- Keep `./data/` private and backed up.
 
 ## Testing
+
+Run the test suite with:
 
 ```bash
 python -m pytest -q
 ```
 
-Current suite: **59 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+The suite covers authentication, persistence/migrations, block-list parsing and imports, schedules, policy precedence, reverse-DNS behavior, query logging, settings, and TLS configuration.
 
-## Branding
+## Policy latency benchmark
 
-The Blockinator logo, mark, hero art, and UI styling are stored under `app/static/` and are bundled into the Docker image.
+`tools/benchmark_policy_latency.py` compares the decision API directly against Uvicorn and through the Caddy sidecar using persistent HTTP connections.
+
+Inside the Blockinator container:
+
+```bash
+python /srv/tools/benchmark_policy_latency.py --requests 200 --warmup 20
+```
+
+CI also runs a smaller smoke benchmark. Results are informational rather than a hard performance threshold because shared runner performance varies.
+
+## Security recommendations
+
+- Replace bootstrap credentials before the first startup.
+- Rotate administrator credentials and API keys from **Access & Security** after initialization.
+- Prefer HTTPS for the control panel and policy API.
+- Keep `./data` private and backed up.
+- Protect internal DNS/PTR data if reverse-DNS hostname policy is used.
+- Expose Caddy's public HTTP/HTTPS ports as needed, but do not expose its internal admin API.
+
+## License
+
+Blockinator is licensed under the **GNU General Public License v3.0**. See [LICENSE](LICENSE) for the full license text.
