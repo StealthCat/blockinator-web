@@ -25,7 +25,7 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.15.0"
+APP_VERSION = "1.15.1"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -1994,6 +1994,10 @@ def settings_page(request: Request):
     tls_status = tls_manager.status()
     tls_settings = tls_status.settings
     https_port = os.getenv("HTTPS_PORT", "8443")
+    request_is_https = request.url.scheme == "https"
+    http_behavior_label = (
+        "Redirect to HTTPS" if tls_settings.http_redirect else "Direct HTTP allowed"
+    )
     tls_mode_label = {
         "http": "HTTP only",
         "upload": "Uploaded certificate",
@@ -2076,7 +2080,7 @@ def settings_page(request: Request):
       <section class="panel action-panel tls-settings-panel">
         <div class="panel-kicker">Transport security</div>
         <h3>HTTPS & certificates</h3>
-        <p class="panel-help">Caddy terminates TLS in front of Blockinator. HTTP remains available on the configured policy port while HTTPS is enabled separately.</p>
+        <p class="panel-help">Caddy terminates TLS in front of Blockinator. Direct HTTP can remain available or become redirect-only after HTTPS is working.</p>
         {tls_error_html}
         <form method="post" action="/admin/settings/tls" enctype="multipart/form-data" class="form-grid" data-tls-settings-form>
           <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
@@ -2091,6 +2095,27 @@ def settings_page(request: Request):
             <input name="tls_hostname" value="{esc(tls_settings.hostname)}" placeholder="blockinator.example.com">
             <small>Use a fully qualified DNS hostname. HTTPS is published on host port {esc(https_port)}.</small>
           </label>
+
+          <div class="form-section full" data-tls-http-behavior>
+            <div class="form-section-head">
+              <div><b>HTTP access</b><p>Keep direct HTTP available, or make the HTTP listener redirect every request to the configured HTTPS hostname.</p></div>
+              <span>{esc(http_behavior_label)}</span>
+            </div>
+            <label class="check full">
+              <input type="checkbox" name="tls_http_redirect" value="1"
+                     {"checked" if tls_settings.http_redirect else ""}
+                     {"" if request_is_https else "disabled"}>
+              Disable direct HTTP and redirect HTTP traffic to HTTPS
+            </label>
+            <p class="schedule-help full">
+              {
+                "This control is unlocked because this settings page is being accessed over HTTPS."
+                if request_is_https
+                else "Open System Settings over HTTPS before enabling or disabling redirect-only HTTP. This protects against accidentally locking out the control panel."
+              }
+              The HTTP listener stays open for redirects; it is not removed from Docker.
+            </p>
+          </div>
 
           <div class="form-section full" data-tls-upload-fields>
             <div class="form-section-head">
@@ -2158,6 +2183,7 @@ def settings_page(request: Request):
           <div><span>TLS mode</span><b>{esc(tls_mode_label)}</b></div>
           <div><span>Caddy</span><b>{"Reachable" if tls_status.caddy_reachable else "Unavailable"}</b></div>
           <div><span>HTTPS port</span><b class="mono">{esc(https_port)}</b></div>
+          <div><span>HTTP behavior</span><b>{esc(http_behavior_label)}</b></div>
           <div><span>Last TLS apply</span><b class="mono">{esc(tls_status.last_applied or "Never")}</b></div>
         </div>
       </section>
@@ -2223,6 +2249,17 @@ async def _optional_upload_bytes(form, field_name: str, max_bytes: int = 1024 * 
 @app.post("/admin/settings/tls")
 async def save_tls_settings(request: Request):
     _, form = await require_post_session(request)
+    current_tls_settings = tls_manager.load_settings()
+    requested_http_redirect = str(form.get("tls_http_redirect", "")) == "1"
+    if (
+        request.url.scheme != "https"
+        and requested_http_redirect != current_tls_settings.http_redirect
+    ):
+        return redirect(
+            "/settings",
+            error="HTTP redirect behavior can only be changed while System Settings is accessed over HTTPS",
+        )
+
     settings = TlsSettings(
         mode=str(form.get("tls_mode", "http")).strip().lower(),
         hostname=str(form.get("tls_hostname", "")).strip(),
@@ -2231,6 +2268,7 @@ async def save_tls_settings(request: Request):
             form.get("tls_acme_directory", DEFAULT_ACME_DIRECTORY)
         ).strip(),
         acme_eab_key_id=str(form.get("tls_acme_eab_key_id", "")).strip(),
+        http_redirect=requested_http_redirect,
     )
     try:
         certificate_pem = await _optional_upload_bytes(form, "tls_certificate")
@@ -2255,7 +2293,12 @@ async def save_tls_settings(request: Request):
         "upload": "uploaded-certificate HTTPS",
         "acme": "ACME-managed HTTPS",
     }.get(settings.mode, "TLS configuration")
+    redirect_label = (
+        "HTTP now redirects to HTTPS"
+        if settings.mode != "http" and settings.http_redirect
+        else "direct HTTP remains enabled"
+    )
     return redirect(
         "/settings",
-        notice=f"Applied {mode_label}; Caddy reloaded without restarting Blockinator",
+        notice=f"Applied {mode_label}; {redirect_label}; Caddy reloaded without restarting Blockinator",
     )
