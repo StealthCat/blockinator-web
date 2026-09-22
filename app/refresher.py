@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 from dataclasses import dataclass
 from typing import Callable, Protocol
@@ -129,48 +130,77 @@ class BlocklistRefresher:
             if not parsed.domains:
                 raise ValueError("refreshed block list contained no usable domains")
 
-            with self.db.connect() as con:
-                con.execute("BEGIN")
-                current = con.execute(
-                    """
-                    SELECT source_type,source_url,format
-                    FROM blocklists
-                    WHERE id=?
-                    """,
-                    (list_id,),
-                ).fetchone()
-                if (
-                    current is None
-                    or current["source_type"] != "url"
-                    or str(current["source_url"] or "").strip() != source_url
-                    or str(current["format"] or "auto") != list_format
-                ):
-                    con.execute("ROLLBACK")
-                    return RefreshResult(list_id=list_id, refreshed=False)
+            entry_rows = [(list_id, domain) for domain in parsed.domains]
+            write_delays = (0.05, 0.15, 0.45)
+            committed = False
 
-                con.execute(
-                    "DELETE FROM block_entries WHERE blocklist_id=?",
-                    (list_id,),
-                )
-                con.executemany(
-                    """
-                    INSERT OR IGNORE INTO block_entries(blocklist_id,domain)
-                    VALUES(?,?)
-                    """,
-                    [(list_id, domain) for domain in parsed.domains],
-                )
-                con.execute(
-                    """
-                    UPDATE blocklists
-                    SET entry_count=?,
-                        last_updated=CURRENT_TIMESTAMP,
-                        last_refresh_attempt=CURRENT_TIMESTAMP,
-                        last_error=NULL
-                    WHERE id=?
-                    """,
-                    (len(parsed.domains), list_id),
-                )
-                con.execute("COMMIT")
+            for attempt in range(len(write_delays) + 1):
+                try:
+                    with self.db.connect() as con:
+                        # Acquire the SQLite writer slot before taking a read
+                        # snapshot. A deferred BEGIN can read successfully and
+                        # then fail to upgrade with SQLITE_BUSY_SNAPSHOT if the
+                        # query logger or an admin request commits meanwhile.
+                        con.execute("BEGIN IMMEDIATE")
+                        try:
+                            current = con.execute(
+                                """
+                                SELECT source_type,source_url,format
+                                FROM blocklists
+                                WHERE id=?
+                                """,
+                                (list_id,),
+                            ).fetchone()
+                            if (
+                                current is None
+                                or current["source_type"] != "url"
+                                or str(current["source_url"] or "").strip() != source_url
+                                or str(current["format"] or "auto") != list_format
+                            ):
+                                con.execute("ROLLBACK")
+                                return RefreshResult(list_id=list_id, refreshed=False)
+
+                            con.execute(
+                                "DELETE FROM block_entries WHERE blocklist_id=?",
+                                (list_id,),
+                            )
+                            con.executemany(
+                                """
+                                INSERT OR IGNORE INTO block_entries(blocklist_id,domain)
+                                VALUES(?,?)
+                                """,
+                                entry_rows,
+                            )
+                            con.execute(
+                                """
+                                UPDATE blocklists
+                                SET entry_count=?,
+                                    last_updated=CURRENT_TIMESTAMP,
+                                    last_refresh_attempt=CURRENT_TIMESTAMP,
+                                    last_error=NULL
+                                WHERE id=?
+                                """,
+                                (len(parsed.domains), list_id),
+                            )
+                            con.execute("COMMIT")
+                        except Exception:
+                            if con.in_transaction:
+                                con.execute("ROLLBACK")
+                            raise
+                    committed = True
+                    break
+                except sqlite3.OperationalError as write_exc:
+                    is_busy = any(
+                        marker in str(write_exc).lower()
+                        for marker in ("database is locked", "database is busy")
+                    )
+                    if not is_busy or attempt >= len(write_delays):
+                        raise
+                    if self._stop.wait(write_delays[attempt]):
+                        return RefreshResult(list_id=list_id, refreshed=False)
+
+            if not committed:
+                return RefreshResult(list_id=list_id, refreshed=False)
 
             self.engine.reload()
             return RefreshResult(
@@ -181,19 +211,24 @@ class BlocklistRefresher:
             )
         except Exception as exc:
             message = str(exc).strip() or exc.__class__.__name__
-            with self.db.connect() as con:
-                con.execute(
-                    """
-                    UPDATE blocklists
-                    SET last_refresh_attempt=CURRENT_TIMESTAMP,
-                        last_error=?
-                    WHERE id=?
-                      AND source_type='url'
-                      AND source_url=?
-                      AND format=?
-                    """,
-                    (message[:2000], list_id, source_url, list_format),
-                )
+            try:
+                with self.db.connect() as con:
+                    con.execute(
+                        """
+                        UPDATE blocklists
+                        SET last_refresh_attempt=CURRENT_TIMESTAMP,
+                            last_error=?
+                        WHERE id=?
+                          AND source_type='url'
+                          AND source_url=?
+                          AND format=?
+                        """,
+                        (message[:2000], list_id, source_url, list_format),
+                    )
+            except sqlite3.OperationalError:
+                # If SQLite is still busy, do not let error bookkeeping turn a
+                # recoverable refresh failure into a worker-level exception.
+                pass
             return RefreshResult(
                 list_id=list_id,
                 refreshed=False,
