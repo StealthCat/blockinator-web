@@ -330,6 +330,7 @@ class Database:
                 "VALUES('tls_acme_directory','https://acme-v02.api.letsencrypt.org/directory')"
             )
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tls_acme_eab_key_id','')")
+            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tls_http_redirect','0')")
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tls_last_applied','')")
             con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tls_last_error','')")
 
