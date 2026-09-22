@@ -74,6 +74,17 @@ def normalize_tls_hostname(value: str) -> str:
     return hostname
 
 
+def validate_http_redirect_change(
+    current: bool,
+    requested: bool,
+    request_is_https: bool,
+) -> None:
+    if current != requested and not request_is_https:
+        raise ValueError(
+            "HTTP redirect behavior can only be changed while System Settings is accessed over HTTPS"
+        )
+
+
 def validate_acme_directory(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
