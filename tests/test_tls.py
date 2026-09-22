@@ -251,7 +251,7 @@ def test_http_redirect_uses_configured_external_https_port(tmp_path, monkeypatch
     )
 
     assert ":80 {" in config
-    assert "redir https://blockinator.example.com:8443{uri} permanent" in config
+    assert "redir https://blockinator.example.com:8443{uri} 308" in config
     assert ":80 {\n  reverse_proxy blockinator:8080" not in config
 
 
@@ -267,7 +267,7 @@ def test_http_redirect_omits_standard_https_port(tmp_path, monkeypatch):
         )
     )
 
-    assert "redir https://blockinator.example.com{uri} permanent" in config
+    assert "redir https://blockinator.example.com{uri} 308" in config
     assert "https://blockinator.example.com:443{uri}" not in config
 
 
