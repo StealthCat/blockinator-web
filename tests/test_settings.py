@@ -60,3 +60,9 @@ def test_unmatched_scope_action_defaults_to_allow(tmp_path):
     db = Database(str(tmp_path / "settings.db"))
 
     assert db.get_setting("unmatched_scope_action") == "allow"
+
+
+def test_global_blocklist_scope_mode_defaults_to_all_clients(tmp_path):
+    db = Database(str(tmp_path / "settings.db"))
+
+    assert db.get_setting("global_blocklist_scope_mode") == "all_clients"

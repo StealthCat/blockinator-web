@@ -870,3 +870,61 @@ def test_unmatched_scope_default_deny_does_not_override_matching_scope():
     assert decision.matched_scope == "lan"
     e.close()
     td.cleanup()
+
+
+def test_global_lists_apply_to_unmatched_clients_by_default():
+    td, db, e = setup_engine()
+
+    decision = e.decide("192.168.1.2", "ads.example.com")
+
+    assert decision.block is True
+    assert decision.reason == "blocklist_match"
+    assert decision.matched_scope is None
+    assert decision.matched_list == "global"
+    e.close()
+    td.cleanup()
+
+
+def test_global_lists_can_be_limited_to_matched_policy_targets():
+    td, db, e = setup_engine()
+    db.set_setting("global_blocklist_scope_mode", "matched_scopes")
+    e.reload()
+
+    unmatched = e.decide("192.168.1.2", "ads.example.com")
+    assert unmatched.block is False
+    assert unmatched.reason == "no_active_lists"
+    assert unmatched.matched_scope is None
+
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO scopes(name,kind,target,state) VALUES('lan','network','192.168.1.0/24','active')"
+        )
+    e.reload()
+
+    matched = e.decide("192.168.1.2", "ads.example.com")
+    assert matched.block is True
+    assert matched.reason == "blocklist_match"
+    assert matched.matched_scope == "lan"
+    assert matched.matched_list == "global"
+    e.close()
+    td.cleanup()
+
+
+def test_scope_only_global_lists_fall_through_to_unmatched_default_deny():
+    td, db, e = setup_engine()
+    db.set_settings(
+        {
+            "global_blocklist_scope_mode": "matched_scopes",
+            "unmatched_scope_action": "deny",
+        }
+    )
+    e.reload()
+
+    decision = e.decide("192.168.1.2", "ads.example.com")
+
+    assert decision.block is True
+    assert decision.reason == "no_scope_default_deny"
+    assert decision.matched_scope is None
+    assert decision.matched_list is None
+    e.close()
+    td.cleanup()
