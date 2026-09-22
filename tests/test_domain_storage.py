@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 
 from app.db import Database
+from app.policy import PolicyEngine
 
 
 def test_domains_shared_across_lists_are_stored_once():
@@ -180,3 +181,46 @@ def test_legacy_block_entries_migrate_and_deduplicate():
     assert list_counts == [2, 2]
 
     td.cleanup()
+
+def test_shared_domain_remains_enforced_when_one_list_is_removed():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+
+    with db.connect() as con:
+        list_a = int(
+            con.execute(
+                "INSERT INTO blocklists(name,use_globally) VALUES('a',1)"
+            ).lastrowid
+        )
+        list_b = int(
+            con.execute(
+                "INSERT INTO blocklists(name,use_globally) VALUES('b',1)"
+            ).lastrowid
+        )
+        con.executemany(
+            "INSERT INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+            [
+                (list_a, "shared.example.com"),
+                (list_b, "shared.example.com"),
+            ],
+        )
+        con.execute(
+            "UPDATE blocklists SET entry_count=1 WHERE id IN (?,?)",
+            (list_a, list_b),
+        )
+
+    engine = PolicyEngine(db)
+    first = engine.decide("192.168.1.20", "shared.example.com")
+    assert first.block is True
+
+    with db.connect() as con:
+        con.execute("DELETE FROM blocklists WHERE id=?", (list_a,))
+    engine.reload()
+
+    second = engine.decide("192.168.1.20", "shared.example.com")
+    assert second.block is True
+    assert second.matched_list == "b"
+
+    engine.close()
+    td.cleanup()
+
