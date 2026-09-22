@@ -54,3 +54,9 @@ def test_batch_settings_round_trip(tmp_path):
         "beta": "2",
         "missing": "fallback",
     }
+
+
+def test_unmatched_scope_action_defaults_to_allow(tmp_path):
+    db = Database(str(tmp_path / "settings.db"))
+
+    assert db.get_setting("unmatched_scope_action") == "allow"
