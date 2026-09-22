@@ -41,8 +41,8 @@ Add optional HTTPS termination for Blockinator without putting certificate lifec
    - Validate certificate validity period and SAN coverage for the configured hostname.
    - Validate optional ACME CA root PEM.
    - Render deterministic native Caddy JSON for each TLS mode.
-   - Validate candidate Caddyfile with Caddy's `/adapt` endpoint.
-   - Activate with Caddy's `/load` endpoint.
+   - Submit deterministic native JSON directly to Caddy's `/load` endpoint.
+   - Rely on Caddy's atomic load validation so an invalid candidate never replaces the active configuration.
    - Preserve the previous active configuration on any validation/load failure.
 
 3. Docker/Caddy integration
