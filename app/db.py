@@ -98,6 +98,7 @@ class Database:
                     client_name TEXT,
                     client_port INTEGER,
                     protocol TEXT,
+                    policy_scheme TEXT,
                     qname TEXT,
                     qtype TEXT,
                     qclass TEXT,
@@ -110,6 +111,7 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_query_log_ts ON query_log(ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_client ON query_log(client_ip, ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_qname ON query_log(qname, ts DESC);
+                CREATE INDEX IF NOT EXISTS idx_query_log_matched_list ON query_log(matched_list, ts DESC);
 
                 CREATE TABLE IF NOT EXISTS client_identities (
                     client_ip TEXT PRIMARY KEY,
@@ -289,9 +291,15 @@ class Database:
             }
             if "client_name" not in query_log_columns:
                 con.execute("ALTER TABLE query_log ADD COLUMN client_name TEXT")
+            if "policy_scheme" not in query_log_columns:
+                con.execute("ALTER TABLE query_log ADD COLUMN policy_scheme TEXT")
             con.execute(
                 "CREATE INDEX IF NOT EXISTS idx_query_log_client_name "
                 "ON query_log(client_name, ts DESC)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_log_matched_list "
+                "ON query_log(matched_list, ts DESC)"
             )
 
             for row in con.execute(

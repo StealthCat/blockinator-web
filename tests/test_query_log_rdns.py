@@ -40,6 +40,7 @@ def test_query_log_migration_adds_client_name_and_supports_hostname_filter():
     with db.connect() as con:
         columns = {row["name"] for row in con.execute("PRAGMA table_info(query_log)")}
         assert "client_name" in columns
+        assert "policy_scheme" in columns
 
         con.execute(
             """

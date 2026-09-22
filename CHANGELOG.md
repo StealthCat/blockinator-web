@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.15.4 — Query log policy metadata and refresh
+
+- Query Log and Dashboard activity now show the matched policy target for each DNS decision.
+- Query Log and Dashboard activity now show whether the policy API request arrived over HTTP or HTTPS.
+- Added persisted `policy_scheme` metadata with automatic migration for existing SQLite databases.
+- Added a Query Log block-list name filter with historical match-name suggestions.
+- Added optional Query Log auto-refresh intervals of 5, 10, 15, 30, or 60 seconds; refresh preserves the active URL filters.
+- Added an index for matched block-list names and regression coverage for the new query-log metadata.
+- Updated the application version to 1.15.4.
+
 ## 1.15.3 — TLS efficiency hardening
 
 - Replaced generated Caddyfiles and the separate `/adapt` request with deterministic native Caddy JSON loaded directly through `/load`.

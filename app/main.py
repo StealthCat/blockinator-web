@@ -26,7 +26,7 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.15.3"
+APP_VERSION = "1.15.4"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -509,9 +509,17 @@ def ping(x_api_key: str | None = Header(default=None)):
     return {"status": "ok", "service": "blockinator", "version": APP_VERSION}
 
 @app.post("/api/v1/decision")
-def decision(payload: DecisionRequest, x_api_key: str | None = Header(default=None)):
+def decision(
+    payload: DecisionRequest,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+):
     api_key_ok(x_api_key)
-    d = engine.decide_and_log(payload.model_dump(by_alias=True))
+    policy_scheme = request.url.scheme.lower()
+    d = engine.decide_and_log(
+        payload.model_dump(by_alias=True),
+        policy_scheme=policy_scheme if policy_scheme in {"http", "https"} else None,
+    )
     return {
         "block": d.block,
         "reason": d.reason,
@@ -572,14 +580,31 @@ def dashboard(request: Request):
               (SELECT COUNT(*) FROM query_log WHERE blocked=1) blocked,
               (SELECT COUNT(*) FROM query_log) queries
         """).fetchone())
-        recent = con.execute("SELECT ts,server_id,client_ip,client_name,qname,blocked,reason FROM query_log ORDER BY id DESC LIMIT 8").fetchall()
+        recent = con.execute(
+            """
+            SELECT
+              ts,server_id,client_ip,client_name,qname,blocked,reason,
+              matched_scope,policy_scheme
+            FROM query_log
+            ORDER BY id DESC
+            LIMIT 8
+            """
+        ).fetchall()
     global_on = db.get_setting("global_blocking", "1") == "1"
     recent_client_names = log_client_names(recent)
     display_timezone = system_default_timezone()
     rows = "".join(
-        f'<tr><td title="Stored in UTC">{esc(format_timestamp_for_timezone(r["ts"], display_timezone))}</td><td>{querying_server_html(r["server_id"])}</td><td>{client_identity_html(r["client_ip"], recent_client_names)}</td><td>{esc(r["qname"])}</td><td><span class="pill {"red" if r["blocked"] else "green"}">{"Blocked" if r["blocked"] else "Allowed"}</span></td><td>{esc(r["reason"] if r["blocked"] else "")}</td></tr>'
+        f'<tr><td title="Stored in UTC">{esc(format_timestamp_for_timezone(r["ts"], display_timezone))}</td>'
+        f'<td>{querying_server_html(r["server_id"])}</td>'
+        f'<td>{client_identity_html(r["client_ip"], recent_client_names)}</td>'
+        f'<td>{esc(r["qname"])}</td>'
+        f'<td>{esc((r["policy_scheme"] or "").upper() or "—")}</td>'
+        f'<td>{esc(r["matched_scope"] or "—")}</td>'
+        f'<td><span class="pill {"red" if r["blocked"] else "green"}">'
+        f'{"Blocked" if r["blocked"] else "Allowed"}</span></td>'
+        f'<td>{esc(r["reason"] if r["blocked"] else "")}</td></tr>'
         for r in recent
-    ) or '<tr><td colspan="6" class="empty">No DNS decisions recorded yet.</td></tr>'
+    ) or '<tr><td colspan="8" class="empty">No DNS decisions recorded yet.</td></tr>'
     body = f'''
     <section class="hero-card"><img src="/static/blockinator-hero.webp" alt="Blockinator"><div class="hero-overlay"><p>BLOCK · FILTER · PROTECT</p><h2>Your network. Your policy.</h2><span>Centralized DNS policy control with client-aware filtering.</span></div></section>
     <div class="stat-grid">
@@ -592,7 +617,7 @@ def dashboard(request: Request):
       <form method="post" action="/admin/global-toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="{"danger-button" if global_on else "primary-button"}">{"Pause blocking" if global_on else "Resume blocking"}</button></form>
     </section>
     <section class="panel"><div class="panel-head"><div><h3>Recent DNS activity</h3><p>Latest policy decisions from connected resolvers · times shown in {esc(display_timezone)}.</p></div><a class="text-link" href="/queries">View all →</a></div>
-      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Decision</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Policy API</th><th>Policy target</th><th>Decision</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table></div>
     </section>'''
     return page(request, "Dashboard", "dashboard", body, s)
 
@@ -1833,8 +1858,10 @@ def queries_page(
     q: str = "",
     client: str = "",
     server: str = "",
+    blocklist: str = "",
     decision: str = "",
     limit: int = 100,
+    refresh: int = 0,
 ):
     s = require_session(request)
     clauses, args = [], []
@@ -1849,11 +1876,15 @@ def queries_page(
     if server:
         clauses.append("server_id = ?")
         args.append(server)
+    if blocklist:
+        clauses.append("matched_list LIKE ?")
+        args.append("%" + blocklist + "%")
     if decision in {"blocked", "allowed"}:
         clauses.append("blocked=?")
         args.append(1 if decision == "blocked" else 0)
 
     limit = max(25, min(limit, 500))
+    refresh = refresh if refresh in {0, 5, 10, 15, 30, 60} else 0
     sql = (
         "SELECT * FROM query_log"
         + (" WHERE " + " AND ".join(clauses) if clauses else "")
@@ -1871,6 +1902,14 @@ def queries_page(
             ORDER BY server_id COLLATE NOCASE
             """
         ).fetchall()
+        blocklist_rows = con.execute(
+            """
+            SELECT DISTINCT matched_list
+            FROM query_log
+            WHERE matched_list IS NOT NULL AND TRIM(matched_list) <> ''
+            ORDER BY matched_list COLLATE NOCASE
+            """
+        ).fetchall()
 
     query_client_names = log_client_names(rows)
     display_timezone = system_default_timezone()
@@ -1880,11 +1919,13 @@ def queries_page(
         f'<td>{client_identity_html(r["client_ip"], query_client_names)}</td>'
         f'<td>{esc(r["qname"])}</td>'
         f'<td>{esc(r["qtype"])}</td>'
+        f'<td>{esc((r["policy_scheme"] or "").upper() or "—")}</td>'
+        f'<td>{esc(r["matched_scope"] or "—")}</td>'
         f'<td><span class="pill {"red" if r["blocked"] else "green"}">'
         f'{"Blocked" if r["blocked"] else "Allowed"}</span></td>'
         f'<td>{esc((r["matched_list"] or r["reason"]) if r["blocked"] else "")}</td></tr>'
         for r in rows
-    ) or '<tr><td colspan="7" class="empty">No matching queries.</td></tr>'
+    ) or '<tr><td colspan="9" class="empty">No matching queries.</td></tr>'
 
     server_options = '<option value="">All servers</option>' + "".join(
         f'<option value="{esc(row["server_id"])}"'
@@ -1892,17 +1933,34 @@ def queries_page(
         f'{esc(row["server_id"])}</option>'
         for row in server_rows
     )
+    blocklist_options = "".join(
+        f'<option value="{esc(row["matched_list"])}"></option>'
+        for row in blocklist_rows
+    )
+    refresh_options = "".join(
+        f'<option value="{seconds}"{" selected" if refresh == seconds else ""}>{label}</option>'
+        for seconds, label in (
+            (0, "Auto refresh off"),
+            (5, "Refresh every 5s"),
+            (10, "Refresh every 10s"),
+            (15, "Refresh every 15s"),
+            (30, "Refresh every 30s"),
+            (60, "Refresh every 60s"),
+        )
+    )
 
-    body = f'''<section class="panel">
+    body = f'''<section class="panel" data-query-log-refresh="{refresh}">
       <div class="panel-head query-head">
         <div><div class="panel-kicker">DNS activity</div><h3>Decision history</h3>
-        <p>Showing {len(rows)} most recent matching requests, including the DNS server that submitted each query · times shown in {esc(display_timezone)}.</p></div>
+        <p>Showing {len(rows)} most recent matching requests, including the DNS server, policy API scheme, and matched policy target · times shown in {esc(display_timezone)}.</p></div>
         <span class="result-count">{len(rows)} results</span>
       </div>
       <form class="filter-bar query-filter-bar" method="get">
         <input name="q" value="{esc(q)}" placeholder="Domain contains…">
         <input name="client" value="{esc(client)}" placeholder="Client IP or hostname…">
         <select name="server">{server_options}</select>
+        <input name="blocklist" value="{esc(blocklist)}" list="query-blocklists" placeholder="Block list contains…">
+        <datalist id="query-blocklists">{blocklist_options}</datalist>
         <select name="decision">
           <option value="">All decisions</option>
           <option value="blocked" {"selected" if decision=="blocked" else ""}>Blocked</option>
@@ -1912,10 +1970,11 @@ def queries_page(
           <option value="{limit}">{limit}</option>
           <option>50</option><option>100</option><option>250</option><option>500</option>
         </select>
+        <select name="refresh" title="Query log auto refresh interval">{refresh_options}</select>
         <button class="primary-button">Filter</button>
       </form>
       <div class="table-wrap"><table>
-        <thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Type</th><th>Decision</th><th>Match</th></tr></thead>
+        <thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Type</th><th>Policy API</th><th>Policy target</th><th>Decision</th><th>Match</th></tr></thead>
         <tbody>{trs}</tbody>
       </table></div>
     </section>'''

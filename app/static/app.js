@@ -176,6 +176,31 @@
     });
   }
 
+  function initializeQueryLogRefresh() {
+    var panel = document.querySelector("[data-query-log-refresh]");
+    if (!panel) return;
+
+    var seconds = parseInt(panel.getAttribute("data-query-log-refresh") || "0", 10);
+    if (!Number.isFinite(seconds) || seconds <= 0) return;
+
+    var timer = null;
+    function schedule() {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(function () {
+        if (document.hidden) {
+          schedule();
+          return;
+        }
+        window.location.reload();
+      }, seconds * 1000);
+    }
+
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) schedule();
+    });
+    schedule();
+  }
+
   window.addEventListener("hashchange", openHashDetails);
   openHashDetails();
   initializeGlobalAssignmentControls();
@@ -183,4 +208,5 @@
   initializeScopeKindFields();
   initializeTlsSettings();
   initializeSettingsTabs();
+  initializeQueryLogRefresh();
 })();

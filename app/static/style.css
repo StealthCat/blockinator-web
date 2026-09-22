@@ -1299,7 +1299,7 @@ input[type=file]{padding:8px}
   color:#849dac;
 }
 .query-filter-bar{
-  grid-template-columns:minmax(180px,2fr) minmax(150px,1fr) minmax(140px,1fr) minmax(130px,.85fr) 100px auto;
+  grid-template-columns:minmax(175px,1.7fr) minmax(150px,1.2fr) minmax(130px,1fr) minmax(150px,1fr) minmax(120px,.85fr) 90px minmax(135px,.9fr) auto;
 }
 @media(max-width:1180px){
   .query-filter-bar{

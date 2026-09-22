@@ -255,16 +255,17 @@ class QueryLogger:
                     con.executemany(
                         """
                         INSERT INTO query_log(
-                          ts,server_id,client_ip,client_name,client_port,protocol,qname,qtype,qclass,
-                          blocked,reason,matched_scope,matched_list,request_json
-                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                          ts,server_id,client_ip,client_name,client_port,protocol,policy_scheme,
+                          qname,qtype,qclass,blocked,reason,matched_scope,matched_list,request_json
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         [
                             (
                                 r["ts"], r.get("server_id"), r["client_ip"],
                                 client_names.get(str(r["client_ip"])),
-                                r.get("client_port"), r.get("protocol"), r.get("qname"),
-                                r.get("qtype"), r.get("qclass"), 1 if r["blocked"] else 0,
+                                r.get("client_port"), r.get("protocol"), r.get("policy_scheme"),
+                                r.get("qname"), r.get("qtype"), r.get("qclass"),
+                                1 if r["blocked"] else 0,
                                 r.get("reason"), r.get("matched_scope"), r.get("matched_list"),
                                 r.get("request_json"),
                             ) for r in batch
@@ -548,7 +549,11 @@ class PolicyEngine:
                         )
             return Decision(False, "not_listed", effective_scope, response_mode=self.response_mode)
 
-    def decide_and_log(self, request_obj: dict[str, Any]) -> Decision:
+    def decide_and_log(
+        self,
+        request_obj: dict[str, Any],
+        policy_scheme: str | None = None,
+    ) -> Decision:
         client = request_obj.get("client") or {}
         dns = request_obj.get("dns") or {}
         questions = dns.get("questions") or []
@@ -577,6 +582,7 @@ class PolicyEngine:
             "client_ip": client_ip,
             "client_port": client.get("port"),
             "protocol": request_obj.get("protocol"),
+            "policy_scheme": policy_scheme,
             "qname": matched_question.get("name"),
             "qtype": matched_question.get("type"),
             "qclass": matched_question.get("class"),

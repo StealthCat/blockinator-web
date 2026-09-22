@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
+import time
 
 from app.db import Database
 from app.policy import PolicyEngine, _prune_query_logs
@@ -62,6 +63,46 @@ def test_decide_and_log_checks_every_question():
     d = e.decide_and_log(request)
     assert d.block is True
     assert d.matched_domain == "ads.example.com"
+    e.close()
+    td.cleanup()
+
+
+def test_decide_and_log_persists_policy_request_scheme():
+    td, db, e = setup_engine()
+    e.logger.rdns.resolve_many = lambda addresses: {}
+
+    request = {
+        "server_id": "dns-1",
+        "client": {"ip": "127.0.0.1", "port": 53000},
+        "protocol": "Udp",
+        "dns": {
+            "questions": [
+                {"name": "ads.example.com", "type": "A", "class": "IN"},
+            ]
+        },
+    }
+    d = e.decide_and_log(request, policy_scheme="https")
+    assert d.block is True
+
+    deadline = time.monotonic() + 2.0
+    row = None
+    while time.monotonic() < deadline:
+        with db.connect() as con:
+            row = con.execute(
+                """
+                SELECT policy_scheme,matched_scope,matched_list
+                FROM query_log
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is not None:
+            break
+        time.sleep(0.02)
+
+    assert row is not None
+    assert row["policy_scheme"] == "https"
+    assert row["matched_list"] == "global"
     e.close()
     td.cleanup()
 
