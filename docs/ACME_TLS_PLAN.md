@@ -92,3 +92,29 @@ Add optional HTTPS termination for Blockinator without putting certificate lifec
 - EAB can be configured without storing the HMAC secret in SQLite.
 - Invalid TLS changes leave the previous working Caddy configuration active.
 - Automatic ACME renewal is delegated to Caddy and survives container restarts.
+
+
+## Implementation status
+
+Implemented on `acme-tls`:
+
+- [x] Caddy sidecar and HTTP compatibility path.
+- [x] Separate configurable HTTPS host port.
+- [x] HTTP-only, uploaded-certificate, and ACME modes.
+- [x] Certificate/private-key upload and validation.
+- [x] Custom ACME directory URL.
+- [x] Optional private ACME CA root.
+- [x] Optional EAB key ID/HMAC secret.
+- [x] Secret-file storage with restrictive permissions.
+- [x] Caddy config validation/load with rollback.
+- [x] TLS reconciliation after Caddy restarts.
+- [x] HTTPS-aware Secure administrator cookies.
+- [x] System Settings UI and TLS runtime status.
+- [x] Python regression tests.
+- [x] CI validation of Docker Compose and bootstrap Caddyfile.
+
+Still intentionally excluded from this branch:
+
+- DNS-01 provider plugins/custom Caddy builds.
+- External secret-manager integrations.
+- Mutual TLS/client certificates.
