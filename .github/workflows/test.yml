@@ -30,6 +30,21 @@ jobs:
       - name: Validate bootstrap Caddy JSON
         run: docker run --rm -v "$PWD/caddy/caddy.bootstrap.json:/etc/caddy/caddy.json:ro" caddy:2.11.4-alpine caddy validate --config /etc/caddy/caddy.json
 
+      - name: Render managed Caddy JSON fixtures
+        env:
+          DATA_DIR: ${{ runner.temp }}/caddy-fixture-data
+        run: python tools/render_caddy_validation_fixtures.py "${{ runner.temp }}/caddy-fixtures"
+
+      - name: Validate managed Caddy JSON
+        run: |
+          for mode in http upload acme; do
+            docker run --rm \
+              -v "${{ runner.temp }}/caddy-fixtures:/configs:ro" \
+              -v "${{ runner.temp }}/caddy-fixtures/tls:/blockinator-tls:ro" \
+              caddy:2.11.4-alpine \
+              caddy validate --config "/configs/${mode}.json"
+          done
+
       - name: Build Blockinator Docker image
         run: docker compose build blockinator
 
@@ -39,3 +54,22 @@ jobs:
           ADMIN_PASSWORD: test-admin-password
           POLICY_API_KEY: test-policy-api-key-long-enough
         run: python -m pytest -q
+
+      - name: Start benchmark stack
+        env:
+          ADMIN_PASSWORD: test-admin-password
+          POLICY_API_KEY: test-policy-api-key-long-enough
+        run: docker compose up -d --wait
+
+      - name: Benchmark direct vs Caddy policy latency
+        env:
+          ADMIN_PASSWORD: test-admin-password
+          POLICY_API_KEY: test-policy-api-key-long-enough
+        run: |
+          docker compose exec -T blockinator \
+            python /srv/tools/benchmark_policy_latency.py \
+            --requests 50 --warmup 10
+
+      - name: Stop benchmark stack
+        if: always()
+        run: docker compose down -v
