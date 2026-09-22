@@ -20,10 +20,11 @@ from .blocklists import fetch_url, normalize_domain, parse_blocklist
 from .db import Database
 from .policy import PolicyEngine, normalize_hostname_pattern
 from .rdns import ReverseDnsResolver
+from .refresher import BlocklistRefresher
 from .timeutil import format_timestamp_for_timezone
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.13.2"
+APP_VERSION = "1.14.0"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -32,6 +33,18 @@ db = Database()
 auth = AuthManager(db)
 engine = PolicyEngine(db)
 rdns = ReverseDnsResolver()
+refresher = BlocklistRefresher(db, engine)
+
+
+@app.on_event("startup")
+def start_background_workers() -> None:
+    refresher.start()
+
+
+@app.on_event("shutdown")
+def stop_background_workers() -> None:
+    refresher.stop()
+
 
 class Question(BaseModel):
     name: str
@@ -467,7 +480,14 @@ def import_list(list_id: int, text: str, fmt: str):
             [(list_id, d) for d in parsed.domains],
         )
         con.execute(
-            "UPDATE blocklists SET entry_count=?,last_updated=CURRENT_TIMESTAMP,last_error=NULL WHERE id=?",
+            """
+            UPDATE blocklists
+            SET entry_count=?,
+                last_updated=CURRENT_TIMESTAMP,
+                last_refresh_attempt=CURRENT_TIMESTAMP,
+                last_error=NULL
+            WHERE id=?
+            """,
             (len(parsed.domains), list_id),
         )
         con.execute("COMMIT")
@@ -682,6 +702,16 @@ def lists_page(request: Request):
         source_label = r["source_url"] or (
             "Uploaded list" if r["source_type"] == "upload" else "Manual list"
         )
+        if r["source_type"] == "url":
+            refresh_summary = f'Auto-refresh every {int(r["refresh_minutes"]):,} minute{"s" if int(r["refresh_minutes"]) != 1 else ""}'
+            refresh_detail = (
+                f'Last attempt {r["last_refresh_attempt"]}'
+                if r["last_refresh_attempt"]
+                else "Waiting for first scheduled refresh"
+            )
+        else:
+            refresh_summary = "No automatic refresh"
+            refresh_detail = "Only URL-backed lists refresh automatically"
         list_schedule_summary = schedule_summary(r)
         list_schedule_fields = schedule_fields_html(r)
         refresh_button = (
@@ -706,6 +736,7 @@ def lists_page(request: Request):
               <span>{esc(r["format"])}</span>
               <span>{esc(assignment_text)}</span>
               <span class="schedule-meta {"scheduled" if r["schedule_enabled"] else ""}">{esc(list_schedule_summary)}</span>
+              <span class="refresh-meta {"scheduled" if r["source_type"] == "url" else ""}" title="{esc(refresh_detail)}">{esc(refresh_summary)}</span>
               <span>Updated {esc(r["last_updated"] or "Never")}</span>
             </div>
             {error_html}
@@ -730,7 +761,7 @@ def lists_page(request: Request):
                 <label>Name<input name="name" value="{esc(r["name"])}" required></label>
                 <label>Format<select name="format">{format_options}</select></label>
                 <label class="full">Source URL<input name="source_url" value="{esc(r["source_url"] or "")}" placeholder="https://example.com/list.txt"></label>
-                <label>Refresh interval (minutes)<input type="number" name="refresh_minutes" min="1" max="10080" value="{int(r["refresh_minutes"])}"></label>
+                <label>Automatic refresh interval (minutes)<input type="number" name="refresh_minutes" min="1" max="10080" value="{int(r["refresh_minutes"])}"></label>
                 <label class="check"><input type="checkbox" name="enabled" value="1"{" checked" if r["enabled"] else ""}> List enabled</label>
                 <label class="check full"><input type="checkbox" name="global_list" value="1" data-global-toggle{" checked" if r["use_globally"] else ""}> Apply globally to every network, endpoint, and hostname</label>
 
@@ -771,13 +802,13 @@ def lists_page(request: Request):
       </section>
       <section class="panel action-panel" id="add-list">
         <div class="panel-kicker">New source</div><h3>Add block list</h3>
-        <p class="panel-help">Import from a URL, upload a file, or paste rules directly. You can make the list global and/or assign it to specific scopes immediately.</p>
+        <p class="panel-help">Import from a URL, upload a file, or paste rules directly. URL sources refresh automatically on their own per-list interval.</p>
         <form method="post" action="/admin/lists" enctype="multipart/form-data" class="form-grid">
           <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
           <label>Name<input name="name" required></label>
           <label>Format<select name="format"><option>auto</option><option>hosts</option><option>adblock</option><option>domains</option></select></label>
           <label class="full">Source URL (optional)<input name="source_url" placeholder="https://example.com/list.txt"></label>
-          <label>Refresh interval (minutes)<input type="number" name="refresh_minutes" min="1" max="10080" value="1440"></label>
+          <label>Automatic refresh interval (minutes)<input type="number" name="refresh_minutes" min="1" max="10080" value="1440"></label>
           <label class="check"><input type="checkbox" name="global_list" value="1" data-global-toggle checked> Apply globally</label>
           <div class="form-section full schedule-section">
             <div class="form-section-head"><div><b>Enforcement schedule</b><p>Optional. Configure recurring days and times for this list.</p></div></div>
