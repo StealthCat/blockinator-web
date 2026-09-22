@@ -24,6 +24,12 @@ jobs:
       - name: Compile Python source
         run: python -m compileall -q app tests
 
+      - name: Validate Docker Compose
+        run: docker compose config >/dev/null
+
+      - name: Validate bootstrap Caddyfile
+        run: docker run --rm -v "$PWD/caddy/Caddyfile.bootstrap:/etc/caddy/Caddyfile:ro" caddy:2.11.4-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
       - name: Run tests
         env:
           DATA_DIR: ${{ runner.temp }}/blockinator-data
