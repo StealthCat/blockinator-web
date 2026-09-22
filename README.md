@@ -505,7 +505,7 @@ If Technitium and Blockinator share a Docker network, use the Compose service na
 python -m pytest -q
 ```
 
-Current suite: **40 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
+Current suite: **49 tests** covering authentication, block-list parsing/import behavior, and policy decisions.
 
 ## Branding
 
