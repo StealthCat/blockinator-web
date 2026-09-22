@@ -15,14 +15,25 @@ class Database:
         data_dir.mkdir(parents=True, exist_ok=True)
         self.path = str(Path(path) if path else data_dir / "policy.db")
         self._init_lock = threading.Lock()
+        self._enable_wal()
         self.initialize()
+
+    def _enable_wal(self) -> None:
+        # journal_mode is persistent database state. Set it once during startup
+        # instead of reissuing PRAGMA journal_mode=WAL on every connection,
+        # which can itself contend with active SQLite writers.
+        con = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        try:
+            con.execute("PRAGMA busy_timeout=30000")
+            con.execute("PRAGMA journal_mode=WAL")
+        finally:
+            con.close()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         con = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys=ON")
-        con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA synchronous=NORMAL")
         con.execute("PRAGMA busy_timeout=30000")
         try:
