@@ -40,7 +40,7 @@ Add optional HTTPS termination for Blockinator without putting certificate lifec
    - Verify uploaded private key matches the certificate.
    - Validate certificate validity period and SAN coverage for the configured hostname.
    - Validate optional ACME CA root PEM.
-   - Render Caddyfile configuration for each TLS mode.
+   - Render deterministic native Caddy JSON for each TLS mode.
    - Validate candidate Caddyfile with Caddy's `/adapt` endpoint.
    - Activate with Caddy's `/load` endpoint.
    - Preserve the previous active configuration on any validation/load failure.
@@ -71,7 +71,7 @@ Add optional HTTPS termination for Blockinator without putting certificate lifec
    - TLS settings migration/defaults.
    - PEM certificate/key matching.
    - hostname/SAN validation.
-   - Caddyfile rendering for HTTP/uploaded/ACME modes.
+   - Native Caddy JSON rendering for HTTP/uploaded/ACME modes.
    - custom ACME URL, CA root and EAB rendering.
    - safe secret file permissions.
    - rollback/error handling for invalid Caddy config/API failure.
@@ -113,10 +113,26 @@ Implemented on `acme-tls`:
 - [x] Method-preserving 308 redirects with non-standard HTTPS port support.
 - [x] System Settings UI and TLS runtime status.
 - [x] Python regression tests.
-- [x] CI validation of Docker Compose and bootstrap Caddyfile.
+- [x] CI validation of Docker Compose, bootstrap JSON, and generated HTTP/upload/ACME Caddy JSON.
 
 Still intentionally excluded from this branch:
 
 - DNS-01 provider plugins/custom Caddy builds.
 - External secret-manager integrations.
 - Mutual TLS/client certificates.
+
+
+### Efficiency hardening
+
+- [x] Native Caddy JSON removes Caddyfile adaptation from runtime configuration changes.
+- [x] Reconciliation is state/hash driven and does not reload unchanged Caddy configuration.
+- [x] Caddy restart detection uses a small server-state API read.
+- [x] Repeated TLS errors are de-duplicated before SQLite writes.
+- [x] TLS settings use batched SQLite reads and transactional writes.
+- [x] System Settings uses cached Caddy health instead of a live request.
+- [x] TLS configuration work runs in a threadpool instead of blocking FastAPI's event loop.
+- [x] X.509 dependencies are imported lazily.
+- [x] Docker health checks use a smaller endpoint and slower steady-state cadence.
+- [x] Real Caddy 2.11.4 validates generated HTTP, uploaded-certificate, and custom-ACME JSON in CI.
+- [x] CI benchmarks direct versus Caddy-proxied decision latency.
+- [x] HTTP/3/UDP 443 remains enabled and unchanged.
