@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.15.1 — HTTPS redirect-only HTTP mode
+
+- Added a control under **System Settings → HTTPS & certificates** to disable direct HTTP access after HTTPS is working.
+- The HTTP behavior switch can only be changed from a control-panel request that arrived over HTTPS.
+- Redirect-only mode keeps the HTTP listener open but redirects all application traffic to HTTPS.
+- Redirects use HTTP **308 Permanent Redirect** so Blockinator's POST decision requests retain their method/body semantics.
+- Redirect targets preserve the request URI and include a non-standard configured `HTTPS_PORT` when required.
+- HTTP-only TLS mode always keeps direct HTTP enabled.
+- Added runtime display of the current HTTP behavior.
+- Added persisted `tls_http_redirect` configuration.
+- Added regression coverage for standard/non-standard HTTPS ports and the HTTPS-only control guard.
+- Updated the application version to 1.15.1.
+
 ## 1.15.0 — Managed HTTPS and ACME
 
 - Added a Caddy 2.11.4 sidecar as Blockinator's host-facing HTTP/HTTPS reverse proxy.
