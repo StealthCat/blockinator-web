@@ -30,6 +30,9 @@ jobs:
       - name: Validate bootstrap Caddyfile
         run: docker run --rm -v "$PWD/caddy/Caddyfile.bootstrap:/etc/caddy/Caddyfile:ro" caddy:2.11.4-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
+      - name: Build Blockinator Docker image
+        run: docker compose build blockinator
+
       - name: Run tests
         env:
           DATA_DIR: ${{ runner.temp }}/blockinator-data
