@@ -54,6 +54,7 @@ class Database:
                     schedule_end TEXT NOT NULL DEFAULT '00:00',
                     schedule_timezone TEXT NOT NULL DEFAULT 'UTC',
                     last_updated TEXT,
+                    last_refresh_attempt TEXT,
                     last_error TEXT,
                     entry_count INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -167,6 +168,10 @@ class Database:
                     con.execute(
                         f"ALTER TABLE blocklists ADD COLUMN {column_name} {definition}"
                     )
+            if "last_refresh_attempt" not in blocklist_columns:
+                con.execute(
+                    "ALTER TABLE blocklists ADD COLUMN last_refresh_attempt TEXT"
+                )
 
             scope_columns = {
                 row["name"] for row in con.execute("PRAGMA table_info(scopes)")
