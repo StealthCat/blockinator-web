@@ -15,6 +15,7 @@ The application is packaged as a Docker service and includes a responsive, multi
 - Custom ACME directory URLs, private CA root certificates, and External Account Binding (EAB) are supported from System Settings.
 - Global pause/resume for DNS blocking.
 - Configurable Allow/Deny fallback for otherwise-allowed queries from clients with no matching active policy target.
+- Configurable global block-list reach: apply Global lists to every client or only to clients with a matching active policy target.
 - Editable policy targets for networks, exact client IPs, and reverse-DNS hostnames, with block-list assignment directly from the Policy Targets page.
 - A single Network target can carry dual-stack IPv4 and IPv6 CIDRs concurrently, sharing one state, schedule, and block-list assignment set.
 - Reverse-DNS hostname targets support exact PTR names and wildcard suffixes such as `*.kids.home.arpa`.
@@ -42,7 +43,7 @@ The application is packaged as a Docker service and includes a responsive, multi
 
 System Settings is organized into three tabs:
 
-- **DNS & logs** — blocked-response behavior, unmatched-policy-target fallback, query-log retention, and default timezone.
+- **DNS & logs** — blocked-response behavior, global block-list reach, unmatched-policy-target fallback, query-log retention, and default timezone.
 - **HTTPS & TLS** — HTTP-only, uploaded-certificate, and ACME configuration.
 - **Runtime** — application, proxy, storage, and current TLS status.
 
@@ -485,7 +486,9 @@ Blocking state is evaluated in this order:
 
 The active block-list set is the union of enabled global lists and lists assigned to every matching active layer: network, reverse-DNS hostname, and exact client.
 
-Under **System Settings → DNS & logs**, **Default action** controls the unmatched-target fallback. **Allow** is the upgrade-safe default and preserves existing behavior. **Deny** blocks an otherwise-allowed query whenever no active endpoint, reverse-DNS hostname, or network target matched the client. Queries already blocked by a global block list keep their normal `blocklist_match` result.
+Under **System Settings → DNS & logs**, **Global block-list reach** controls whether lists marked Global apply to every client or only when an active endpoint, reverse-DNS hostname, or network target matched the client. **All clients** is the upgrade-safe default and preserves existing behavior. In **Matched policy targets only** mode, unmatched clients skip Global lists entirely.
+
+**Default action** then controls the unmatched-target fallback. **Allow** permits an unmatched query after applicable lists are evaluated. **Deny** blocks it with `no_scope_default_deny`. When Global lists are configured for All clients, a Global list match still takes precedence and keeps the normal `blocklist_match` result.
 
 
 
