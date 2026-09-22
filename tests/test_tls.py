@@ -20,6 +20,7 @@ from app.tls import (
     normalize_tls_hostname,
     validate_ca_root,
     validate_certificate_and_key,
+    validate_http_redirect_change,
 )
 
 
@@ -281,3 +282,16 @@ def test_http_only_mode_never_redirects(tmp_path, monkeypatch):
 
     assert "redir https://" not in config
     assert ":80 {\n  reverse_proxy blockinator:8080\n}" in config
+
+
+def test_http_redirect_change_requires_https():
+    validate_http_redirect_change(False, False, False)
+    validate_http_redirect_change(True, True, False)
+    validate_http_redirect_change(False, True, True)
+    validate_http_redirect_change(True, False, True)
+
+    with pytest.raises(ValueError, match="only be changed"):
+        validate_http_redirect_change(False, True, False)
+
+    with pytest.raises(ValueError, match="only be changed"):
+        validate_http_redirect_change(True, False, False)
