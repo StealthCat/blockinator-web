@@ -28,7 +28,7 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.18.4"
+APP_VERSION = "1.18.5"
 
 
 class PolicyResponseTimingMiddleware:
@@ -421,6 +421,12 @@ async def require_post_session(request: Request):
         raise HTTPException(status_code=403, detail="invalid CSRF token")
     return session, form
 
+
+def application_theme() -> str:
+    theme = db.get_setting("ui_theme", "dark").strip().lower()
+    return theme if theme in {"dark", "light"} else "dark"
+
+
 def page(request: Request, title: str, active: str, body: str, session=None) -> HTMLResponse:
     notice = request.query_params.get("notice")
     error = request.query_params.get("error")
@@ -474,6 +480,8 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
         flash += f'<div class="flash bad"><span class="flash-icon">!</span><div><b>Something needs attention</b><span>{esc(error)}</span></div></div>'
 
     global_on = db.get_setting("global_blocking", "1") == "1"
+    ui_theme = application_theme()
+    theme_color = "#f4f7fb" if ui_theme == "light" else "#071018"
     status_label = "Protection active" if global_on else "Protection paused"
     status_detail = "DNS policy is being enforced" if global_on else "Requests are currently allowed"
     action_href, action_label, action_icon = page_actions.get(active, (None, None, None))
@@ -492,10 +500,10 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
         </form>"""
 
     return HTMLResponse(f"""<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="{ui_theme}">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#071018">
+<meta name="theme-color" content="{theme_color}">
 <title>{esc(title)} · Blockinator</title>
 <link rel="icon" href="/static/blockinator-mark.webp">
 <link rel="stylesheet" href="/static/style.css">
@@ -616,8 +624,10 @@ def login_page(request: Request):
     if session_for(request):
         return RedirectResponse("/", status_code=303)
     error = request.query_params.get("error", "")
-    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign in · Blockinator</title><link rel="icon" href="/static/blockinator-mark.webp"><link rel="stylesheet" href="/static/style.css"></head>
+    ui_theme = application_theme()
+    theme_color = "#f4f7fb" if ui_theme == "light" else "#071018"
+    return HTMLResponse(f"""<!doctype html><html data-theme="{ui_theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="{theme_color}"><title>Sign in · Blockinator</title><link rel="icon" href="/static/blockinator-mark.webp"><link rel="stylesheet" href="/static/style.css"></head>
 <body class="login-body"><section class="login-visual"><div class="login-shade"></div><div class="login-copy"><img src="/static/blockinator-mark.webp" alt=""><p>DNS POLICY CONTROL</p><h1>Bad traffic<br>stops here.</h1><span>Block · Filter · Protect</span></div></section>
 <section class="login-panel"><form method="post" action="/login" class="login-card"><div class="mini-brand"><img src="/static/blockinator-mark.webp" alt=""><b>Blockinator</b></div><h2>Welcome back</h2><p>Sign in to manage DNS policy, endpoints, block lists and access keys.</p>
 {"<div class='flash bad'>" + esc(error) + "</div>" if error else ""}
@@ -2703,6 +2713,7 @@ def settings_page(request: Request):
     retention = db.get_setting("max_query_logs", "25000")
     retention_days = db.get_setting("max_query_log_age_days", "0")
     default_timezone = system_default_timezone()
+    ui_theme = application_theme()
     tls_status = tls_manager.status()
     tls_settings = tls_status.settings
     https_port = os.getenv("HTTPS_PORT", "8443")
@@ -2748,6 +2759,10 @@ def settings_page(request: Request):
         <button type="button" class="settings-tab-button" role="tab" data-settings-tab="tls" aria-controls="settings-tls">
           <span class="settings-tab-icon">◆</span>
           <span><b>HTTPS & TLS</b><small>Certificates and ACME</small></span>
+        </button>
+        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="appearance" aria-controls="settings-appearance">
+          <span class="settings-tab-icon">◐</span>
+          <span><b>Appearance</b><small>Light or dark interface</small></span>
         </button>
         <button type="button" class="settings-tab-button" role="tab" data-settings-tab="runtime" aria-controls="settings-runtime">
           <span class="settings-tab-icon">◈</span>
@@ -2996,6 +3011,50 @@ def settings_page(request: Request):
         </section>
       </section>
 
+      <section id="settings-appearance" class="settings-tab-panel" role="tabpanel" data-settings-panel="appearance" hidden>
+        <section class="panel action-panel appearance-settings-panel">
+          <div class="panel-kicker">Interface</div>
+          <h3>Appearance</h3>
+          <p class="panel-help">Choose the color scheme used throughout Blockinator, including the sign-in screen.</p>
+          <form method="post" action="/admin/settings/appearance" class="appearance-theme-form">
+            <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+            <div class="appearance-choice-grid">
+              <label class="appearance-choice {"selected" if ui_theme == "dark" else ""}">
+                <input type="radio" name="ui_theme" value="dark" {"checked" if ui_theme == "dark" else ""}>
+                <span class="appearance-preview appearance-preview-dark" aria-hidden="true">
+                  <i class="appearance-preview-sidebar"></i>
+                  <i class="appearance-preview-header"></i>
+                  <i class="appearance-preview-card first"></i>
+                  <i class="appearance-preview-card second"></i>
+                </span>
+                <span class="appearance-choice-copy">
+                  <b>Dark</b>
+                  <small>Blockinator's original dark control-plane interface.</small>
+                </span>
+              </label>
+              <label class="appearance-choice {"selected" if ui_theme == "light" else ""}">
+                <input type="radio" name="ui_theme" value="light" {"checked" if ui_theme == "light" else ""}>
+                <span class="appearance-preview appearance-preview-light" aria-hidden="true">
+                  <i class="appearance-preview-sidebar"></i>
+                  <i class="appearance-preview-header"></i>
+                  <i class="appearance-preview-card first"></i>
+                  <i class="appearance-preview-card second"></i>
+                </span>
+                <span class="appearance-choice-copy">
+                  <b>Light</b>
+                  <small>A bright workspace with the same Blockinator layout and controls.</small>
+                </span>
+              </label>
+            </div>
+            <div class="appearance-current">
+              <span>Current theme</span>
+              <b>{esc(ui_theme.title())}</b>
+            </div>
+            <button class="primary-button" type="submit">Save appearance</button>
+          </form>
+        </section>
+      </section>
+
       <section id="settings-runtime" class="settings-tab-panel" role="tabpanel" data-settings-panel="runtime" hidden>
         <section class="panel">
           <div class="panel-kicker">Service details</div><h3>Runtime</h3>
@@ -3008,6 +3067,7 @@ def settings_page(request: Request):
             <div><span>Log age limit</span><b>{age_summary}</b></div>
             <div><span>Log row limit</span><b>{int(retention):,}</b></div>
             <div><span>Default timezone</span><b class="mono">{esc(default_timezone)}</b></div>
+            <div><span>Interface theme</span><b>{esc(ui_theme.title())}</b></div>
             <div><span>Unmatched target action</span><b>{esc(unmatched_scope_action.title())}</b></div>
             <div><span>Global list reach</span><b>{"All clients" if global_blocklist_scope_mode == "all_clients" else "Matched targets only"}</b></div>
             <div><span>TLS mode</span><b>{esc(tls_mode_label)}</b></div>
@@ -3020,6 +3080,22 @@ def settings_page(request: Request):
       </section>
     </div>'''
     return page(request, "System Settings", "settings", body, s)
+
+@app.post("/admin/settings/appearance")
+async def save_appearance_settings(request: Request):
+    _, form = await require_post_session(request)
+    ui_theme = str(form.get("ui_theme", "dark")).strip().lower()
+    if ui_theme not in {"dark", "light"}:
+        return redirect(
+            "/settings#appearance",
+            error="Appearance must be set to Dark or Light",
+        )
+    db.set_setting("ui_theme", ui_theme)
+    return redirect(
+        "/settings#appearance",
+        notice=f"Appearance changed to {ui_theme.title()}",
+    )
+
 
 @app.post("/admin/settings")
 async def save_settings(request: Request):
