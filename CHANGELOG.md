@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.18.5 — Global light/dark appearance
+
+- Restored the redesigned Block List and Whitelist editors to Blockinator's native dark control-plane palette by default.
+- Added a persistent application-wide **Appearance** setting with Dark and Light options under System Settings.
+- Theme selection is stored in the configured SQLite or MySQL database and applies to all administrator pages and the sign-in screen.
+- Dark remains the default for existing and new installations.
+- Added a full light palette for navigation, workspace headers, cards, tables, forms, list/scopes management, query logging, statistics, TLS/settings surfaces, manual-domain management, and sign-in.
+- Added theme previews and current-theme status in the Appearance settings tab.
+- Added database, MySQL, settings-UI, and editor-theme regression coverage.
+- Updated the application version to 1.18.5.
+
 ## 1.18.4 — Rendered block-list and whitelist editor redesign
 
 - Reworked the dedicated Block List and Whitelist editor pages to match the rendered dashboard concept.
