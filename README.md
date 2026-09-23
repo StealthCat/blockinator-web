@@ -4,418 +4,40 @@
 
 # Blockinator
 
-**Blockinator** is a self-hosted DNS policy, block-list, and whitelist management service designed to work with DNS servers such as Technitium DNS Server.
+**Blockinator** is a self-hosted DNS policy engine and management console designed to sit beside DNS servers such as Technitium DNS Server.
 
-It accepts DNS query metadata through an authenticated policy API, determines which policy applies to the client, evaluates configured whitelists and block lists, and returns an allow/block decision. A responsive web console provides policy management, list imports, schedules, query logging, security controls, and managed HTTPS.
+It accepts authenticated DNS query metadata, resolves the applicable client policy, evaluates whitelists and block lists, and returns an allow/block decision. The web console provides policy targeting, list management, schedules, live statistics, query history, authentication, database selection, and managed HTTPS.
 
-Blockinator is packaged for Docker Compose and supports either a local SQLite database or a remote MySQL 8.x database for persistent configuration and history. SQLite remains the default.
+Blockinator runs with Docker Compose and supports either:
+
+- **SQLite** — local, zero-configuration persistence and the default backend.
+- **MySQL 8.x** — remote persistence with connection pooling and optional TLS.
 
 > The companion Technitium integration is maintained separately in the `blockinator-technitium` repository.
 
-## Highlights
-
-### Policy targeting
-
-Blockinator can apply policy by:
-
-- **Network** — IPv4 CIDR, IPv6 CIDR, or both on the same target.
-- **Endpoint** — one exact IPv4 or IPv6 client address.
-- **Reverse-DNS hostname** — exact PTR names such as `desktop-01.home.arpa`.
-- **Reverse-DNS wildcard** — suffix patterns such as `*.kids.home.arpa`.
-- **Global policy** — settings, whitelists, and block lists that apply beyond individually defined targets.
-
-A dual-stack Network target shares one name, state, schedule, and list assignment set across both address families.
-
-### Policy precedence
-
-Client policy state is evaluated in this order:
-
-1. Global pause.
-2. Exact client-IP Endpoint.
-3. Matching reverse-DNS hostname.
-4. Most-specific matching Network.
-5. Unmatched-client fallback.
-
-A paused matching target permits the query rather than continuing to a lower-priority target.
-
-List assignments are **additive**. The active policy set can contain:
-
-- enabled Global block lists and whitelists;
-- lists assigned to the matching Network;
-- lists assigned to the matching reverse-DNS hostname; and
-- lists assigned to the matching Endpoint.
-
-All active lists are still subject to their own enabled state and schedule. Within the resulting active set, **whitelist matches are evaluated before block-list matches**. A whitelist match explicitly allows the query even when the same domain also appears in one or more active block lists. If no whitelist matches, normal block-list evaluation continues.
-
-### Unmatched clients
-
-Under **System Settings → DNS & logs**, Blockinator provides two controls for clients that do not match any active policy target:
-
-- **Global list reach**
-  - **All clients** — Global lists are evaluated for every client.
-  - **Matched policy targets only** — Global lists are evaluated only when an active Network, Endpoint, or hostname target matched.
-- **Default action**
-  - **Allow** — permit an unmatched query after any applicable lists are evaluated.
-  - **Deny** — block an otherwise-allowed unmatched query with `no_scope_default_deny`.
-
-This makes it possible to run either an open-by-default or closed-by-default policy model.
-
-## Block-list and whitelist management
-
-Blockinator supports multiple independent block lists and whitelists with their own source, parser, assignments, state, and schedule. Whitelists use the same management features as block lists but produce an explicit allow decision when matched.
-
-Domains are stored in a normalized global domain table. If the same domain appears in multiple block lists, whitelists, or both, the domain text is stored once and each list keeps a lightweight membership reference to that shared entry. Removing or refreshing one list does not remove the shared domain until its final list membership is gone.
-
-### Sources
-
-Lists can be created from:
-
-- a remote URL;
-- an uploaded file;
-- pasted rules; or
-- a manually maintained domain list.
-
-Supported input formats include:
-
-- one domain per line;
-- hosts-file style entries; and
-- common DNS-oriented Adblock rules.
-
-Imported domains are normalized before storage. IDNs are stored in ASCII/punycode form, and wildcard-style inputs such as `*.example.com` are normalized to the blockable domain.
-
-A stored entry for `example.com` also matches subdomains such as `ads.example.com`.
-
-### Assignments
-
-Each list can be:
-
-- enabled or disabled;
-- applied globally; or
-- assigned to individual Networks, Endpoints, and reverse-DNS hostname targets.
-
-Assignments can be managed from either side:
-
-- **Block Lists → Edit** opens a dedicated dashboard-style editor with list/source settings, targeting, schedule, import/update controls, and a current-entry preview.
-- **Whitelists → Edit** opens the same editor experience for allow lists.
-- **Policy Targets → Edit & assign** shows both block lists and whitelists for a selected target.
-
-Global lists cannot be redundantly assigned to individual targets while **Apply globally** is enabled.
-
-Assignment and policy changes reload the in-memory policy engine immediately.
-
-### Manual list editor
-
-Manual lists have a dedicated **Manage domains** page with:
-
-- single-domain add and remove;
-- search;
-- alphabetical sorting;
-- pagination; and
-- immediate policy reload after changes.
-
-### Automatic URL refresh
-
-Every URL-backed list can have its own automatic refresh interval.
-
-On a successful refresh, Blockinator:
-
-- uses HTTP ETag/Last-Modified validators when the source supports them;
-- fingerprints downloaded content so unchanged sources skip parsing and policy reloads;
-- downloads and parses multiple due URL lists concurrently;
-- serializes database commits to avoid SQLite writer contention;
-- applies only added/removed domain memberships instead of rebuilding an unchanged list;
-- updates timestamps, source metadata, and entry counts; and
-- reloads the policy engine once after a batch of changed lists.
-
-If a download or parse fails, the last known-good list remains active. An upstream response containing no usable domains is rejected rather than replacing a working list with an empty one.
-
-**Save & refresh URL** performs an immediate import and resets that list's refresh interval clock.
-
-The scheduler scan frequency and bounded URL-download concurrency are controlled by:
-
-```env
-BLOCKLIST_REFRESH_POLL_SECONDS=30
-BLOCKLIST_REFRESH_WORKERS=4
-```
-
-### Decision-path concurrency
-
-Policy configuration is compiled into an immutable in-memory snapshot. DNS decision threads capture the current snapshot without taking the policy write lock, while administrative changes and list refreshes build a replacement snapshot and swap it in atomically.
-
-The snapshot also precompiles schedules and scope indexes and stores domains once in a shared `domain → list-membership bitmask` index. Exact endpoint and hostname targets use direct indexes, wildcard hostnames use suffix indexes, and IPv4/IPv6 network targets use prefix indexes. This keeps the request path read-only and minimizes repeated Python work under concurrent DNS load.
-
-## Scheduling
-
-Recurring weekly schedules can be applied independently to:
-
-- Block Lists;
-- Whitelists;
-- Networks;
-- Endpoints; and
-- Reverse-DNS hostname targets.
-
-Each schedule supports:
-
-- selectable weekdays;
-- start and end times;
-- overnight windows; and
-- an IANA timezone such as `America/New_York`.
-
-Selected weekdays represent the day the window **starts**. For example, a Monday `22:00–06:00` schedule remains active through Tuesday at 06:00.
-
-If start and end times are equal, the schedule covers the entire selected day.
-
-When a target is outside its schedule, it is ignored and policy falls back to the next applicable layer. When a paused target has a schedule, its pause applies only while that schedule is active.
-
-**System Settings → Default timezone** controls query-log display and becomes the default timezone for newly created schedules. Existing schedules retain the timezone already saved with them.
-
-## Reverse DNS
-
-Blockinator resolves client PTR records outside the DNS decision path.
-
-Resolved hostnames are used for:
-
-- reverse-DNS hostname policy targets;
-- Dashboard client display;
-- Query Log client display;
-- Endpoint selectors; and
-- Query Log client searching.
-
-The asynchronous query logger learns and persists IP-to-hostname identities in the configured database, then updates the in-memory policy cache. A new client may initially use only its IP/network/global policy until its PTR identity has been learned.
-
-Exact hostname targets match one normalized PTR name. A pattern such as:
-
-```text
-*.kids.home.arpa
-```
-
-matches `tablet.kids.home.arpa`, but not the bare `kids.home.arpa` suffix itself.
-
-For internal reverse zones, custom resolvers can be configured in `.env`:
-
-```env
-RDNS_NAMESERVERS=192.168.1.2,192.168.1.3
-```
-
-Reverse-DNS identity is only as trustworthy as the resolver and reverse zones providing it, so hostname policy is best suited to networks where you control PTR data.
-
-## Appearance
-
-System Settings includes an **Appearance** tab with application-wide **Dark** and **Light** themes. The selected theme is stored in Blockinator's database and applies to the entire administration interface, including the sign-in screen.
-
-Dark is the default and uses Blockinator's original control-plane palette. Light preserves the same layout and functionality with bright navigation, cards, forms, tables, statistics, and editor surfaces.
-
-## Live statistics
-
-The **Statistics** page provides a live operational view of policy traffic in the same compact monitoring style used by DNS administration consoles such as Technitium.
-
-It includes:
-
-- total retained DNS queries;
-- total retained blocked queries;
-- average measured policy API response time;
-- a live line chart of queries and blocks per interval; and
-- selectable **15 minute**, **1 hour**, **6 hour**, and **24 hour** windows.
-
-The chart refreshes every five seconds without reloading the page. Longer ranges automatically use larger aggregation intervals so browser rendering and database work remain bounded.
-
-Statistics are calculated from the retained Query Log. If query-log row or age retention removes older records, those records no longer contribute to totals or chart history. Response-time averages include only requests recorded after response-time measurement was introduced.
-
-## Query logging and Dashboard
-
-DNS decisions are written asynchronously so logging does not block the policy path.
-
-The Dashboard shows recent DNS activity, and the full Query Log records:
-
-- timestamp;
-- originating DNS server (`server_id`);
-- client IP and learned PTR hostname;
-- client port;
-- DNS transport/protocol;
-- whether the policy request arrived over HTTP or HTTPS;
-- end-to-end policy API response time in milliseconds, measured from request receipt through the final response send;
-- query name, type, and class;
-- allow/block result;
-- block reason;
-- matched policy target;
-- matched policy list; and
-- the original request payload for detail inspection.
-
-Allowed queries intentionally leave the **Reason/Match** display blank. Blocked queries show the relevant blocking reason or list.
-
-### Query Log filters
-
-The Query Log supports filtering by information including:
-
-- querying DNS server;
-- client IP or partial/full PTR hostname;
-- matched policy list; and
-- matched policy target.
-
-Policy-target matching is exact, while client hostname filtering supports partial names.
-
-Optional auto-refresh intervals are available at **5, 10, 15, 30, or 60 seconds**. Active filters remain in the URL and are preserved during refresh.
-
-### Retention
-
-Two independent retention controls are available:
-
-- **Maximum age (days)** — `0` disables age-based pruning.
-- **Maximum rows** — keeps only the newest configured number of rows.
-
-When both are enabled, both limits apply. Saving new retention settings immediately prunes existing history, and the same limits are enforced as new query batches are written.
-
-Query timestamps are stored in UTC and converted for display using the configured System Settings timezone, including daylight-saving-time handling.
-
-## Administration and security
-
-The administration console includes Dashboard, Block Lists, Whitelists, Policy Targets, Query Log, Access & Security, and System Settings pages with responsive desktop/mobile layouts.
-
-Security features include:
-
-- database-backed administrator accounts;
-- salted `scrypt` password hashes;
-- database-backed login sessions;
-- HTTP-only session cookies;
-- automatic Secure cookies when the login arrives over HTTPS;
-- CSRF protection for administrative forms;
-- configurable administrator session lifetime;
-- multiple named API keys;
-- API-key enable/disable, rotation, deletion, fingerprints, and last-used timestamps;
-- API keys stored only as SHA-256 hashes; and
-- an in-memory API-key cache to keep authentication overhead off the hot path.
-
-Bootstrap credentials are used only when the database has no administrator or API-key records. After initialization, manage credentials from **Access & Security**.
-
-## HTTPS and TLS
-
-Blockinator uses a managed **Caddy 2.11.4** sidecar as the host-facing HTTP/HTTPS reverse proxy. The Blockinator application itself remains on the internal Compose network.
-
-Default host ports are:
-
-```text
-HTTP   8080
-HTTPS  8443
-```
-
-They can be changed in `.env`:
-
-```env
-POLICY_PORT=80
-HTTPS_PORT=443
-```
-
-The HTTPS port is published for both TCP and UDP, allowing Caddy to use HTTP/3 where supported.
-
-### TLS modes
-
-Under **System Settings → HTTPS & TLS**, choose one of:
-
-- **HTTP only**
-- **Uploaded certificate**
-- **ACME / custom ACME server**
-
-Existing installations remain HTTP-only until TLS is configured.
-
-### Uploaded certificates
-
-Blockinator accepts a PEM certificate/full chain and matching unencrypted PEM private key.
-
-Before activation it validates:
-
-- certificate/key match;
-- certificate validity period; and
-- DNS SAN coverage for the configured HTTPS hostname.
-
-Private key material is stored under `/data/tls` with restrictive filesystem permissions.
-
-### ACME
-
-ACME mode supports:
-
-- account email;
-- a configurable ACME directory URL;
-- an optional PEM trust root for a private/internal CA; and
-- optional External Account Binding (EAB) key ID and HMAC secret.
-
-The EAB HMAC secret is stored as a protected file under `/data/tls`, not in SQLite.
-
-Caddy certificate/account state persists under `./data/caddy`.
-
-For public HTTP-01 or TLS-ALPN-01 validation, the normal public challenge ports generally need to reach Caddy on ports 80 and/or 443. Set `POLICY_PORT=80` and `HTTPS_PORT=443` where required.
-
-DNS-01 provider plugins are not included.
-
-### Safe apply and reconciliation
-
-Blockinator generates native Caddy JSON and loads it atomically through Caddy's Docker-internal admin API.
-
-If a new configuration fails to activate:
-
-- uploaded TLS material is restored; and
-- the previous Caddy configuration is re-applied.
-
-The Caddy admin API is not published to the host.
-
-A background reconciler also detects a restarted Caddy instance or changed desired state and restores the saved configuration when needed. In steady state it performs a lightweight health/configuration check without repeatedly reloading unchanged configuration.
-
-The default reconciliation interval is:
-
-```env
-TLS_RECONCILE_SECONDS=30
-```
-
-### Redirect-only HTTP
-
-After HTTPS is verified, direct HTTP application access can be disabled from the HTTPS-served control panel.
-
-In redirect-only mode:
-
-- the HTTP listener remains open;
-- application requests receive **308 Permanent Redirect** to HTTPS;
-- path and query string are preserved;
-- POST method/body semantics are preserved; and
-- non-standard `HTTPS_PORT` values are included in the redirect target.
-
-Keeping the HTTP listener available also allows normal HTTP-to-HTTPS navigation and ACME HTTP challenge traffic.
-
-## System Settings
-
-System Settings is divided into three areas:
-
-### DNS & logs
-
-Controls include:
-
-- NXDOMAIN or REFUSED blocked responses;
-- global pause/resume;
-- Global list reach;
-- unmatched-client Allow/Deny fallback;
-- query-log age and row retention; and
-- default display/schedule timezone.
-
-### HTTPS & TLS
-
-Controls include:
-
-- TLS mode;
-- hostname and certificate identity;
-- uploaded certificate/key;
-- ACME server configuration;
-- private CA trust root;
-- EAB;
-- redirect-only HTTP; and
-- TLS status/error information.
-
-Only controls relevant to the selected TLS mode are submitted.
-
-### Runtime
-
-Shows application, proxy, storage, and current TLS/runtime information.
+## What it does
+
+- Policy targeting by IPv4/IPv6 network, exact client IP, exact PTR hostname, or wildcard PTR hostname.
+- Dual-stack network targets with shared schedules and list assignments.
+- Independent **block lists and whitelists** with whitelist precedence.
+- URL, file, pasted-rule, and manual list sources.
+- Hosts-file, domain-list, and common DNS-oriented Adblock parsing.
+- Per-list and per-target recurring schedules with IANA timezones.
+- Configurable behavior for clients that do not match a policy target.
+- Asynchronous query logging and reverse-DNS identity learning.
+- Distinct **Allowed**, **Blocked**, and **Whitelisted** decisions in the Dashboard and Query Log.
+- Query-log filtering by client, server, policy target, list, and decision.
+- End-to-end policy response-time logging.
+- Live Statistics chart for queries, blocks, and average response time.
+- Dark and light application themes.
+- SQLite or remote MySQL persistence.
+- Managed HTTPS through Caddy with uploaded certificates or ACME.
+- API-key authentication for resolvers and database-backed administrator sessions.
+- Lock-free policy reads through immutable in-memory snapshots.
 
 ## Quick start
 
-### 1. Create local configuration
+### 1. Create the local configuration
 
 ```bash
 cp .env.example .env
@@ -435,7 +57,7 @@ SQLite is the default:
 DATABASE_BACKEND=sqlite
 ```
 
-To use a remote MySQL 8.x server instead:
+To use MySQL instead:
 
 ```env
 DATABASE_BACKEND=mysql
@@ -446,9 +68,9 @@ MYSQL_USER=blockinator
 MYSQL_PASSWORD=replace-with-a-long-random-password
 ```
 
-Blockinator creates the required tables in the selected MySQL database. The database itself and the configured MySQL user must already exist, and that user needs permission to create/alter Blockinator tables, views, indexes, and foreign keys.
+Blockinator creates and upgrades its own tables. The MySQL database and user must already exist, and that user needs the privileges required to create/alter Blockinator tables, indexes, views, and foreign keys.
 
-Changing `DATABASE_BACKEND` selects a different persistent store on the next startup. It **does not copy or migrate data** between SQLite and MySQL.
+Changing `DATABASE_BACKEND` selects a different store at the next startup. It does **not** migrate data between SQLite and MySQL.
 
 ### 2. Start Blockinator
 
@@ -456,35 +78,449 @@ Changing `DATABASE_BACKEND` selects a different persistent store on the next sta
 docker compose up -d --build
 ```
 
-### 3. Open the control panel
+### 3. Open the console
 
-With the default ports:
+With the default port mapping:
 
 ```text
 http://DOCKER-HOST:8080/
 ```
 
-Local application files are stored under:
+Local runtime files are stored under `./data/`.
 
-```text
-./data/
-```
-
-With `DATABASE_BACKEND=sqlite`, the database is:
+With SQLite, the primary database is:
 
 ```text
 ./data/policy.db
 ```
 
-With `DATABASE_BACKEND=mysql`, configuration, credentials, policy data, and query history are stored in the configured remote MySQL database instead. TLS/ACME files remain under `./data`.
+With MySQL, configuration, credentials, policy data, and query history live in the remote database while TLS/ACME files remain under `./data`.
 
-On the first startup, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and `POLICY_API_KEY` seed the database. Once records exist, the values in `.env` no longer replace them.
+Bootstrap administrator credentials and the bootstrap API key are only used when the database has no existing records. After initialization, manage them from **Access & Security**.
+
+## Policy model
+
+### Target precedence
+
+Client targets are resolved in this order:
+
+1. Global pause.
+2. Exact client-IP Endpoint.
+3. Matching reverse-DNS hostname.
+4. Most-specific matching Network.
+5. Unmatched-client fallback.
+
+A paused matching target permits the query instead of continuing to a lower-priority target.
+
+A Network target may contain IPv4, IPv6, or both. Dual-stack targets share one name, state, schedule, and assignment set.
+
+### List precedence
+
+List assignments are additive. The active policy set may include:
+
+- globally applied lists;
+- lists assigned to the matching Network;
+- lists assigned to the matching PTR hostname; and
+- lists assigned to the matching Endpoint.
+
+Every active list is still subject to its own enabled state and schedule.
+
+**Whitelists are evaluated before block lists.** If a domain matches an active whitelist, the decision is allowed even if that domain also appears in one or more active block lists.
+
+The policy API reports a whitelist match as:
+
+```json
+{
+  "block": false,
+  "reason": "whitelist_match",
+  "matched_scope": "Guest Wi-Fi",
+  "matched_list": "Required Services",
+  "matched_list_type": "whitelist",
+  "matched_domain": "updates.example.com",
+  "response_mode": "nxdomain"
+}
+```
+
+In the web UI, that same event is shown as the distinct **Whitelisted** decision rather than a generic Allowed result.
+
+### Unmatched clients
+
+Under **System Settings → DNS & logs**, two controls define unmatched-client behavior.
+
+**Global list reach**
+
+- **All clients** — global lists apply to every client.
+- **Matched policy targets only** — global lists apply only when a Network, Endpoint, or hostname target matched.
+
+**Default action**
+
+- **Allow** — permit an otherwise-unmatched query.
+- **Deny** — block it with `no_scope_default_deny`.
+
+This supports both open-by-default and closed-by-default policy models.
+
+## Block lists and whitelists
+
+Block lists and whitelists use the same management model. Each list has its own:
+
+- source;
+- parser format;
+- enabled state;
+- global/target assignments;
+- schedule;
+- automatic refresh interval; and
+- entry set.
+
+### Supported sources
+
+A list may come from:
+
+- a remote URL;
+- an uploaded file;
+- pasted rules; or
+- a manually maintained domain list.
+
+Supported input includes:
+
+- one domain per line;
+- hosts-file entries; and
+- common DNS-oriented Adblock rules.
+
+Domains are normalized before storage. IDNs are stored in ASCII/punycode form, and wildcard-style inputs such as `*.example.com` normalize to the blockable domain.
+
+A stored `example.com` entry also matches its subdomains.
+
+### Normalized domain storage
+
+Domains are stored once in a shared global domain table. If the same domain appears in several block lists, whitelists, or both, each list stores only its membership reference.
+
+This avoids duplicate domain storage while preserving independent list membership and refresh behavior.
+
+### Editors
+
+**Block Lists → Edit** and **Whitelists → Edit** open dedicated editor pages for:
+
+- list/source configuration;
+- policy-target assignments;
+- scheduling;
+- URL refresh/import actions; and
+- current-entry previews.
+
+Manual lists also have a dedicated domain manager with search, pagination, add, and remove operations.
+
+### URL refresh behavior
+
+URL-backed lists refresh independently on their configured intervals.
+
+The refresher:
+
+- uses ETag and Last-Modified validators when available;
+- streams remote content through the parser instead of retaining an extra full decoded copy;
+- computes SHA-256 while downloading rather than hashing the source again afterward;
+- skips parsing/database writes when an unchanged source can be identified;
+- downloads and parses multiple due lists concurrently;
+- serializes database writes to avoid SQLite writer contention;
+- applies membership deltas rather than replacing unchanged data;
+- keeps the last known-good list after download/parse failures; and
+- reloads only the policy list snapshot after a changed refresh batch.
+
+An upstream response with no usable domains is rejected rather than replacing a working list with an empty one.
+
+Refresh controls:
+
+```env
+BLOCKLIST_REFRESH_POLL_SECONDS=30
+BLOCKLIST_REFRESH_WORKERS=4
+MAX_BLOCKLIST_BYTES=104857600
+```
+
+## Scheduling
+
+Recurring weekly schedules can be applied to:
+
+- Block Lists;
+- Whitelists;
+- Networks;
+- Endpoints; and
+- PTR hostname targets.
+
+Schedules support:
+
+- selectable weekdays;
+- start/end times;
+- overnight windows; and
+- IANA timezones such as `America/New_York`.
+
+Selected weekdays represent the day the schedule starts. For example, Monday `22:00–06:00` remains active until Tuesday at 06:00.
+
+If start and end are equal, the schedule covers the full selected day.
+
+The **System Settings → Default timezone** controls Query Log display and is the initial timezone for newly created schedules. Existing schedules retain their own saved timezone.
+
+## Reverse DNS
+
+PTR lookup is kept off the DNS decision request path.
+
+The asynchronous logging/identity pipeline learns client PTR names and stores them in the configured database. Learned identities are then available to the in-memory policy engine and administrative UI without forcing page renders to wait on DNS.
+
+PTR identities are used for:
+
+- exact and wildcard hostname policy targets;
+- Dashboard client labels;
+- Query Log client labels;
+- Endpoint selectors; and
+- Query Log client searching.
+
+A wildcard such as:
+
+```text
+*.kids.home.arpa
+```
+
+matches `tablet.kids.home.arpa`, but not the bare `kids.home.arpa` suffix.
+
+For internal reverse zones:
+
+```env
+RDNS_NAMESERVERS=192.168.1.2,192.168.1.3
+```
+
+Hostname policy is only as trustworthy as the PTR data supplied by the configured resolver/reverse zones.
+
+## Dashboard and Query Log
+
+DNS decisions are written through a bounded asynchronous logger so normal database logging does not block the policy request path.
+
+The Dashboard shows recent activity. The full Query Log records:
+
+- timestamp;
+- originating DNS server (`server_id`);
+- client IP and learned PTR hostname;
+- client port;
+- DNS transport/protocol;
+- HTTP or HTTPS policy scheme;
+- query name, type, and class;
+- end-to-end policy response time;
+- matched policy target;
+- matched list and list type;
+- allow/block state and reason; and
+- optionally, the original request JSON.
+
+### Decision display
+
+The UI uses three distinct decision states:
+
+- **Allowed** — permitted without a whitelist match.
+- **Blocked** — rejected by a block list or blocking policy condition.
+- **Whitelisted** — explicitly permitted by a whitelist.
+
+Whitelist rows continue to show the matched whitelist in the Match/Reason column.
+
+The Query Log decision filter treats these as three separate choices. Selecting **Allowed** does not include Whitelisted rows.
+
+### Query Log filters
+
+Filters include:
+
+- domain;
+- client IP or partial/full PTR hostname;
+- querying DNS server;
+- matched policy target;
+- matched list;
+- decision state; and
+- result limit.
+
+Optional auto-refresh intervals are available at 5, 10, 15, 30, or 60 seconds and preserve the active filter URL.
+
+### Raw request JSON
+
+Full policy request JSON is **disabled by default** to reduce serialization CPU, database bandwidth, WAL traffic, and storage use.
+
+Enable **Store full policy request JSON** under **System Settings → DNS & logs** only when raw payload retention is useful for troubleshooting.
+
+### Retention
+
+Two retention limits are available:
+
+- **Maximum age (days)** — `0` disables age pruning.
+- **Maximum rows** — retains only the newest configured number of rows.
+
+When both are set, both apply.
+
+Timestamps are stored in UTC and converted for display using the configured system timezone, including daylight-saving-time handling.
+
+## Live Statistics
+
+The **Statistics** page provides a live operational view with:
+
+- total retained queries;
+- total retained blocks;
+- overall average measured policy response time;
+- query count per interval;
+- blocked-query count per interval; and
+- **average response time per interval as a separate chart line**.
+
+The response-time series uses an independent right-side millisecond axis so traffic volume does not distort latency visibility. Buckets with no response-time samples render as gaps instead of false 0 ms values.
+
+Available windows:
+
+- 15 minutes;
+- 1 hour;
+- 6 hours;
+- 24 hours.
+
+The page refreshes every five seconds without a full browser reload. Longer windows automatically use larger buckets.
+
+Statistics are derived from retained Query Log data, so retention pruning also limits statistics history.
+
+## Performance architecture
+
+Blockinator keeps the policy request path intentionally small.
+
+### Immutable policy snapshots
+
+Policy configuration is compiled into an immutable in-memory snapshot. Decision threads capture the current snapshot without acquiring the policy write lock.
+
+The snapshot contains:
+
+- precompiled schedules;
+- exact client/hostname indexes;
+- wildcard hostname suffix indexes;
+- IPv4/IPv6 prefix indexes;
+- one shared `domain → list-membership bitmask` index; and
+- list type/global/schedule masks.
+
+Administrative changes build replacement state and swap it atomically.
+
+### Targeted reloads
+
+Configuration changes no longer automatically rebuild every part of the policy engine.
+
+Separate reload paths update:
+
+- settings;
+- scopes; or
+- list/domain indexes.
+
+For example, changing a fallback setting does not reread the entire domain membership table, and changing one policy target does not rebuild all list domains.
+
+### Decision lookup
+
+Domain suffix masks are calculated once per query and reused for whitelist and block-list matching.
+
+### Async logging and identity work
+
+- Query writes are batched through a dedicated writer.
+- SQLite uses WAL mode and one serialized writer.
+- API-key `last_used_at` updates happen asynchronously.
+- PTR learning/backfill runs outside UI and policy request paths.
+
+## Database backends
+
+### SQLite
+
+SQLite is the default and requires no extra infrastructure.
+
+Blockinator uses WAL mode and serialized writes to reduce lock contention.
+
+### MySQL
+
+MySQL 8.x is supported for configuration, credentials, policy data, and query history.
+
+The application uses a bounded reusable connection pool rather than opening a new physical connection for every web/database operation.
+
+Pool controls:
+
+```env
+MYSQL_POOL_SIZE=10
+MYSQL_POOL_TIMEOUT_SECONDS=5
+MYSQL_POOL_RECYCLE_SECONDS=300
+```
+
+Optional MySQL TLS is supported through `MYSQL_SSL_*` settings.
+
+## Appearance
+
+**System Settings → Appearance** provides application-wide **Dark** and **Light** themes.
+
+The selected theme is stored in the active database backend and applies to the full administration console, including authentication and list editor surfaces.
+
+## HTTPS and TLS
+
+Blockinator uses a managed **Caddy 2.11.4** sidecar as the host-facing HTTP/HTTPS reverse proxy. The application itself remains on the private Compose network.
+
+Default host ports:
+
+```text
+HTTP   8080
+HTTPS  8443
+```
+
+Override them with:
+
+```env
+POLICY_PORT=80
+HTTPS_PORT=443
+```
+
+HTTPS is published over both TCP and UDP so Caddy can use HTTP/3 where supported.
+
+### TLS modes
+
+Under **System Settings → HTTPS & TLS**:
+
+- **HTTP only**
+- **Uploaded certificate**
+- **ACME / custom ACME server**
+
+Uploaded PEM certificates/keys are validated before activation, including certificate/key matching, validity dates, and DNS SAN coverage.
+
+ACME supports:
+
+- account email;
+- custom directory URL;
+- optional private CA root;
+- External Account Binding (EAB); and
+- persistent Caddy account/certificate state.
+
+Blockinator generates Caddy JSON and loads it atomically through the internal Caddy admin API. If activation fails, the previous configuration is restored.
+
+A background reconciler restores the desired configuration after Caddy restarts:
+
+```env
+TLS_RECONCILE_SECONDS=30
+```
+
+### Redirect-only HTTP
+
+After HTTPS is active, HTTP application access can be switched to redirect-only mode.
+
+Blockinator then returns **308 Permanent Redirect**, preserving URI, query string, POST method/body semantics, and configured non-standard HTTPS ports.
+
+The Caddy admin API is never published to the host.
+
+## Administration and security
+
+Security features include:
+
+- database-backed administrator accounts;
+- salted `scrypt` password hashes;
+- database-backed login sessions;
+- HTTP-only cookies;
+- Secure cookies when appropriate;
+- CSRF protection for administrative forms;
+- configurable administrator session lifetime;
+- multiple named API keys;
+- API-key enable/disable and deletion;
+- API-key fingerprints and last-used timestamps;
+- API keys stored only as SHA-256 hashes; and
+- in-memory API-key verification on the hot path.
 
 ## Technitium integration
 
-A companion Technitium DNS application can call Blockinator for each DNS request.
+A companion Technitium DNS application can call Blockinator for every DNS request.
 
-Example configuration:
+Example:
 
 ```json
 {
@@ -496,9 +532,9 @@ Example configuration:
 }
 ```
 
-When HTTPS is enabled, the endpoint can use the configured HTTPS hostname/port instead.
+When HTTPS is enabled, use the configured HTTPS hostname/port instead.
 
-If Technitium and Blockinator share a Docker network and you intentionally want to call the application directly rather than through Caddy:
+If Technitium and Blockinator share a Docker network and you intentionally want to bypass Caddy:
 
 ```json
 {
@@ -569,28 +605,39 @@ Example blocked response:
   "reason": "blocklist_match",
   "matched_scope": "Guest Wi-Fi",
   "matched_list": "Advertising",
+  "matched_list_type": "block",
   "matched_domain": "ads.example.com",
   "response_mode": "nxdomain"
 }
 ```
 
-Example whitelist response:
-
-```json
-{
-  "block": false,
-  "reason": "whitelist_match",
-  "matched_scope": "Guest Wi-Fi",
-  "matched_list": "Required Services",
-  "matched_list_type": "whitelist",
-  "matched_domain": "updates.example.com",
-  "response_mode": "nxdomain"
-}
-```
-
-Whitelist matches take precedence over block-list matches within the same active policy set.
-
 When multiple DNS questions are supplied, Blockinator evaluates them in order and returns the first blocking decision. If none block, the first allow decision is returned.
+
+## System Settings
+
+### DNS & logs
+
+Controls include:
+
+- NXDOMAIN or REFUSED blocked responses;
+- global pause/resume;
+- Global list reach;
+- unmatched-client Allow/Deny fallback;
+- query-log age/row retention;
+- optional raw request JSON retention; and
+- default timezone.
+
+### Appearance
+
+Controls the global Dark/Light theme.
+
+### HTTPS & TLS
+
+Controls TLS mode, hostname/certificate identity, uploaded certificate/key, ACME configuration, private CA trust, EAB, redirect-only HTTP, and TLS health/error status.
+
+### Runtime
+
+Shows application, storage, proxy, and TLS/runtime information.
 
 ## Environment variables
 
@@ -599,29 +646,32 @@ When multiple DNS questions are supplied, Blockinator evaluates them in order an
 | `ADMIN_USERNAME` | Bootstrap administrator username | `admin` |
 | `ADMIN_PASSWORD` | Bootstrap administrator password | change-me value |
 | `POLICY_API_KEY` | Bootstrap API key | change-me value |
-| `DATABASE_BACKEND` | Persistent database backend: `sqlite` or `mysql` | `sqlite` |
-| `MYSQL_HOST` | Remote MySQL hostname/address | blank |
-| `MYSQL_PORT` | Remote MySQL TCP port | `3306` |
-| `MYSQL_DATABASE` | MySQL database/schema name | `blockinator` |
+| `DATABASE_BACKEND` | `sqlite` or `mysql` | `sqlite` |
+| `MYSQL_HOST` | MySQL hostname/address | blank |
+| `MYSQL_PORT` | MySQL TCP port | `3306` |
+| `MYSQL_DATABASE` | MySQL database/schema | `blockinator` |
 | `MYSQL_USER` | MySQL username | `blockinator` |
 | `MYSQL_PASSWORD` | MySQL password | blank |
-| `MYSQL_CONNECT_TIMEOUT` | MySQL connection timeout in seconds | `10` |
-| `MYSQL_SSL_ENABLED` | Request TLS for the MySQL connection | `0` |
-| `MYSQL_SSL_CA` | In-container path to optional MySQL CA certificate | blank |
-| `MYSQL_SSL_CERT` | In-container path to optional MySQL client certificate | blank |
-| `MYSQL_SSL_KEY` | In-container path to optional MySQL client private key | blank |
-| `MYSQL_SSL_VERIFY_CERT` | Verify the MySQL server certificate/identity when TLS is used | `1` |
+| `MYSQL_CONNECT_TIMEOUT` | MySQL connect timeout, seconds | `10` |
+| `MYSQL_POOL_SIZE` | Maximum pooled MySQL connections | `10` |
+| `MYSQL_POOL_TIMEOUT_SECONDS` | Pool checkout timeout | `5` |
+| `MYSQL_POOL_RECYCLE_SECONDS` | Recycle pooled connections after this age | `300` |
+| `MYSQL_SSL_ENABLED` | Request MySQL TLS | `0` |
+| `MYSQL_SSL_CA` | Optional CA path inside container | blank |
+| `MYSQL_SSL_CERT` | Optional client certificate path | blank |
+| `MYSQL_SSL_KEY` | Optional client private-key path | blank |
+| `MYSQL_SSL_VERIFY_CERT` | Verify MySQL server certificate/identity | `1` |
 | `POLICY_PORT` | Host-facing HTTP port | `8080` |
 | `HTTPS_PORT` | Host-facing HTTPS TCP/UDP port | `8443` |
-| `MAX_BLOCKLIST_BYTES` | Maximum accepted block-list size | `104857600` |
-| `BLOCKLIST_REFRESH_POLL_SECONDS` | Background due-list scan frequency | `30` |
-| `BLOCKLIST_REFRESH_WORKERS` | Concurrent URL download/parse workers; DB commits remain serialized | `4` |
+| `MAX_BLOCKLIST_BYTES` | Maximum accepted list size | `104857600` |
+| `BLOCKLIST_REFRESH_POLL_SECONDS` | Due-list scan frequency | `30` |
+| `BLOCKLIST_REFRESH_WORKERS` | Concurrent list download/parse workers | `4` |
 | `ADMIN_COOKIE_SECURE` | Force Secure admin cookies when appropriate | `0` |
 | `ADMIN_SESSION_TTL_SECONDS` | Administrator session lifetime | `43200` |
 | `TZ` | Bootstrap/default timezone for a new database | `UTC` |
 | `RDNS_NAMESERVERS` | Optional comma-separated PTR resolvers | blank |
-| `RDNS_TIMEOUT_SECONDS` | Per-lookup reverse-DNS timeout | `0.5` |
-| `RDNS_PAGE_BUDGET_SECONDS` | UI reverse-DNS render budget | `1.25` |
+| `RDNS_TIMEOUT_SECONDS` | Per-lookup PTR timeout | `0.5` |
+| `RDNS_PAGE_BUDGET_SECONDS` | PTR resolver UI budget compatibility setting | `1.25` |
 | `RDNS_CACHE_TTL_SECONDS` | Positive PTR cache lifetime | `300` |
 | `RDNS_NEGATIVE_TTL_SECONDS` | Negative PTR cache lifetime | `60` |
 | `TLS_RECONCILE_SECONDS` | Caddy/TLS reconciliation interval | `30` |
@@ -630,9 +680,7 @@ The persisted System Settings timezone becomes authoritative after initializatio
 
 ## Data and backups
 
-Blockinator always stores TLS/ACME file state under `./data`, but database backups depend on the selected backend.
-
-With SQLite:
+### SQLite
 
 ```text
 ./data/policy.db   Configuration, credentials, policy data, and query history
@@ -640,9 +688,9 @@ With SQLite:
 ./data/caddy/      Caddy ACME account and certificate state
 ```
 
-Back up the entire `./data` directory.
+Back up the full `./data` directory.
 
-With MySQL:
+### MySQL
 
 ```text
 Remote MySQL       Configuration, credentials, policy data, and query history
@@ -650,9 +698,9 @@ Remote MySQL       Configuration, credentials, policy data, and query history
 ./data/caddy/      Caddy ACME account and certificate state
 ```
 
-Back up both the remote MySQL database and the local `./data` directory. Blockinator does not automatically synchronize or migrate records between database backends.
+Back up both the remote MySQL database and local `./data`.
 
-For remote MySQL, use a dedicated database/user and restrict network access to the Blockinator host. Enable MySQL TLS when the database connection crosses an untrusted network.
+Blockinator does not automatically synchronize or migrate records between database backends.
 
 ## Repository layout
 
@@ -671,6 +719,7 @@ For remote MySQL, use a dedicated database/user and restrict network access to t
 │   ├── blocklists.py
 │   ├── refresher.py
 │   ├── rdns.py
+│   ├── statistics.py
 │   ├── tls.py
 │   ├── timeutil.py
 │   ├── db.py
@@ -686,42 +735,53 @@ For remote MySQL, use a dedicated database/user and restrict network access to t
 
 ## Testing
 
-Run the test suite with:
+Run the test suite:
 
 ```bash
 python -m pytest -q
 ```
 
-The suite covers authentication, persistence/migrations, block-list and whitelist parsing/imports, schedules, policy precedence, reverse-DNS behavior, query logging, settings, TLS configuration, and SQLite/MySQL persistence. CI also runs dedicated integration tests against MySQL 8.4.
+CI covers:
 
-## Policy latency benchmark
+- Python compilation;
+- SQLite behavior and migrations;
+- MySQL 8.4 integration;
+- block-list/whitelist parsing and refresh;
+- schedules and policy precedence;
+- concurrent lock-free policy reads;
+- Query Log and reverse-DNS behavior;
+- settings and UI regression checks;
+- Caddy/TLS configuration;
+- Docker image/Compose validation;
+- policy-engine microbenchmark smoke testing; and
+- direct-vs-Caddy policy latency benchmarking.
 
-`tools/benchmark_policy_latency.py` compares the decision API directly against Uvicorn and through the Caddy sidecar at concurrency levels 1, 2, 4, 8, 16, and 32. It reports throughput plus mean/p50/p95/p99 latency.
+## Performance benchmarks
 
-Inside the Blockinator container:
-
-```bash
-python /srv/tools/benchmark_policy_latency.py --requests 1000 --warmup 20
-```
-
-Use `--qname` with a known blocked domain to measure the match path as well as the default allow path.
-
-`tools/benchmark_policy_engine.py` isolates `PolicyEngine.decide()` from HTTP, Caddy, Pydantic, and query logging overhead:
+Pure policy-engine benchmark:
 
 ```bash
 python /srv/tools/benchmark_policy_engine.py --domains 100000 --requests 100000
 ```
 
-CI also runs smaller smoke benchmarks. Results are informational rather than hard performance thresholds because shared runner performance varies.
+End-to-end direct-vs-Caddy benchmark:
+
+```bash
+python /srv/tools/benchmark_policy_latency.py --requests 1000 --warmup 20
+```
+
+The latency benchmark reports throughput plus mean/p50/p95/p99 latency across several concurrency levels. CI uses smaller smoke runs; benchmark values are informational rather than hard performance gates because shared-runner performance varies.
 
 ## Security recommendations
 
-- Replace bootstrap credentials before the first startup.
-- Rotate administrator credentials and API keys from **Access & Security** after initialization.
-- Prefer HTTPS for the control panel and policy API.
-- Keep `./data` private and backed up; when using MySQL, back up the remote database separately.
-- Protect internal DNS/PTR data if reverse-DNS hostname policy is used.
-- Expose Caddy's public HTTP/HTTPS ports as needed, but do not expose its internal admin API.
+- Replace bootstrap credentials before first startup.
+- Rotate administrator credentials and API keys from **Access & Security**.
+- Prefer HTTPS for both the control panel and policy API.
+- Keep `./data` private and backed up.
+- Back up the remote database separately when using MySQL.
+- Protect PTR/reverse-DNS infrastructure if hostname-based policy is enabled.
+- Do not expose Caddy's internal admin API.
+- Use MySQL TLS when the database connection crosses an untrusted network.
 
 ## License
 
