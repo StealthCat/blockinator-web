@@ -60,3 +60,11 @@ def test_rendered_list_editor_styles_and_navigation_are_wired():
     assert ".list-edit-savebar" in css
     assert ".main:has(.managed-list-edit-page)" in css
     assert "initializeListEditNavigation" in javascript
+
+
+def test_list_editor_uses_theme_aware_palette():
+    css = Path("app/static/style.css").read_text(encoding="utf-8")
+
+    assert '[data-theme="dark"] .list-edit-card' in css
+    assert '[data-theme="dark"] .list-edit-section-nav' in css
+    assert '[data-theme="light"] .main:has(.managed-list-edit-page)' not in css
