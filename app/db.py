@@ -679,7 +679,7 @@ class Database:
         values = dict(defaults)
         with self.connect() as con:
             rows = con.execute(
-                f"SELECT `key` AS key,value FROM settings WHERE key IN ({placeholders})",
+                f"SELECT `key` AS `key`,value FROM settings WHERE `key` IN ({placeholders})",
                 keys,
             ).fetchall()
         for row in rows:
