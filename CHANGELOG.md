@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.18.4 — Rendered block-list and whitelist editor redesign
+
+- Reworked the dedicated Block List and Whitelist editor pages to match the rendered dashboard concept.
+- Added a prominent editor header with list type, back navigation, and delete action.
+- Added a tab-style section navigator for General, Policy & Targeting, Schedule, Import & Update, and Preview.
+- Added summary tiles for entries, state, scope, and refresh interval.
+- Reorganized editing into paired cards for list details, source configuration, targeting, scheduling, import/update, and list preview.
+- Added a live 10-entry database preview of the currently stored list contents.
+- Added a persistent save bar with Cancel and Save Changes actions.
+- Preserved the existing edit POST contract, schedule controls, scope assignment behavior, URL refresh behavior, manual-domain management, and delete behavior.
+- Added a light editor workspace inspired by the approved rendering while retaining Blockinator's dark navigation shell.
+- Added responsive styling and regression coverage for the redesigned editor.
+- Updated the application version to 1.18.4.
+
 ## 1.18.3 — Dedicated block-list and whitelist editors
 
 - Block-list and whitelist cards now open a dedicated edit page instead of expanding an inline editor.
