@@ -786,3 +786,15 @@ The latency benchmark reports throughput plus mean/p50/p95/p99 latency across se
 ## License
 
 Blockinator is licensed under the **GNU General Public License v3.0**. See [LICENSE](LICENSE) for the full license text.
+
+## Reddit User Reviews
+
+Selected feedback from the r/technitium community:
+
+> “Vibe coded slop.  
+> Hard pass.”
+
+> “AI Slop.”
+
+> “Thanks ChatGPT!”
+
