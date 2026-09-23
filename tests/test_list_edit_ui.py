@@ -80,3 +80,12 @@ def test_manual_domain_add_returns_to_unfiltered_full_list():
     assert 'f"{base_path}/{list_id}/domains?q={quote(domain)}",' in handler
     assert handler.count('f"{base_path}/{list_id}/domains?q={quote(domain)}",') == 1
 
+def test_manual_domain_back_link_returns_to_list_editor():
+    source = Path("app/main.py").read_text(encoding="utf-8")
+    start = source.index("def manual_list_domains_page")
+    end = source.index('@app.post("/admin/lists/{list_id}/domains/add")', start)
+    page = source[start:end]
+
+    assert 'href="{base_path}/{list_id}/edit">← Back to edit ' in page
+    assert 'href="{base_path}#list-{list_id}">← Back to ' not in page
+
