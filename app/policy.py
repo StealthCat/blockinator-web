@@ -3,7 +3,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import queue
-import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
@@ -81,7 +80,7 @@ def _schedule_window_is_active(
 
 
 def _prune_query_logs(
-    con: sqlite3.Connection,
+    con,
     max_rows: int,
     max_age_days: int,
     now_utc: datetime | None = None,
@@ -103,12 +102,16 @@ def _prune_query_logs(
         age_deleted = max(0, cur.rowcount)
 
     if max_rows > 0:
-        cur = con.execute(
-            "DELETE FROM query_log "
-            "WHERE id <= (SELECT COALESCE(MAX(id),0)-? FROM query_log)",
-            (max_rows,),
-        )
-        row_deleted = max(0, cur.rowcount)
+        row = con.execute(
+            "SELECT COALESCE(MAX(id),0) AS max_id FROM query_log"
+        ).fetchone()
+        cutoff_id = int(row["max_id"] or 0) - max_rows if row else 0
+        if cutoff_id > 0:
+            cur = con.execute(
+                "DELETE FROM query_log WHERE id <= ?",
+                (cutoff_id,),
+            )
+            row_deleted = max(0, cur.rowcount)
 
     return age_deleted, row_deleted
 
