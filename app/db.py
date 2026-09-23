@@ -25,9 +25,14 @@ class Database:
             self.path = ""
             self._mysql = MySQLBackend()
         else:
-            data_dir = Path(os.getenv("DATA_DIR", "/data"))
-            data_dir.mkdir(parents=True, exist_ok=True)
-            self.path = str(Path(path) if path else data_dir / "policy.db")
+            if path is not None:
+                db_path = Path(path)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                data_dir = Path(os.getenv("DATA_DIR", "/data"))
+                data_dir.mkdir(parents=True, exist_ok=True)
+                db_path = data_dir / "policy.db"
+            self.path = str(db_path)
             self._enable_wal()
 
         self.initialize()
