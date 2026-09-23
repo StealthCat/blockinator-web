@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.18.1 — Policy response-time logging
+
+- Added end-to-end response-time measurement for policy decision requests.
+- Timing starts when the ASGI application receives `/api/v1/decision` and ends after the final response body has been sent downstream.
+- Query logs now persist `response_time_ms` on both SQLite and MySQL.
+- Dashboard Recent DNS activity and the Query Log now display response time in milliseconds.
+- Existing query-log databases are migrated automatically; historical rows show no response time.
+- Updated the application version to 1.18.1.
+
 ## 1.18.0 — Concurrent policy engine and CPU efficiency
 
 - Replaced the decision-path-wide policy lock with immutable policy snapshots that are rebuilt off-path and swapped atomically.
