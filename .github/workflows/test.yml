@@ -73,3 +73,52 @@ jobs:
       - name: Stop benchmark stack
         if: always()
         run: docker compose down -v
+
+  mysql-test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root-test-password
+          MYSQL_DATABASE: blockinator_test
+          MYSQL_USER: blockinator
+          MYSQL_PASSWORD: blockinator-test-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot-test-password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Compile Python source
+        run: python -m compileall -q app tests
+
+      - name: Run MySQL integration tests
+        env:
+          MYSQL_TEST: "1"
+          DATABASE_BACKEND: mysql
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: "3306"
+          MYSQL_DATABASE: blockinator_test
+          MYSQL_USER: blockinator
+          MYSQL_PASSWORD: blockinator-test-password
+          MYSQL_SSL_ENABLED: "0"
+          ADMIN_PASSWORD: test-admin-password
+          POLICY_API_KEY: test-policy-api-key-long-enough
+          TZ: UTC
+        run: python -m pytest -q tests/test_mysql_backend.py
+
