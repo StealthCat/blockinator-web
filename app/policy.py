@@ -331,7 +331,7 @@ class PolicyEngine:
 
     def reload(self) -> None:
         with self.db.connect() as con:
-            settings = {r["key"]: r["value"] for r in con.execute("SELECT key,value FROM settings")}
+            settings = {r["key"]: r["value"] for r in con.execute("SELECT `key` AS `key`,value FROM settings")}
             list_rows = con.execute("SELECT * FROM blocklists").fetchall()
             memberships: dict[int, set[int]] = {}
             for r in con.execute("SELECT scope_id,blocklist_id FROM scope_blocklists"):
