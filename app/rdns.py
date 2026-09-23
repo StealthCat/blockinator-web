@@ -32,6 +32,7 @@ class ReverseDnsResolver:
         ]
         self._cache: dict[str, tuple[float, str | None]] = {}
         self._lock = threading.RLock()
+        self._thread_local = threading.local()
         self._executor = ThreadPoolExecutor(
             max_workers=self.max_workers,
             thread_name_prefix="blockinator-rdns",
@@ -64,14 +65,22 @@ class ReverseDnsResolver:
                         self._cache.pop(key, None)
 
     def _resolver(self) -> dns.resolver.Resolver:
-        if self.nameservers:
-            resolver = dns.resolver.Resolver(configure=False)
-            resolver.nameservers = self.nameservers
-        else:
-            resolver = dns.resolver.Resolver(configure=True)
-        resolver.timeout = self.lookup_timeout
-        resolver.lifetime = self.lookup_timeout
+        # Resolver construction can parse system resolver configuration. Keep one
+        # resolver per worker thread rather than rebuilding it for every PTR.
+        resolver = getattr(self._thread_local, "resolver", None)
+        if resolver is None:
+            if self.nameservers:
+                resolver = dns.resolver.Resolver(configure=False)
+                resolver.nameservers = self.nameservers
+            else:
+                resolver = dns.resolver.Resolver(configure=True)
+            resolver.timeout = self.lookup_timeout
+            resolver.lifetime = self.lookup_timeout
+            self._thread_local.resolver = resolver
         return resolver
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
     def resolve(self, address: str) -> str | None:
         address = str(address).strip()
