@@ -76,7 +76,8 @@ def build_statistics_snapshot(
               SUBSTR(ts,1,16) AS minute_key,
               COUNT(*) AS queries,
               COALESCE(SUM(blocked),0) AS blocks,
-              AVG(response_time_ms) AS average_response_time_ms
+              AVG(response_time_ms) AS average_response_time_ms,
+              COUNT(response_time_ms) AS response_samples
             FROM query_log
             WHERE ts >= ?
             GROUP BY SUBSTR(ts,1,16)
@@ -85,7 +86,7 @@ def build_statistics_snapshot(
             (cutoff,),
         ).fetchall()
 
-    raw_minutes: dict[datetime, tuple[int, int, float | None]] = {}
+    raw_minutes: dict[datetime, tuple[int, int, float | None, int]] = {}
     for row in minute_rows:
         minute = _parse_utc_minute(row["minute_key"])
         if minute is None or minute < start_minute or minute > end_minute:
@@ -95,6 +96,7 @@ def build_statistics_snapshot(
             int(row["queries"] or 0),
             int(row["blocks"] or 0),
             float(average) if average is not None else None,
+            int(row["response_samples"] or 0),
         )
 
     points: list[dict] = []
@@ -112,12 +114,19 @@ def build_statistics_snapshot(
             sample = raw_minutes.get(minute)
             if sample is None:
                 continue
-            minute_queries, minute_blocks, minute_average = sample
+            (
+                minute_queries,
+                minute_blocks,
+                minute_average,
+                minute_response_samples,
+            ) = sample
             queries += minute_queries
             blocks += minute_blocks
-            if minute_average is not None and minute_queries > 0:
-                weighted_response_total += minute_average * minute_queries
-                response_samples += minute_queries
+            if minute_average is not None and minute_response_samples > 0:
+                weighted_response_total += (
+                    minute_average * minute_response_samples
+                )
+                response_samples += minute_response_samples
 
         local = bucket_start.astimezone(display_tz)
         points.append(
