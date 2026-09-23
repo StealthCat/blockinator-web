@@ -97,6 +97,9 @@ class Database:
                     last_updated TEXT,
                     last_refresh_attempt TEXT,
                     last_error TEXT,
+                    source_etag TEXT,
+                    source_last_modified TEXT,
+                    source_hash TEXT,
                     entry_count INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -309,6 +312,15 @@ class Database:
                 con.execute(
                     "ALTER TABLE blocklists ADD COLUMN last_refresh_attempt TEXT"
                 )
+            for metadata_column in (
+                "source_etag",
+                "source_last_modified",
+                "source_hash",
+            ):
+                if metadata_column not in blocklist_columns:
+                    con.execute(
+                        f"ALTER TABLE blocklists ADD COLUMN {metadata_column} TEXT"
+                    )
 
             if "list_type" not in blocklist_columns:
                 con.execute(
@@ -442,6 +454,14 @@ class Database:
             con.execute(
                 "CREATE INDEX IF NOT EXISTS idx_query_log_matched_list "
                 "ON query_log(matched_list, ts DESC)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_log_matched_scope "
+                "ON query_log(matched_scope, ts DESC)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_log_server "
+                "ON query_log(server_id, ts DESC)"
             )
 
             for row in con.execute(
@@ -607,20 +627,48 @@ class Database:
                     chunk,
                 )
 
-    def replace_list_domains(self, con, list_id: int, domains) -> None:
-        old_ids = [
-            int(row["domain_id"])
-            for row in con.execute(
-                "SELECT domain_id FROM blocklist_domain_memberships WHERE blocklist_id=?",
-                (list_id,),
-            ).fetchall()
-        ]
-        con.execute(
-            "DELETE FROM blocklist_domain_memberships WHERE blocklist_id=?",
+    def replace_list_domains(self, con, list_id: int, domains) -> bool:
+        """Synchronize list membership by applying only the changed rows.
+
+        Returns True when membership changed. This avoids deleting/reinserting
+        hundreds of thousands of unchanged memberships during routine refreshes.
+        """
+        incoming = set(str(domain) for domain in domains)
+        existing_rows = con.execute(
+            """
+            SELECT domains.id AS domain_id, domains.domain
+            FROM blocklist_domain_memberships AS memberships
+            JOIN domains ON domains.id=memberships.domain_id
+            WHERE memberships.blocklist_id=?
+            """,
             (list_id,),
-        )
-        self._insert_domain_memberships(con, list_id, list(domains))
-        self._cleanup_domain_ids(con, old_ids)
+        ).fetchall()
+        existing = {
+            str(row["domain"]): int(row["domain_id"])
+            for row in existing_rows
+        }
+
+        remove_domains = set(existing) - incoming
+        add_domains = incoming - set(existing)
+        if not remove_domains and not add_domains:
+            return False
+
+        remove_ids = [existing[domain] for domain in remove_domains]
+        for chunk in self._domain_chunks(remove_ids):
+            placeholders = ",".join("?" for _ in chunk)
+            con.execute(
+                f"""
+                DELETE FROM blocklist_domain_memberships
+                WHERE blocklist_id=?
+                  AND domain_id IN ({placeholders})
+                """,
+                [list_id, *chunk],
+            )
+
+        if add_domains:
+            self._insert_domain_memberships(con, list_id, add_domains)
+        self._cleanup_domain_ids(con, remove_ids)
+        return True
 
     def add_list_domain(self, con, list_id: int, domain: str) -> bool:
         existing = con.execute(
