@@ -633,7 +633,9 @@ class Database:
         Returns True when membership changed. This avoids deleting/reinserting
         hundreds of thousands of unchanged memberships during routine refreshes.
         """
-        incoming = set(str(domain) for domain in domains)
+        incoming = domains if isinstance(domains, set) else set(domains)
+        if any(not isinstance(domain, str) for domain in incoming):
+            incoming = {str(domain) for domain in incoming}
         existing_rows = con.execute(
             """
             SELECT domains.id AS domain_id, domains.domain
