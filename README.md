@@ -8,7 +8,7 @@
 
 It accepts DNS query metadata through an authenticated policy API, determines which policy applies to the client, evaluates configured whitelists and block lists, and returns an allow/block decision. A responsive web console provides policy management, list imports, schedules, query logging, security controls, and managed HTTPS.
 
-Blockinator is packaged for Docker Compose, uses SQLite for persistent configuration and history, and automatically migrates existing databases as features are added.
+Blockinator is packaged for Docker Compose and supports either a local SQLite database or a remote MySQL 8.x database for persistent configuration and history. SQLite remains the default.
 
 > The companion Technitium integration is maintained separately in the `blockinator-technitium` repository.
 
@@ -172,7 +172,7 @@ Resolved hostnames are used for:
 - Endpoint selectors; and
 - Query Log client searching.
 
-The asynchronous query logger learns and persists IP-to-hostname identities in SQLite, then updates the in-memory policy cache. A new client may initially use only its IP/network/global policy until its PTR identity has been learned.
+The asynchronous query logger learns and persists IP-to-hostname identities in the configured database, then updates the in-memory policy cache. A new client may initially use only its IP/network/global policy until its PTR identity has been learned.
 
 Exact hostname targets match one normalized PTR name. A pattern such as:
 
@@ -241,7 +241,7 @@ The administration console includes Dashboard, Block Lists, Policy Targets, Quer
 
 Security features include:
 
-- SQLite-backed administrator accounts;
+- database-backed administrator accounts;
 - salted `scrypt` password hashes;
 - database-backed login sessions;
 - HTTP-only session cookies;
@@ -397,6 +397,27 @@ ADMIN_PASSWORD=replace-with-a-long-random-password
 POLICY_API_KEY=change-this-long-random-api-key
 ```
 
+SQLite is the default:
+
+```env
+DATABASE_BACKEND=sqlite
+```
+
+To use a remote MySQL 8.x server instead:
+
+```env
+DATABASE_BACKEND=mysql
+MYSQL_HOST=mysql.example.internal
+MYSQL_PORT=3306
+MYSQL_DATABASE=blockinator
+MYSQL_USER=blockinator
+MYSQL_PASSWORD=replace-with-a-long-random-password
+```
+
+Blockinator creates the required tables in the selected MySQL database. The database itself and the configured MySQL user must already exist, and that user needs permission to create/alter Blockinator tables, views, indexes, and foreign keys.
+
+Changing `DATABASE_BACKEND` selects a different persistent store on the next startup. It **does not copy or migrate data** between SQLite and MySQL.
+
 ### 2. Start Blockinator
 
 ```bash
@@ -411,17 +432,19 @@ With the default ports:
 http://DOCKER-HOST:8080/
 ```
 
-Persistent application data is stored under:
+Local application files are stored under:
 
 ```text
 ./data/
 ```
 
-The SQLite database is:
+With `DATABASE_BACKEND=sqlite`, the database is:
 
 ```text
 ./data/policy.db
 ```
+
+With `DATABASE_BACKEND=mysql`, configuration, credentials, policy data, and query history are stored in the configured remote MySQL database instead. TLS/ACME files remain under `./data`.
 
 On the first startup, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and `POLICY_API_KEY` seed the database. Once records exist, the values in `.env` no longer replace them.
 
@@ -544,6 +567,18 @@ When multiple DNS questions are supplied, Blockinator evaluates them in order an
 | `ADMIN_USERNAME` | Bootstrap administrator username | `admin` |
 | `ADMIN_PASSWORD` | Bootstrap administrator password | change-me value |
 | `POLICY_API_KEY` | Bootstrap API key | change-me value |
+| `DATABASE_BACKEND` | Persistent database backend: `sqlite` or `mysql` | `sqlite` |
+| `MYSQL_HOST` | Remote MySQL hostname/address | blank |
+| `MYSQL_PORT` | Remote MySQL TCP port | `3306` |
+| `MYSQL_DATABASE` | MySQL database/schema name | `blockinator` |
+| `MYSQL_USER` | MySQL username | `blockinator` |
+| `MYSQL_PASSWORD` | MySQL password | blank |
+| `MYSQL_CONNECT_TIMEOUT` | MySQL connection timeout in seconds | `10` |
+| `MYSQL_SSL_ENABLED` | Request TLS for the MySQL connection | `0` |
+| `MYSQL_SSL_CA` | In-container path to optional MySQL CA certificate | blank |
+| `MYSQL_SSL_CERT` | In-container path to optional MySQL client certificate | blank |
+| `MYSQL_SSL_KEY` | In-container path to optional MySQL client private key | blank |
+| `MYSQL_SSL_VERIFY_CERT` | Verify the MySQL server certificate/identity when TLS is used | `1` |
 | `POLICY_PORT` | Host-facing HTTP port | `8080` |
 | `HTTPS_PORT` | Host-facing HTTPS TCP/UDP port | `8443` |
 | `MAX_BLOCKLIST_BYTES` | Maximum accepted block-list size | `104857600` |
@@ -562,17 +597,29 @@ The persisted System Settings timezone becomes authoritative after initializatio
 
 ## Data and backups
 
-Blockinator stores persistent state under `./data`.
+Blockinator always stores TLS/ACME file state under `./data`, but database backups depend on the selected backend.
 
-Important paths include:
+With SQLite:
 
 ```text
-./data/policy.db   SQLite configuration and query history
+./data/policy.db   Configuration, credentials, policy data, and query history
 ./data/tls/        Uploaded TLS material and protected ACME EAB secret
 ./data/caddy/      Caddy ACME account and certificate state
 ```
 
-Treat the entire `./data` directory as private and include it in backups if you want to preserve configuration, credentials, logs, and certificate state.
+Back up the entire `./data` directory.
+
+With MySQL:
+
+```text
+Remote MySQL       Configuration, credentials, policy data, and query history
+./data/tls/        Uploaded TLS material and protected ACME EAB secret
+./data/caddy/      Caddy ACME account and certificate state
+```
+
+Back up both the remote MySQL database and the local `./data` directory. Blockinator does not automatically synchronize or migrate records between database backends.
+
+For remote MySQL, use a dedicated database/user and restrict network access to the Blockinator host. Enable MySQL TLS when the database connection crosses an untrusted network.
 
 ## Repository layout
 
@@ -594,6 +641,7 @@ Treat the entire `./data` directory as private and include it in backups if you 
 │   ├── tls.py
 │   ├── timeutil.py
 │   ├── db.py
+│   ├── mysql_backend.py
 │   └── static/
 ├── caddy/
 │   └── caddy.bootstrap.json
@@ -611,7 +659,7 @@ Run the test suite with:
 python -m pytest -q
 ```
 
-The suite covers authentication, persistence/migrations, block-list parsing and imports, schedules, policy precedence, reverse-DNS behavior, query logging, settings, and TLS configuration.
+The suite covers authentication, persistence/migrations, block-list and whitelist parsing/imports, schedules, policy precedence, reverse-DNS behavior, query logging, settings, TLS configuration, and SQLite/MySQL persistence. CI also runs dedicated integration tests against MySQL 8.4.
 
 ## Policy latency benchmark
 
@@ -630,7 +678,7 @@ CI also runs a smaller smoke benchmark. Results are informational rather than a 
 - Replace bootstrap credentials before the first startup.
 - Rotate administrator credentials and API keys from **Access & Security** after initialization.
 - Prefer HTTPS for the control panel and policy API.
-- Keep `./data` private and backed up.
+- Keep `./data` private and backed up; when using MySQL, back up the remote database separately.
 - Protect internal DNS/PTR data if reverse-DNS hostname policy is used.
 - Expose Caddy's public HTTP/HTTPS ports as needed, but do not expose its internal admin API.
 
