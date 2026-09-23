@@ -107,7 +107,7 @@ class BlocklistRefresher:
         with self.db.connect() as con:
             row = con.execute(
                 """
-                SELECT id,source_type,source_url,format
+                SELECT id,source_type,source_url,format,list_type
                 FROM blocklists
                 WHERE id=?
                 """,
@@ -123,10 +123,13 @@ class BlocklistRefresher:
 
         source_url = str(row["source_url"]).strip()
         list_format = str(row["format"] or "auto")
+        list_type = str(row["list_type"] or "block")
+        if list_type not in {"block", "whitelist"}:
+            list_type = "block"
 
         try:
             text = self.fetcher(source_url)
-            parsed = parse_blocklist(text, list_format)
+            parsed = parse_blocklist(text, list_format, list_type)
             if not parsed.domains:
                 raise ValueError("refreshed block list contained no usable domains")
 
@@ -145,7 +148,7 @@ class BlocklistRefresher:
                         try:
                             current = con.execute(
                                 """
-                                SELECT source_type,source_url,format
+                                SELECT source_type,source_url,format,list_type
                                 FROM blocklists
                                 WHERE id=?
                                 """,
@@ -156,6 +159,7 @@ class BlocklistRefresher:
                                 or current["source_type"] != "url"
                                 or str(current["source_url"] or "").strip() != source_url
                                 or str(current["format"] or "auto") != list_format
+                                or str(current["list_type"] or "block") != list_type
                             ):
                                 con.execute("ROLLBACK")
                                 return RefreshResult(list_id=list_id, refreshed=False)
@@ -222,8 +226,9 @@ class BlocklistRefresher:
                           AND source_type='url'
                           AND source_url=?
                           AND format=?
+                      AND list_type=?
                         """,
-                        (message[:2000], list_id, source_url, list_format),
+                        (message[:2000], list_id, source_url, list_format, list_type),
                     )
             except sqlite3.OperationalError:
                 # If SQLite is still busy, do not let error bookkeeping turn a
