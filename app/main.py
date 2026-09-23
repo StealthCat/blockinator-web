@@ -28,7 +28,7 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.18.2"
+APP_VERSION = "1.18.3"
 
 
 class PolicyResponseTimingMiddleware:
@@ -941,10 +941,6 @@ def _managed_lists_page(request: Request, list_type: str):
             if selected
             else "No assignments"
         )
-        format_options = "".join(
-            f'<option value="{fmt}"{" selected" if r["format"] == fmt else ""}>{fmt}</option>'
-            for fmt in ("auto", "hosts", "adblock", "domains")
-        )
         error_html = (
             f'<div class="list-warning">Last refresh error: {esc(r["last_error"])}</div>'
             if r["last_error"] else ""
@@ -963,11 +959,6 @@ def _managed_lists_page(request: Request, list_type: str):
             refresh_summary = "No automatic refresh"
             refresh_detail = "Only URL-backed lists refresh automatically"
         list_schedule_summary = schedule_summary(r)
-        list_schedule_fields = schedule_fields_html(r)
-        refresh_button = (
-            '<button class="small-button" type="submit" name="action" value="refresh">'
-            'Save & refresh URL</button>'
-        )
         manual_manage_link = (
             f'<a class="small-button domain-manage-link" href="{base_path}/{int(r["id"])}/domains">'
             'Manage domains</a>'
@@ -995,7 +986,7 @@ def _managed_lists_page(request: Request, list_type: str):
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                 <button class="small-button">{"Disable" if r["enabled"] else "Enable"}</button>
               </form>
-              <a class="small-button edit-link" href="#edit-list-{int(r["id"])}">Edit & assign</a>
+              <a class="small-button edit-link" href="{base_path}/{int(r["id"])}/edit">Edit</a>
               {manual_manage_link}
               <form method="post" action="/admin/lists/{int(r["id"])}/delete" onsubmit="return confirm('Delete this {singular_label} and its scope assignments?')">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
@@ -1003,42 +994,6 @@ def _managed_lists_page(request: Request, list_type: str):
               </form>
             </div>
           </div>
-          <details class="list-editor" id="edit-list-{int(r["id"])}">
-            <summary><span><b>Edit {singular_label}</b><small>Settings, contents and policy-target assignments</small></span><span class="editor-chevron">⌄</span></summary>
-            <div class="list-edit-body">
-              <form method="post" action="/admin/lists/{int(r["id"])}/edit" enctype="multipart/form-data" class="form-grid list-edit-form">
-                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
-                <label>Name<input name="name" value="{esc(r["name"])}" required></label>
-                <label>Format<select name="format">{format_options}</select></label>
-                <label class="full">Source URL<input name="source_url" value="{esc(r["source_url"] or "")}" placeholder="https://example.com/list.txt"></label>
-                <label>Automatic refresh interval (minutes)<input type="number" name="refresh_minutes" min="1" max="10080" value="{int(r["refresh_minutes"])}"></label>
-                <label class="check"><input type="checkbox" name="enabled" value="1"{" checked" if r["enabled"] else ""}> List enabled</label>
-                <label class="check full"><input type="checkbox" name="global_list" value="1" data-global-toggle{" checked" if r["use_globally"] else ""}> Apply globally to every network, endpoint, and hostname</label>
-
-                <div class="form-section full schedule-section">
-                  <div class="form-section-head"><div><b>Enforcement schedule</b><p>Leave scheduling off to enforce this list at all times.</p></div></div>
-                  {list_schedule_fields}
-                </div>
-
-                <div class="form-section full">
-                  <div class="form-section-head"><div><b>Scope assignments</b><p>Select every network, endpoint, and hostname scope that should use this list.</p></div><span>{len(selected)} selected</span></div>
-                  {scope_editor(selected, bool(r["use_globally"]))}
-                </div>
-
-                <div class="form-section full replacement-section">
-                  <div class="form-section-head"><div><b>Replace list contents</b><p>Optional. Leave both fields blank to keep the current {int(r["entry_count"]):,} entries.</p></div></div>
-                  <label>Upload replacement file<input type="file" name="replacement_file"></label>
-                  <label>Or paste replacement rules<textarea name="replacement_text" rows="5" placeholder="One domain per line, hosts format, or supported Adblock domain rules"></textarea></label>
-                </div>
-
-                <div class="editor-actions full">
-                  <button class="primary-button" type="submit" name="action" value="save">Save changes</button>
-                  {refresh_button}
-                  <button class="small-button" type="button" onclick="this.closest('details').open=false">Close editor</button>
-                </div>
-              </form>
-            </div>
-          </details>
         </article>'''
 
     if not cards:
@@ -1047,7 +1002,7 @@ def _managed_lists_page(request: Request, list_type: str):
     new_schedule_fields = schedule_fields_html(default_timezone=system_default_timezone())
     body = f'''<div class="split-grid blocklist-layout">
       <section class="panel">
-        <div class="panel-head"><div><div class="panel-kicker">Policy sources</div><h3>Managed {plural_label}</h3><p>Edit each {singular_label} and assign it to networks, exact endpoints, or reverse-DNS hostnames without leaving this page.</p></div><span class="result-count">{len(rows)} lists</span></div>
+        <div class="panel-head"><div><div class="panel-kicker">Policy sources</div><h3>Managed {plural_label}</h3><p>Open a {singular_label} to edit its settings, contents, schedule, and policy-target assignments on a dedicated page.</p></div><span class="result-count">{len(rows)} lists</span></div>
         <div class="blocklist-list">{cards}</div>
       </section>
       <section class="panel action-panel" id="add-list">
@@ -1091,6 +1046,244 @@ def _list_base_path(row) -> str:
 
 def _list_label(row) -> str:
     return "whitelist" if str(row["list_type"] or "block") == "whitelist" else "block list"
+
+
+@app.get("/lists/{list_id}/edit", response_class=HTMLResponse)
+@app.get("/whitelists/{list_id}/edit", response_class=HTMLResponse)
+def managed_list_edit_page(list_id: int, request: Request):
+    s = require_session(request)
+
+    with db.connect() as con:
+        blocklist = con.execute(
+            "SELECT * FROM blocklists WHERE id=?",
+            (list_id,),
+        ).fetchone()
+        if not blocklist:
+            return redirect("/lists", error="List not found")
+
+        base_path = _list_base_path(blocklist)
+        requested_path = request.url.path
+        if requested_path.startswith("/whitelists/") and base_path != "/whitelists":
+            return redirect(f"{base_path}/{list_id}/edit")
+        if requested_path.startswith("/lists/") and base_path != "/lists":
+            return redirect(f"{base_path}/{list_id}/edit")
+
+        scopes = con.execute(
+            "SELECT * FROM scopes ORDER BY kind,name COLLATE NOCASE"
+        ).fetchall()
+        membership_rows = con.execute(
+            "SELECT scope_id FROM scope_blocklists WHERE blocklist_id=?",
+            (list_id,),
+        ).fetchall()
+        network_target_rows = con.execute(
+            "SELECT scope_id,family,target FROM scope_network_targets"
+        ).fetchall()
+
+    list_label = _list_label(blocklist)
+    page_title = "Whitelist" if list_label == "whitelist" else "Block List"
+    active_key = "whitelists" if list_label == "whitelist" else "lists"
+    selected = {int(row["scope_id"]) for row in membership_rows}
+
+    network_targets: dict[int, dict[int, str]] = {}
+    for row in network_target_rows:
+        network_targets.setdefault(int(row["scope_id"]), {})[
+            int(row["family"])
+        ] = str(row["target"])
+
+    client_names = rdns.resolve_many(
+        scope["target"] for scope in scopes if scope["kind"] == "client"
+    )
+    networks = [scope for scope in scopes if scope["kind"] == "network"]
+    clients = [scope for scope in scopes if scope["kind"] == "client"]
+    hostnames = [scope for scope in scopes if scope["kind"] == "hostname"]
+
+    def scope_option(scope, disabled: bool = False) -> str:
+        checked = " checked" if int(scope["id"]) in selected else ""
+        disabled_attr = " disabled" if disabled else ""
+        disabled_class = " global-disabled" if disabled else ""
+        if scope["kind"] == "client":
+            target_html = client_identity_html(scope["target"], client_names)
+            kind_label = "Endpoint"
+        elif scope["kind"] == "hostname":
+            target_html = (
+                f'<span class="scope-target mono">{esc(scope["target"])}</span>'
+            )
+            kind_label = "Hostname"
+        else:
+            ipv4, ipv6 = _scope_network_values(scope, network_targets)
+            target_html = _network_target_html(ipv4, ipv6)
+            kind_label = "Network"
+        return (
+            f'<label class="scope-option{disabled_class}">'
+            f'<input type="checkbox" name="scope_id" value="{int(scope["id"])}"'
+            f'{checked}{disabled_attr}>'
+            f'<span class="scope-option-copy"><span class="scope-option-title">'
+            f'<b>{esc(scope["name"])}</b><small>{kind_label}</small></span>'
+            f'{target_html}</span></label>'
+        )
+
+    def scope_group(label: str, items, disabled: bool) -> str:
+        options = "".join(scope_option(scope, disabled) for scope in items)
+        return (
+            '<section class="scope-group">'
+            f'<div class="scope-group-head"><b>{esc(label)}</b>'
+            f'<span>{len(items)}</span></div>'
+            f'{options or "<p class=\"scope-empty-inline\">No matching policy targets.</p>"}'
+            '</section>'
+        )
+
+    global_list = bool(blocklist["use_globally"])
+    disabled_class = " is-global-disabled" if global_list else ""
+    if scopes:
+        scope_editor_html = (
+            f'<div class="scope-assignment-grid{disabled_class}" data-scope-assignments>'
+            f'{scope_group("Networks", networks, global_list)}'
+            f'{scope_group("Endpoints", clients, global_list)}'
+            f'{scope_group("Hostnames", hostnames, global_list)}'
+            '</div>'
+        )
+    else:
+        scope_editor_html = (
+            '<div class="scope-empty">No policy targets exist yet. '
+            '<a href="/scopes#add-scope">Create one first →</a></div>'
+        )
+
+    format_options = "".join(
+        f'<option value="{fmt}"'
+        f'{" selected" if blocklist["format"] == fmt else ""}>{fmt}</option>'
+        for fmt in ("auto", "hosts", "adblock", "domains")
+    )
+    list_schedule_fields = schedule_fields_html(blocklist)
+    source_label = blocklist["source_url"] or (
+        "Uploaded list"
+        if blocklist["source_type"] == "upload"
+        else "Manual list"
+    )
+    assignment_text = (
+        "Global"
+        if global_list
+        else f'{len(selected)} scoped assignment{"s" if len(selected) != 1 else ""}'
+        if selected
+        else "No assignments"
+    )
+    manual_manage_link = (
+        f'<a class="small-button" href="{base_path}/{list_id}/domains">'
+        'Manage domains</a>'
+        if blocklist["source_type"] == "manual"
+        else ""
+    )
+
+    body = f"""<div class="managed-list-edit-page">
+      <section class="managed-list-edit-heading">
+        <a class="back-link" href="{base_path}#list-{list_id}">← Back to {"Whitelists" if list_label == "whitelist" else "Block Lists"}</a>
+        <div class="managed-list-edit-title-row">
+          <div>
+            <div class="panel-kicker">Edit {esc(list_label)}</div>
+            <h2>{esc(blocklist["name"])}</h2>
+            <p>{esc(source_label)}</p>
+          </div>
+          <div class="managed-list-edit-summary">
+            <span><b>{int(blocklist["entry_count"]):,}</b><small>Entries</small></span>
+            <span><b>{"Enabled" if blocklist["enabled"] else "Disabled"}</b><small>List state</small></span>
+            <span><b>{esc(assignment_text)}</b><small>Policy reach</small></span>
+            <span><b>{esc("Scheduled" if blocklist["schedule_enabled"] else "Always")}</b><small>{esc(schedule_summary(blocklist))}</small></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel managed-list-edit-panel">
+        <div class="panel-head managed-list-edit-panel-head">
+          <div>
+            <div class="panel-kicker">Configuration</div>
+            <h3>{esc(page_title)} settings</h3>
+            <p>Update source settings, enforcement schedule, assignments, or replace the list contents.</p>
+          </div>
+          <div class="actions">{manual_manage_link}</div>
+        </div>
+
+        <form method="post" action="/admin/lists/{list_id}/edit"
+              enctype="multipart/form-data" class="form-grid list-edit-form managed-list-edit-form">
+          <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+
+          <label>Name
+            <input name="name" value="{esc(blocklist["name"])}" required>
+          </label>
+          <label>Format
+            <select name="format">{format_options}</select>
+          </label>
+          <label class="full">Source URL
+            <input name="source_url" value="{esc(blocklist["source_url"] or "")}"
+                   placeholder="https://example.com/list.txt">
+          </label>
+          <label>Automatic refresh interval (minutes)
+            <input type="number" name="refresh_minutes" min="1" max="10080"
+                   value="{int(blocklist["refresh_minutes"])}">
+          </label>
+          <label class="check">
+            <input type="checkbox" name="enabled" value="1"{" checked" if blocklist["enabled"] else ""}>
+            List enabled
+          </label>
+          <label class="check full">
+            <input type="checkbox" name="global_list" value="1" data-global-toggle{" checked" if global_list else ""}>
+            Apply globally to every network, endpoint, and hostname
+          </label>
+
+          <div class="form-section full schedule-section">
+            <div class="form-section-head">
+              <div>
+                <b>Enforcement schedule</b>
+                <p>Leave scheduling off to enforce this list at all times.</p>
+              </div>
+            </div>
+            {list_schedule_fields}
+          </div>
+
+          <div class="form-section full">
+            <div class="form-section-head">
+              <div>
+                <b>Scope assignments</b>
+                <p>Select every network, endpoint, and hostname scope that should use this list.</p>
+              </div>
+              <span>{len(selected)} selected</span>
+            </div>
+            {scope_editor_html}
+          </div>
+
+          <div class="form-section full replacement-section">
+            <div class="form-section-head">
+              <div>
+                <b>Replace list contents</b>
+                <p>Optional. Leave both fields blank to keep the current {int(blocklist["entry_count"]):,} entries.</p>
+              </div>
+            </div>
+            <label>Upload replacement file
+              <input type="file" name="replacement_file">
+            </label>
+            <label>Or paste replacement rules
+              <textarea name="replacement_text" rows="7"
+                        placeholder="One domain per line, hosts format, or supported Adblock domain rules"></textarea>
+            </label>
+          </div>
+
+          <div class="editor-actions full managed-list-edit-actions">
+            <button class="primary-button" type="submit" name="action" value="save">
+              Save changes
+            </button>
+            <button class="small-button" type="submit" name="action" value="refresh">
+              Save & refresh URL
+            </button>
+            <a class="small-button" href="{base_path}#list-{list_id}">Cancel</a>
+          </div>
+        </form>
+      </section>
+    </div>"""
+    return page(
+        request,
+        f"Edit {page_title} · {blocklist['name']}",
+        active_key,
+        body,
+        s,
+    )
 
 
 def _get_manual_blocklist(list_id: int):
@@ -1494,7 +1687,7 @@ async def edit_list(list_id: int, request: Request):
             form, list_label
         )
     except ValueError as e:
-        return redirect(f"{base_path}#edit-list-{list_id}", error=str(e))
+        return redirect(f"{base_path}/{list_id}/edit", error=str(e))
     action = str(form.get("action", "save")).strip().lower()
     replacement_text = str(form.get("replacement_text", ""))
     replacement_file = form.get("replacement_file")
@@ -1503,9 +1696,9 @@ async def edit_list(list_id: int, request: Request):
         scope_ids = []
 
     if not name:
-        return redirect(f"{base_path}#edit-list-{list_id}", error="List name is required")
+        return redirect(f"{base_path}/{list_id}/edit", error="List name is required")
     if format_name not in {"auto", "hosts", "adblock", "domains"}:
-        return redirect(f"{base_path}#edit-list-{list_id}", error="Unsupported list format")
+        return redirect(f"{base_path}/{list_id}/edit", error="Unsupported list format")
     try:
         refresh_minutes = max(1, min(int(form.get("refresh_minutes", "1440")), 10080))
     except (TypeError, ValueError):
@@ -1518,7 +1711,7 @@ async def edit_list(list_id: int, request: Request):
         if action == "refresh":
             if not source_url:
                 return redirect(
-                    f"{base_path}#edit-list-{list_id}",
+                    f"{base_path}/{list_id}/edit",
                     error="A source URL is required to refresh this list",
                 )
             replacement_content = await run_in_threadpool(fetch_url, source_url)
@@ -1534,7 +1727,7 @@ async def edit_list(list_id: int, request: Request):
         elif source_type == "url":
             source_type = "manual"
     except Exception as e:
-        return redirect(f"{base_path}#edit-list-{list_id}", error=f"Could not refresh list: {e}")
+        return redirect(f"{base_path}/{list_id}/edit", error=f"Could not refresh list: {e}")
 
     with db.connect() as con:
         try:
@@ -1567,12 +1760,12 @@ async def edit_list(list_id: int, request: Request):
             con.execute("COMMIT")
         except Exception as e:
             con.execute("ROLLBACK")
-            return redirect(f"{base_path}#edit-list-{list_id}", error=f"Could not save list: {e}")
+            return redirect(f"{base_path}/{list_id}/edit", error=f"Could not save list: {e}")
 
     replaced_notice = ""
     if replacement_content is not None:
         if not replacement_content.strip():
-            return redirect(f"{base_path}#edit-list-{list_id}", error="Replacement list content is empty")
+            return redirect(f"{base_path}/{list_id}/edit", error="Replacement list content is empty")
         try:
             count, ignored = await run_in_threadpool(
                 import_list,
@@ -1584,13 +1777,13 @@ async def edit_list(list_id: int, request: Request):
             replaced_notice = f"; replaced contents with {count:,} entries ({ignored:,} ignored)"
         except Exception as e:
             return redirect(
-                f"{base_path}#edit-list-{list_id}",
+                f"{base_path}/{list_id}/edit",
                 error=f"Settings were saved, but replacing list contents failed: {e}",
             )
 
     engine.reload()
     return redirect(
-        f"{base_path}#list-{list_id}",
+        f"{base_path}/{list_id}/edit",
         notice=f"Saved {name}; {assigned} scoped assignment{'s' if assigned != 1 else ''}{replaced_notice}",
     )
 
