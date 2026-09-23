@@ -55,6 +55,13 @@ jobs:
           POLICY_API_KEY: test-policy-api-key-long-enough
         run: python -m pytest -q
 
+      - name: Policy engine microbenchmark smoke test
+        run: |
+          python tools/benchmark_policy_engine.py \
+            --domains 1000 \
+            --requests 1000 \
+            --concurrency 1,4
+
       - name: Start benchmark stack
         env:
           ADMIN_PASSWORD: test-admin-password
