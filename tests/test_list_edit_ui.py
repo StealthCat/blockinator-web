@@ -21,7 +21,16 @@ def test_dedicated_list_editor_contains_existing_edit_controls():
     source = Path("app/main.py").read_text(encoding="utf-8")
 
     assert 'class="managed-list-edit-page"' in source
+    assert 'class="list-edit-hero"' in source
+    assert 'class="list-edit-section-nav"' in source
+    assert 'class="list-edit-status-grid"' in source
+    assert 'id="general"' in source
+    assert 'id="policy-targeting"' in source
+    assert 'id="schedule"' in source
+    assert 'id="import-update"' in source
+    assert 'id="preview"' in source
     assert 'action="/admin/lists/{list_id}/edit"' in source
+    assert 'action="/admin/lists/{list_id}/delete"' in source
     assert 'name="source_url"' in source
     assert 'name="refresh_minutes"' in source
     assert 'name="global_list"' in source
@@ -30,6 +39,8 @@ def test_dedicated_list_editor_contains_existing_edit_controls():
     assert 'name="action" value="refresh"' in source
     assert 'data-scope-assignments' in source
     assert 'data-schedule-editor' in source
+    assert 'SELECT domain' in source
+    assert 'LIMIT 10' in source
 
 
 def test_edit_post_redirects_back_to_dedicated_editor():
@@ -37,3 +48,15 @@ def test_edit_post_redirects_back_to_dedicated_editor():
 
     assert 'return redirect(f"{base_path}/{list_id}/edit", error=str(e))' in source
     assert 'f"{base_path}/{list_id}/edit",\n        notice=f"Saved {name}' in source
+
+
+def test_rendered_list_editor_styles_and_navigation_are_wired():
+    css = Path("app/static/style.css").read_text(encoding="utf-8")
+    javascript = Path("app/static/app.js").read_text(encoding="utf-8")
+
+    assert ".list-edit-status-grid" in css
+    assert ".list-edit-workspace" in css
+    assert ".list-edit-preview" in css
+    assert ".list-edit-savebar" in css
+    assert ".main:has(.managed-list-edit-page)" in css
+    assert "initializeListEditNavigation" in javascript
