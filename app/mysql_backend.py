@@ -248,6 +248,9 @@ class MySQLBackend:
                 last_updated DATETIME NULL,
                 last_refresh_attempt DATETIME NULL,
                 last_error LONGTEXT NULL,
+                source_etag TEXT NULL,
+                source_last_modified TEXT NULL,
+                source_hash VARCHAR(64) NULL,
                 entry_count BIGINT NOT NULL DEFAULT 0,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -329,7 +332,9 @@ class MySQLBackend:
                 KEY idx_query_log_client (client_ip,ts DESC),
                 KEY idx_query_log_client_name (client_name,ts DESC),
                 KEY idx_query_log_qname (qname,ts DESC),
-                KEY idx_query_log_matched_list (matched_list,ts DESC)
+                KEY idx_query_log_matched_list (matched_list,ts DESC),
+                KEY idx_query_log_matched_scope (matched_scope,ts DESC),
+                KEY idx_query_log_server (server_id,ts DESC)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """,
             """
@@ -407,6 +412,29 @@ class MySQLBackend:
                 "matched_list_type",
                 "VARCHAR(16) NULL",
             )
+            for column_name, definition in (
+                ("source_etag", "TEXT NULL"),
+                ("source_last_modified", "TEXT NULL"),
+                ("source_hash", "VARCHAR(64) NULL"),
+            ):
+                self._ensure_column(
+                    con,
+                    "blocklists",
+                    column_name,
+                    definition,
+                )
+            self._ensure_index(
+                con,
+                "query_log",
+                "idx_query_log_matched_scope",
+                "matched_scope,ts",
+            )
+            self._ensure_index(
+                con,
+                "query_log",
+                "idx_query_log_server",
+                "server_id,ts",
+            )
 
             defaults = {
                 "global_blocking": "1",
@@ -428,6 +456,26 @@ class MySQLBackend:
             con.executemany(
                 "INSERT IGNORE INTO settings(`key`,value) VALUES(?,?)",
                 list(defaults.items()),
+            )
+
+    def _ensure_index(
+        self,
+        con: MySQLConnection,
+        table: str,
+        index_name: str,
+        columns: str,
+    ) -> None:
+        row = con.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM information_schema.statistics
+            WHERE table_schema=? AND table_name=? AND index_name=?
+            """,
+            (self.config.database, table, index_name),
+        ).fetchone()
+        if not row or int(row["c"]) == 0:
+            con.execute(
+                f"CREATE INDEX \`{index_name}\` ON \`{table}\` ({columns})"
             )
 
     def _ensure_column(
