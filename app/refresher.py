@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
-from .blocklists import FetchResult, fetch_url, fetch_url_conditional, parse_blocklist
+from .blocklists import fetch_url, fetch_url_conditional, parse_blocklist
 from .db import Database
 
 
@@ -26,7 +26,7 @@ class RefreshResult:
 
 
 class BlocklistRefresher:
-    """Refresh URL-backed lists with parallel I/O and serialized database writes."""
+    """Refresh URL-backed lists with parallel fetch/parse and serialized writes."""
 
     def __init__(
         self,
@@ -44,17 +44,14 @@ class BlocklistRefresher:
             else float(poll_seconds)
         )
         self.poll_seconds = max(5.0, min(configured_poll, 3600.0))
-        configured_workers = int(os.getenv("BLOCKLIST_REFRESH_WORKERS", "4"))
-        self.max_workers = max(1, min(configured_workers, 8))
-
+        self.max_workers = max(
+            1,
+            min(int(os.getenv("BLOCKLIST_REFRESH_WORKERS", "4")), 8),
+        )
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._run_lock = threading.Lock()
         self._write_lock = threading.Lock()
-        self._executor = ThreadPoolExecutor(
-            max_workers=self.max_workers,
-            thread_name_prefix="blockinator-list-fetch",
-        )
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -73,7 +70,6 @@ class BlocklistRefresher:
         if thread is not None and thread.is_alive():
             thread.join(timeout=timeout)
         self._thread = None
-        self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -88,6 +84,7 @@ class BlocklistRefresher:
         return self.db.due_url_list_ids()
 
     def refresh_due_once(self) -> list[RefreshResult]:
+        """Fetch due lists concurrently, then reload policy at most once."""
         if not self._run_lock.acquire(blocking=False):
             return []
         try:
@@ -95,64 +92,146 @@ class BlocklistRefresher:
             if not list_ids:
                 return []
 
-            futures = [
-                self._executor.submit(
-                    self.refresh_list,
-                    list_id,
-                    reload_policy=False,
-                )
-                for list_id in list_ids
-            ]
-            results = [future.result() for future in futures]
+            workers = min(self.max_workers, len(list_ids))
+            if workers <= 1:
+                results = [
+                    self._refresh_list(list_id, reload_engine=False)
+                    for list_id in list_ids
+                ]
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=workers,
+                    thread_name_prefix="blockinator-list-refresh",
+                ) as executor:
+                    results = list(
+                        executor.map(
+                            lambda list_id: self._refresh_list(
+                                list_id,
+                                reload_engine=False,
+                            ),
+                            list_ids,
+                        )
+                    )
+
             if any(result.changed for result in results):
                 self.engine.reload()
             return results
         finally:
             self._run_lock.release()
 
-    def _fetch(
-        self,
-        source_url: str,
-        etag: str | None,
-        last_modified: str | None,
-    ) -> FetchResult:
-        if self.fetcher is fetch_url:
-            return fetch_url_conditional(
-                source_url,
-                etag=etag,
-                last_modified=last_modified,
-            )
+    def refresh_list(self, list_id: int) -> RefreshResult:
+        return self._refresh_list(list_id, reload_engine=True)
 
-        text = self.fetcher(source_url)
-        if isinstance(text, FetchResult):
-            return text
-        encoded = str(text).encode("utf-8")
-        return FetchResult(
-            text=str(text),
-            content_hash=hashlib.sha256(encoded).hexdigest(),
-        )
-
-    def refresh_list(
-        self,
-        list_id: int,
-        reload_policy: bool = True,
-    ) -> RefreshResult:
+    def _read_source(self, list_id: int):
         with self.db.connect() as con:
-            row = con.execute(
+            return con.execute(
                 """
-                SELECT id,source_type,source_url,format,list_type,entry_count,
-                       source_etag,source_last_modified,source_hash
+                SELECT
+                    id,source_type,source_url,format,list_type,entry_count,
+                    source_etag,source_last_modified,source_hash
                 FROM blocklists
                 WHERE id=?
                 """,
                 (list_id,),
             ).fetchone()
 
-        if (
-            row is None
-            or row["source_type"] != "url"
-            or not str(row["source_url"] or "").strip()
-        ):
+    @staticmethod
+    def _valid_source(row) -> bool:
+        return bool(
+            row is not None
+            and row["source_type"] == "url"
+            and str(row["source_url"] or "").strip()
+        )
+
+    def _fetch(
+        self,
+        source_url: str,
+        source_etag: str | None,
+        source_last_modified: str | None,
+    ) -> tuple[str | None, str | None, str | None, bool]:
+        # The built-in fetcher supports conditional requests. Test/custom
+        # fetchers retain the original simple callable contract.
+        if self.fetcher is fetch_url:
+            result = fetch_url_conditional(
+                source_url,
+                source_etag,
+                source_last_modified,
+            )
+            return (
+                result.text,
+                result.etag,
+                result.last_modified,
+                result.not_modified,
+            )
+        return self.fetcher(source_url), None, None, False
+
+    def _metadata_update_with_retry(
+        self,
+        list_id: int,
+        source_url: str,
+        list_format: str,
+        list_type: str,
+        *,
+        entry_count: int | None = None,
+        source_etag: str | None = None,
+        source_last_modified: str | None = None,
+        source_hash: str | None = None,
+        mark_updated: bool = False,
+    ) -> bool:
+        write_delays = (0.05, 0.15, 0.45)
+        for attempt in range(len(write_delays) + 1):
+            try:
+                with self._write_lock, self.db.connect() as con:
+                    assignments = [
+                        "last_refresh_attempt=CURRENT_TIMESTAMP",
+                        "last_error=NULL",
+                    ]
+                    params: list[object] = []
+                    if mark_updated:
+                        assignments.append("last_updated=CURRENT_TIMESTAMP")
+                    if entry_count is not None:
+                        assignments.append("entry_count=?")
+                        params.append(entry_count)
+                    if source_etag is not None:
+                        assignments.append("source_etag=?")
+                        params.append(source_etag)
+                    if source_last_modified is not None:
+                        assignments.append("source_last_modified=?")
+                        params.append(source_last_modified)
+                    if source_hash is not None:
+                        assignments.append("source_hash=?")
+                        params.append(source_hash)
+                    params.extend([list_id, source_url, list_format, list_type])
+                    cur = con.execute(
+                        f"""
+                        UPDATE blocklists
+                        SET {",".join(assignments)}
+                        WHERE id=?
+                          AND source_type='url'
+                          AND source_url=?
+                          AND format=?
+                          AND list_type=?
+                        """,
+                        params,
+                    )
+                    return cur.rowcount == 1
+            except Exception as exc:
+                if (
+                    not self.db.is_retryable_write_error(exc)
+                    or attempt >= len(write_delays)
+                ):
+                    raise
+                if self._stop.wait(write_delays[attempt]):
+                    return False
+        return False
+
+    def _refresh_list(
+        self,
+        list_id: int,
+        reload_engine: bool,
+    ) -> RefreshResult:
+        row = self._read_source(list_id)
+        if not self._valid_source(row):
             return RefreshResult(list_id=list_id, refreshed=False)
 
         source_url = str(row["source_url"]).strip()
@@ -160,85 +239,179 @@ class BlocklistRefresher:
         list_type = str(row["list_type"] or "block")
         if list_type not in {"block", "whitelist"}:
             list_type = "block"
-        previous_hash = str(row["source_hash"] or "") or None
-        previous_etag = str(row["source_etag"] or "") or None
-        previous_last_modified = str(row["source_last_modified"] or "") or None
-        previous_count = int(row["entry_count"] or 0)
-        config_hash = hashlib.sha256(
-            f"{source_url}\\0{list_format}\\0{list_type}".encode("utf-8")
-        ).hexdigest()[:16]
-        metadata_matches_config = bool(
-            previous_hash
-            and previous_hash.startswith(config_hash + ":")
+        old_hash = str(row["source_hash"] or "").strip() or None
+        old_etag = str(row["source_etag"] or "").strip() or None
+        old_last_modified = (
+            str(row["source_last_modified"] or "").strip() or None
         )
+        old_count = int(row["entry_count"] or 0)
 
         try:
-            fetched = self._fetch(
+            text, etag, last_modified, not_modified = self._fetch(
                 source_url,
-                previous_etag if metadata_matches_config else None,
-                previous_last_modified if metadata_matches_config else None,
+                old_etag,
+                old_last_modified,
             )
-            stored_hash = (
-                f"{config_hash}:{fetched.content_hash}"
-                if fetched.content_hash
-                else previous_hash
-            )
-            if stored_hash != fetched.content_hash:
-                fetched = FetchResult(
-                    text=fetched.text,
-                    etag=fetched.etag,
-                    last_modified=fetched.last_modified,
-                    content_hash=stored_hash,
-                    not_modified=fetched.not_modified,
-                )
 
-            if fetched.not_modified or (
-                fetched.content_hash
-                and previous_hash
-                and fetched.content_hash == previous_hash
-            ):
-                self._record_unchanged(
+            if not_modified:
+                self._metadata_update_with_retry(
                     list_id,
                     source_url,
                     list_format,
                     list_type,
-                    fetched,
+                    source_etag=etag or old_etag,
+                    source_last_modified=last_modified or old_last_modified,
                 )
                 return RefreshResult(
                     list_id=list_id,
                     refreshed=True,
-                    entry_count=previous_count,
+                    entry_count=old_count,
                     changed=False,
                 )
 
-            if fetched.text is None:
-                raise ValueError("block list refresh returned no content")
+            assert text is not None
+            source_hash = hashlib.sha256(
+                text.encode("utf-8")
+            ).hexdigest()
 
-            parsed = parse_blocklist(
-                fetched.text,
-                list_format,
-                list_type,
-            )
+            # An identical source needs only refresh bookkeeping. Avoid parsing,
+            # database membership writes, and a policy snapshot rebuild.
+            if old_hash and source_hash == old_hash:
+                self._metadata_update_with_retry(
+                    list_id,
+                    source_url,
+                    list_format,
+                    list_type,
+                    entry_count=old_count,
+                    source_etag=etag,
+                    source_last_modified=last_modified,
+                    source_hash=source_hash,
+                )
+                return RefreshResult(
+                    list_id=list_id,
+                    refreshed=True,
+                    entry_count=old_count,
+                    changed=False,
+                )
+
+            parsed = parse_blocklist(text, list_format, list_type)
             if not parsed.domains:
                 raise ValueError("refreshed list contained no usable domains")
 
-            changed = self._commit_refresh(
-                list_id,
-                source_url,
-                list_format,
-                list_type,
-                parsed.domains,
-                fetched,
-            )
+            write_delays = (0.05, 0.15, 0.45)
+            membership_changed = False
+            committed = False
 
-            if changed and reload_policy:
+            for attempt in range(len(write_delays) + 1):
+                try:
+                    with self._write_lock, self.db.connect() as con:
+                        con.execute("BEGIN IMMEDIATE")
+                        try:
+                            current = con.execute(
+                                """
+                                SELECT
+                                    source_type,source_url,format,list_type,
+                                    source_hash
+                                FROM blocklists
+                                WHERE id=?
+                                """,
+                                (list_id,),
+                            ).fetchone()
+                            if (
+                                current is None
+                                or current["source_type"] != "url"
+                                or str(current["source_url"] or "").strip()
+                                != source_url
+                                or str(current["format"] or "auto")
+                                != list_format
+                                or str(current["list_type"] or "block")
+                                != list_type
+                            ):
+                                con.execute("ROLLBACK")
+                                return RefreshResult(
+                                    list_id=list_id,
+                                    refreshed=False,
+                                )
+
+                            if (
+                                str(current["source_hash"] or "").strip()
+                                == source_hash
+                            ):
+                                con.execute(
+                                    """
+                                    UPDATE blocklists
+                                    SET last_refresh_attempt=CURRENT_TIMESTAMP,
+                                        last_error=NULL,
+                                        source_etag=?,
+                                        source_last_modified=?
+                                    WHERE id=?
+                                    """,
+                                    (etag, last_modified, list_id),
+                                )
+                                con.execute("COMMIT")
+                                return RefreshResult(
+                                    list_id=list_id,
+                                    refreshed=True,
+                                    entry_count=len(parsed.domains),
+                                    ignored=parsed.ignored,
+                                    changed=False,
+                                )
+
+                            membership_changed = self.db.replace_list_domains(
+                                con,
+                                list_id,
+                                parsed.domains,
+                            )
+                            con.execute(
+                                """
+                                UPDATE blocklists
+                                SET entry_count=?,
+                                    last_updated=CURRENT_TIMESTAMP,
+                                    last_refresh_attempt=CURRENT_TIMESTAMP,
+                                    last_error=NULL,
+                                    source_etag=?,
+                                    source_last_modified=?,
+                                    source_hash=?
+                                WHERE id=?
+                                """,
+                                (
+                                    len(parsed.domains),
+                                    etag,
+                                    last_modified,
+                                    source_hash,
+                                    list_id,
+                                ),
+                            )
+                            con.execute("COMMIT")
+                        except Exception:
+                            if con.in_transaction:
+                                con.execute("ROLLBACK")
+                            raise
+                    committed = True
+                    break
+                except Exception as write_exc:
+                    if (
+                        not self.db.is_retryable_write_error(write_exc)
+                        or attempt >= len(write_delays)
+                    ):
+                        raise
+                    if self._stop.wait(write_delays[attempt]):
+                        return RefreshResult(
+                            list_id=list_id,
+                            refreshed=False,
+                        )
+
+            if not committed:
+                return RefreshResult(list_id=list_id, refreshed=False)
+
+            if membership_changed and reload_engine:
                 self.engine.reload()
             return RefreshResult(
                 list_id=list_id,
                 refreshed=True,
                 entry_count=len(parsed.domains),
                 ignored=parsed.ignored,
-                changed=changed,
+                changed=membership_changed,
             )
         except Exception as exc:
             message = str(exc).strip() or exc.__class__.__name__
@@ -271,115 +444,3 @@ class BlocklistRefresher:
                 refreshed=False,
                 error=message,
             )
-
-    def _record_unchanged(
-        self,
-        list_id: int,
-        source_url: str,
-        list_format: str,
-        list_type: str,
-        fetched: FetchResult,
-    ) -> None:
-        with self._write_lock, self.db.connect() as con:
-            con.execute(
-                """
-                UPDATE blocklists
-                SET last_refresh_attempt=CURRENT_TIMESTAMP,
-                    last_error=NULL,
-                    source_etag=COALESCE(?,source_etag),
-                    source_last_modified=COALESCE(?,source_last_modified),
-                    source_hash=COALESCE(?,source_hash)
-                WHERE id=?
-                  AND source_type='url'
-                  AND source_url=?
-                  AND format=?
-                  AND list_type=?
-                """,
-                (
-                    fetched.etag,
-                    fetched.last_modified,
-                    fetched.content_hash,
-                    list_id,
-                    source_url,
-                    list_format,
-                    list_type,
-                ),
-            )
-
-    def _commit_refresh(
-        self,
-        list_id: int,
-        source_url: str,
-        list_format: str,
-        list_type: str,
-        domains: set[str],
-        fetched: FetchResult,
-    ) -> bool:
-        write_delays = (0.05, 0.15, 0.45)
-        for attempt in range(len(write_delays) + 1):
-            try:
-                with self._write_lock, self.db.connect() as con:
-                    con.execute("BEGIN IMMEDIATE")
-                    try:
-                        current = con.execute(
-                            """
-                            SELECT source_type,source_url,format,list_type
-                            FROM blocklists
-                            WHERE id=?
-                            """,
-                            (list_id,),
-                        ).fetchone()
-                        if (
-                            current is None
-                            or current["source_type"] != "url"
-                            or str(current["source_url"] or "").strip() != source_url
-                            or str(current["format"] or "auto") != list_format
-                            or str(current["list_type"] or "block") != list_type
-                        ):
-                            con.execute("ROLLBACK")
-                            return False
-
-                        changed = self.db.replace_list_domains(
-                            con,
-                            list_id,
-                            domains,
-                        )
-                        con.execute(
-                            """
-                            UPDATE blocklists
-                            SET entry_count=?,
-                                last_updated=CASE
-                                    WHEN ? THEN CURRENT_TIMESTAMP
-                                    ELSE last_updated
-                                END,
-                                last_refresh_attempt=CURRENT_TIMESTAMP,
-                                last_error=NULL,
-                                source_etag=?,
-                                source_last_modified=?,
-                                source_hash=?
-                            WHERE id=?
-                            """,
-                            (
-                                len(domains),
-                                1 if changed else 0,
-                                fetched.etag,
-                                fetched.last_modified,
-                                fetched.content_hash,
-                                list_id,
-                            ),
-                        )
-                        con.execute("COMMIT")
-                    except Exception:
-                        if con.in_transaction:
-                            con.execute("ROLLBACK")
-                        raise
-                return changed
-            except Exception as write_exc:
-                if (
-                    not self.db.is_retryable_write_error(write_exc)
-                    or attempt >= len(write_delays)
-                ):
-                    raise
-                if self._stop.wait(write_delays[attempt]):
-                    return False
-        return False
