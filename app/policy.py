@@ -409,8 +409,8 @@ class QueryLogger:
                         INSERT INTO query_log(
                           ts,server_id,client_ip,client_name,client_port,protocol,policy_scheme,
                           qname,qtype,qclass,blocked,reason,matched_scope,matched_list,
-                          matched_list_type,request_json
-                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                          matched_list_type,response_time_ms,request_json
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         [
                             (
@@ -429,6 +429,7 @@ class QueryLogger:
                                 r.get("matched_scope"),
                                 r.get("matched_list"),
                                 r.get("matched_list_type"),
+                                r.get("response_time_ms"),
                                 json.dumps(
                                     r.get("request_obj") or {},
                                     separators=(",", ":"),
@@ -1072,11 +1073,16 @@ class PolicyEngine:
             response_mode=snapshot.response_mode,
         )
 
-    def decide_and_log(
+    def decide_with_log_row(
         self,
         request_obj: dict[str, Any],
         policy_scheme: str | None = None,
-    ) -> Decision:
+    ) -> tuple[Decision, dict[str, Any]]:
+        """Evaluate a policy request and build its asynchronous log record.
+
+        The API endpoint uses this form so response timing can be attached after
+        the final ASGI response body has actually been sent.
+        """
         client = request_obj.get("client") or {}
         dns = request_obj.get("dns") or {}
         questions = dns.get("questions") or []
@@ -1106,25 +1112,36 @@ class PolicyEngine:
             )
 
         assert decision is not None
-        self.logger.submit(
-            {
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "server_id": request_obj.get("server_id"),
-                "client_ip": client_ip,
-                "client_name": self.known_client_name(client_ip),
-                "client_port": client.get("port"),
-                "protocol": request_obj.get("protocol"),
-                "policy_scheme": policy_scheme,
-                "qname": matched_question.get("name"),
-                "qtype": matched_question.get("type"),
-                "qclass": matched_question.get("class"),
-                "blocked": decision.block,
-                "reason": decision.reason,
-                "matched_scope": decision.matched_scope,
-                "matched_list": decision.matched_list,
-                "matched_list_type": decision.matched_list_type,
-                # Serialize the original payload off the request thread.
-                "request_obj": request_obj,
-            }
+        log_row = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "server_id": request_obj.get("server_id"),
+            "client_ip": client_ip,
+            "client_name": self.known_client_name(client_ip),
+            "client_port": client.get("port"),
+            "protocol": request_obj.get("protocol"),
+            "policy_scheme": policy_scheme,
+            "qname": matched_question.get("name"),
+            "qtype": matched_question.get("type"),
+            "qclass": matched_question.get("class"),
+            "blocked": decision.block,
+            "reason": decision.reason,
+            "matched_scope": decision.matched_scope,
+            "matched_list": decision.matched_list,
+            "matched_list_type": decision.matched_list_type,
+            "response_time_ms": None,
+            # Serialize the original payload off the request thread.
+            "request_obj": request_obj,
+        }
+        return decision, log_row
+
+    def decide_and_log(
+        self,
+        request_obj: dict[str, Any],
+        policy_scheme: str | None = None,
+    ) -> Decision:
+        decision, log_row = self.decide_with_log_row(
+            request_obj,
+            policy_scheme=policy_scheme,
         )
+        self.logger.submit(log_row)
         return decision
