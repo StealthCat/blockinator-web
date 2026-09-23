@@ -214,6 +214,12 @@ class PolicySnapshot:
     response_mode: str
     unmatched_scope_action: str
     global_blocklist_scope_mode: str
+    unique_domain_count: int = 0
+    block_domain_count: int = 0
+    whitelist_domain_count: int = 0
+    client_scope_count: int = 0
+    hostname_scope_count: int = 0
+    network_scope_count: int = 0
 
 
 @dataclass(slots=True)
@@ -245,12 +251,15 @@ class QueryLogger:
             {
                 "max_query_logs": "25000",
                 "max_query_log_age_days": "0",
+                "log_request_json": "0",
             }
         )
         self.max_rows = int(settings["max_query_logs"])
         self.max_age_days = int(settings["max_query_log_age_days"])
+        self.capture_request_json = settings["log_request_json"] == "1"
         self._last_prune = monotonic_time.monotonic()
         self._rows_since_prune = 0
+        self._last_legacy_scan = 0.0
 
         self.q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=10000)
         self.rdns_q: queue.Queue[str] = queue.Queue(maxsize=4096)
@@ -276,9 +285,16 @@ class QueryLogger:
     def queue_depth(self) -> int:
         return self.q.qsize()
 
-    def configure_retention(self, max_rows: int, max_age_days: int) -> None:
+    def configure_retention(
+        self,
+        max_rows: int,
+        max_age_days: int,
+        capture_request_json: bool | None = None,
+    ) -> None:
         self.max_rows = max(0, int(max_rows))
         self.max_age_days = max(0, int(max_age_days))
+        if capture_request_json is not None:
+            self.capture_request_json = bool(capture_request_json)
 
     def submit(self, row: dict[str, Any]) -> None:
         try:
@@ -312,6 +328,9 @@ class QueryLogger:
         self._last_prune = monotonic_time.monotonic()
         self._rows_since_prune = 0
         return result
+
+    def queue_rdns(self, addresses) -> None:
+        self._queue_rdns({str(address or "").strip() for address in addresses})
 
     def _queue_rdns(self, addresses: set[str]) -> None:
         for address in addresses:
@@ -355,6 +374,24 @@ class QueryLogger:
                     for address in unique:
                         self._rdns_pending.discard(address)
 
+    def _queue_legacy_backfill(self, con) -> None:
+        now = monotonic_time.monotonic()
+        if now - self._last_legacy_scan < 60.0:
+            return
+        self._last_legacy_scan = now
+        rows = con.execute(
+            """
+            SELECT client_ip, MAX(id) AS latest_id
+            FROM query_log
+            WHERE client_name IS NULL OR client_name=''
+            GROUP BY client_ip
+            ORDER BY latest_id DESC
+            LIMIT 256
+            """
+        ).fetchall()
+        if rows:
+            self._queue_rdns({str(row["client_ip"]) for row in rows})
+
     def _should_prune(self, inserted_rows: int) -> bool:
         self._rows_since_prune += inserted_rows
         now = monotonic_time.monotonic()
@@ -396,6 +433,8 @@ class QueryLogger:
                 except queue.Empty:
                     break
 
+            self._queue_legacy_backfill(con)
+
             if not batch and not identities:
                 continue
 
@@ -430,10 +469,15 @@ class QueryLogger:
                                 r.get("matched_list"),
                                 r.get("matched_list_type"),
                                 r.get("response_time_ms"),
-                                json.dumps(
-                                    r.get("request_obj") or {},
-                                    separators=(",", ":"),
-                                    ensure_ascii=False,
+                                (
+                                    json.dumps(
+                                        r.get("request_obj"),
+                                        separators=(",", ":"),
+                                        ensure_ascii=False,
+                                    )
+                                    if self.capture_request_json
+                                    and r.get("request_obj") is not None
+                                    else None
                                 ),
                             )
                             for r in batch
@@ -613,6 +657,14 @@ class PolicyEngine:
                     domain = str(row["domain"])
                     domain_masks[domain] = domain_masks.get(domain, 0) | bit
 
+            unique_domain_count = len(domain_masks)
+            block_domain_count = sum(
+                1 for mask in domain_masks.values() if mask & block_mask
+            )
+            whitelist_domain_count = sum(
+                1 for mask in domain_masks.values() if mask & whitelist_mask
+            )
+
             memberships: dict[int, set[int]] = {}
             for row in con.execute(
                 "SELECT scope_id,blocklist_id FROM scope_blocklists"
@@ -632,6 +684,9 @@ class PolicyEngine:
             client_build: dict[str, list[Scope]] = {}
             exact_hostname_build: dict[str, list[Scope]] = {}
             wildcard_hostname_build: dict[str, list[Scope]] = {}
+            client_scope_count = 0
+            hostname_scope_count = 0
+            network_scope_count = 0
             network_build_v4: dict[int, dict[int, list[Scope]]] = {}
             network_build_v6: dict[int, dict[int, list[Scope]]] = {}
 
@@ -697,8 +752,10 @@ class PolicyEngine:
                 )
 
                 if scope.kind == "client":
+                    client_scope_count += 1
                     self._scope_tuple_map_add(client_build, scope.target, scope)
                 elif scope.kind == "hostname":
+                    hostname_scope_count += 1
                     if scope.target.startswith("*."):
                         self._scope_tuple_map_add(
                             wildcard_hostname_build,
@@ -712,6 +769,7 @@ class PolicyEngine:
                             scope,
                         )
                 else:
+                    network_scope_count += 1
                     for network in scope.networks:
                         family_map = (
                             network_build_v4
@@ -783,6 +841,12 @@ class PolicyEngine:
                 in {"all_clients", "matched_scopes"}
                 else "all_clients"
             ),
+            unique_domain_count=unique_domain_count,
+            block_domain_count=block_domain_count,
+            whitelist_domain_count=whitelist_domain_count,
+            client_scope_count=client_scope_count,
+            hostname_scope_count=hostname_scope_count,
+            network_scope_count=network_scope_count,
         )
 
         # The expensive rebuild occurs without blocking DNS decisions. The short
@@ -796,6 +860,390 @@ class PolicyEngine:
                 new_snapshot = replace(new_snapshot, client_identities=merged)
             self._snapshot = new_snapshot
             self._active_list_cache = (None, -1, 0)
+
+        self.logger.queue_rdns(new_snapshot.client_scopes.keys())
+
+    @staticmethod
+    def _policy_settings_from_rows(rows) -> dict[str, str]:
+        return {str(row["key"]): str(row["value"]) for row in rows}
+
+    def reload_settings(self) -> None:
+        with self.db.connect() as con:
+            settings = self._policy_settings_from_rows(
+                con.execute(
+                    """
+                    SELECT `key` AS `key`,value
+                    FROM settings
+                    WHERE `key` IN (
+                        'global_blocking',
+                        'block_response',
+                        'unmatched_scope_action',
+                        'global_blocklist_scope_mode'
+                    )
+                    """
+                )
+            )
+
+        unmatched = settings.get("unmatched_scope_action", "allow")
+        if unmatched not in {"allow", "deny"}:
+            unmatched = "allow"
+        global_mode = settings.get(
+            "global_blocklist_scope_mode",
+            "all_clients",
+        )
+        if global_mode not in {"all_clients", "matched_scopes"}:
+            global_mode = "all_clients"
+
+        with self._write_lock:
+            current = self._snapshot
+            self._snapshot = replace(
+                current,
+                global_blocking=settings.get("global_blocking", "1") == "1",
+                response_mode=settings.get(
+                    "block_response",
+                    current.response_mode,
+                ),
+                unmatched_scope_action=unmatched,
+                global_blocklist_scope_mode=global_mode,
+            )
+
+    @staticmethod
+    def _remask_scope(
+        scope: Scope,
+        bit_for_list_id: dict[int, int],
+    ) -> Scope:
+        valid_ids = frozenset(
+            list_id
+            for list_id in scope.blocklist_ids
+            if list_id in bit_for_list_id
+        )
+        mask = 0
+        for list_id in valid_ids:
+            mask |= bit_for_list_id[list_id]
+        return replace(
+            scope,
+            blocklist_ids=valid_ids,
+            blocklist_mask=mask,
+        )
+
+    def reload_lists(self) -> None:
+        with self.db.connect() as con:
+            list_rows = con.execute(
+                "SELECT * FROM blocklists ORDER BY id"
+            ).fetchall()
+
+            list_order: list[BlockListCache] = []
+            bit_for_list_id: dict[int, int] = {}
+            global_list_mask = 0
+            whitelist_mask = 0
+            block_mask = 0
+
+            for row in list_rows:
+                list_id = int(row["id"])
+                list_type = str(row["list_type"] or "block")
+                if list_type not in {"block", "whitelist"}:
+                    list_type = "block"
+                cache = BlockListCache(
+                    id=list_id,
+                    name=str(row["name"]),
+                    list_type=list_type,
+                    enabled=bool(row["enabled"]),
+                    use_globally=bool(row["use_globally"]),
+                    schedule=_compile_schedule(
+                        bool(row["schedule_enabled"]),
+                        _parse_schedule_days(row["schedule_days"]),
+                        str(row["schedule_start"] or "00:00"),
+                        str(row["schedule_end"] or "00:00"),
+                        str(row["schedule_timezone"] or "UTC"),
+                    ),
+                )
+                bit = 1 << len(list_order)
+                list_order.append(cache)
+                bit_for_list_id[list_id] = bit
+                if cache.enabled:
+                    if cache.use_globally:
+                        global_list_mask |= bit
+                    if cache.list_type == "whitelist":
+                        whitelist_mask |= bit
+                    else:
+                        block_mask |= bit
+
+            domain_masks: dict[str, int] = {}
+            for row in con.execute(
+                """
+                SELECT memberships.blocklist_id, domains.domain
+                FROM blocklist_domain_memberships AS memberships
+                JOIN domains ON domains.id=memberships.domain_id
+                JOIN blocklists ON blocklists.id=memberships.blocklist_id
+                WHERE blocklists.enabled=1
+                """
+            ):
+                bit = bit_for_list_id.get(int(row["blocklist_id"]), 0)
+                if bit:
+                    domain = str(row["domain"])
+                    domain_masks[domain] = domain_masks.get(domain, 0) | bit
+
+        unique_domain_count = len(domain_masks)
+        block_domain_count = sum(
+            1 for mask in domain_masks.values() if mask & block_mask
+        )
+        whitelist_domain_count = sum(
+            1 for mask in domain_masks.values() if mask & whitelist_mask
+        )
+
+        def remap_scope_map(source):
+            return {
+                key: tuple(
+                    self._remask_scope(scope, bit_for_list_id)
+                    for scope in scopes
+                )
+                for key, scopes in source.items()
+            }
+
+        def remap_network_map(source):
+            return {
+                prefix: {
+                    address: tuple(
+                        self._remask_scope(scope, bit_for_list_id)
+                        for scope in scopes
+                    )
+                    for address, scopes in addresses.items()
+                }
+                for prefix, addresses in source.items()
+            }
+
+        with self._write_lock:
+            current = self._snapshot
+            self._snapshot = replace(
+                current,
+                blocklists={item.id: item for item in list_order},
+                list_order=tuple(list_order),
+                bit_for_list_id=bit_for_list_id,
+                domain_masks=domain_masks,
+                global_list_mask=global_list_mask,
+                whitelist_mask=whitelist_mask,
+                block_mask=block_mask,
+                client_scopes=remap_scope_map(current.client_scopes),
+                exact_hostname_scopes=remap_scope_map(
+                    current.exact_hostname_scopes
+                ),
+                wildcard_hostname_scopes=remap_scope_map(
+                    current.wildcard_hostname_scopes
+                ),
+                network_scopes_v4=remap_network_map(
+                    current.network_scopes_v4
+                ),
+                network_scopes_v6=remap_network_map(
+                    current.network_scopes_v6
+                ),
+                unique_domain_count=unique_domain_count,
+                block_domain_count=block_domain_count,
+                whitelist_domain_count=whitelist_domain_count,
+            )
+            self._active_list_cache = (None, -1, 0)
+
+    def reload_scopes(self) -> None:
+        for _attempt in range(2):
+            base = self._snapshot
+            bit_for_list_id = base.bit_for_list_id
+
+            with self.db.connect() as con:
+                memberships: dict[int, set[int]] = {}
+                for row in con.execute(
+                    "SELECT scope_id,blocklist_id FROM scope_blocklists"
+                ):
+                    memberships.setdefault(
+                        int(row["scope_id"]),
+                        set(),
+                    ).add(int(row["blocklist_id"]))
+
+                network_targets: dict[int, list[str]] = {}
+                for row in con.execute(
+                    """
+                    SELECT scope_id,family,target
+                    FROM scope_network_targets
+                    ORDER BY family
+                    """
+                ):
+                    network_targets.setdefault(
+                        int(row["scope_id"]),
+                        [],
+                    ).append(str(row["target"]))
+
+                client_build: dict[str, list[Scope]] = {}
+                exact_hostname_build: dict[str, list[Scope]] = {}
+                wildcard_hostname_build: dict[str, list[Scope]] = {}
+                network_build_v4: dict[int, dict[int, list[Scope]]] = {}
+                network_build_v6: dict[int, dict[int, list[Scope]]] = {}
+                client_scope_count = 0
+                hostname_scope_count = 0
+                network_scope_count = 0
+
+                for row in con.execute("SELECT * FROM scopes ORDER BY id"):
+                    scope_id = int(row["id"])
+                    target = str(row["target"])
+                    networks: tuple[ipaddress._BaseNetwork, ...] = ()
+                    try:
+                        if row["kind"] == "client":
+                            ip = ipaddress.ip_address(target)
+                            target = str(ip)
+                            networks = (
+                                ipaddress.ip_network(
+                                    f"{ip}/{ip.max_prefixlen}",
+                                    strict=False,
+                                ),
+                            )
+                        elif row["kind"] == "network":
+                            raw_targets = network_targets.get(scope_id) or [target]
+                            parsed: list[ipaddress._BaseNetwork] = []
+                            for raw_target in raw_targets:
+                                try:
+                                    parsed.append(
+                                        ipaddress.ip_network(
+                                            raw_target,
+                                            strict=False,
+                                        )
+                                    )
+                                except ValueError:
+                                    continue
+                            if not parsed:
+                                continue
+                            networks = tuple(parsed)
+                            target = " · ".join(
+                                str(network) for network in networks
+                            )
+                        elif row["kind"] == "hostname":
+                            normalized = normalize_hostname_pattern(target)
+                            if normalized is None:
+                                continue
+                            target = normalized
+                        else:
+                            continue
+                    except ValueError:
+                        continue
+
+                    assigned_ids = frozenset(
+                        memberships.get(scope_id, set())
+                    )
+                    assigned_mask = 0
+                    for list_id in assigned_ids:
+                        assigned_mask |= bit_for_list_id.get(list_id, 0)
+
+                    scope = Scope(
+                        id=scope_id,
+                        name=str(row["name"]),
+                        kind=str(row["kind"]),
+                        target=target,
+                        state=str(row["state"]),
+                        networks=networks,
+                        blocklist_ids=assigned_ids,
+                        blocklist_mask=assigned_mask,
+                        schedule=_compile_schedule(
+                            bool(row["schedule_enabled"]),
+                            _parse_schedule_days(row["schedule_days"]),
+                            str(row["schedule_start"] or "00:00"),
+                            str(row["schedule_end"] or "00:00"),
+                            str(row["schedule_timezone"] or "UTC"),
+                        ),
+                    )
+
+                    if scope.kind == "client":
+                        client_scope_count += 1
+                        self._scope_tuple_map_add(
+                            client_build,
+                            scope.target,
+                            scope,
+                        )
+                    elif scope.kind == "hostname":
+                        hostname_scope_count += 1
+                        if scope.target.startswith("*."):
+                            self._scope_tuple_map_add(
+                                wildcard_hostname_build,
+                                scope.target[2:],
+                                scope,
+                            )
+                        else:
+                            self._scope_tuple_map_add(
+                                exact_hostname_build,
+                                scope.target,
+                                scope,
+                            )
+                    else:
+                        network_scope_count += 1
+                        for network in scope.networks:
+                            family_map = (
+                                network_build_v4
+                                if network.version == 4
+                                else network_build_v6
+                            )
+                            prefix_map = family_map.setdefault(
+                                network.prefixlen,
+                                {},
+                            )
+                            key = int(network.network_address)
+                            prefix_map.setdefault(key, []).append(scope)
+
+            def freeze_scope_map(source):
+                return {
+                    key: tuple(
+                        sorted(scopes, key=lambda scope: scope.id)
+                    )
+                    for key, scopes in source.items()
+                }
+
+            def freeze_network_map(source):
+                return {
+                    prefix: {
+                        address: tuple(
+                            sorted(scopes, key=lambda scope: scope.id)
+                        )
+                        for address, scopes in addresses.items()
+                    }
+                    for prefix, addresses in source.items()
+                }
+
+            with self._write_lock:
+                if self._snapshot is not base:
+                    continue
+                self._snapshot = replace(
+                    base,
+                    client_scopes=freeze_scope_map(client_build),
+                    exact_hostname_scopes=freeze_scope_map(
+                        exact_hostname_build
+                    ),
+                    wildcard_hostname_scopes=freeze_scope_map(
+                        wildcard_hostname_build
+                    ),
+                    wildcard_suffixes=tuple(
+                        sorted(
+                            wildcard_hostname_build,
+                            key=lambda value: (-len(value), value),
+                        )
+                    ),
+                    network_scopes_v4=freeze_network_map(
+                        network_build_v4
+                    ),
+                    network_scopes_v6=freeze_network_map(
+                        network_build_v6
+                    ),
+                    network_prefixes_v4=tuple(
+                        sorted(network_build_v4, reverse=True)
+                    ),
+                    network_prefixes_v6=tuple(
+                        sorted(network_build_v6, reverse=True)
+                    ),
+                    client_scope_count=client_scope_count,
+                    hostname_scope_count=hostname_scope_count,
+                    network_scope_count=network_scope_count,
+                )
+                updated = self._snapshot
+
+            self.logger.queue_rdns(updated.client_scopes.keys())
+            return
+
+        # A simultaneous list rebuild changed list-bit assignments twice while
+        # scopes were loading. A full rebuild is the safe rare-path fallback.
+        self.reload()
 
     @staticmethod
     def suffixes(domain: str) -> tuple[str, ...]:
@@ -900,14 +1348,12 @@ class PolicyEngine:
     def _matched_list(
         self,
         snapshot: PolicySnapshot,
-        suffixes: tuple[str, ...],
+        suffix_masks: tuple[tuple[str, int], ...],
+        combined_mask: int,
         active_mask: int,
         type_mask: int,
     ) -> tuple[BlockListCache, str] | None:
-        matches = 0
-        for suffix in suffixes:
-            matches |= snapshot.domain_masks.get(suffix, 0)
-        matches &= active_mask & type_mask
+        matches = combined_mask & active_mask & type_mask
         if not matches:
             return None
 
@@ -916,8 +1362,8 @@ class PolicyEngine:
         blocklist = snapshot.list_order[index]
         matched_domain = next(
             suffix
-            for suffix in suffixes
-            if snapshot.domain_masks.get(suffix, 0) & bit
+            for suffix, mask in suffix_masks
+            if mask & bit
         )
         return blocklist, matched_domain
 
@@ -1020,10 +1466,18 @@ class PolicyEngine:
             )
 
         suffixes = self.suffixes(qname)
+        suffix_masks = tuple(
+            (suffix, snapshot.domain_masks.get(suffix, 0))
+            for suffix in suffixes
+        )
+        combined_domain_mask = 0
+        for _suffix, mask in suffix_masks:
+            combined_domain_mask |= mask
 
         whitelist_match = self._matched_list(
             snapshot,
-            suffixes,
+            suffix_masks,
+            combined_domain_mask,
             active_mask,
             snapshot.whitelist_mask,
         )
@@ -1041,7 +1495,8 @@ class PolicyEngine:
 
         block_match = self._matched_list(
             snapshot,
-            suffixes,
+            suffix_masks,
+            combined_domain_mask,
             active_mask,
             snapshot.block_mask,
         )
@@ -1130,7 +1585,7 @@ class PolicyEngine:
             "matched_list_type": decision.matched_list_type,
             "response_time_ms": None,
             # Serialize the original payload off the request thread.
-            "request_obj": request_obj,
+            "request_obj": request_obj if self.logger.capture_request_json else None,
         }
         return decision, log_row
 

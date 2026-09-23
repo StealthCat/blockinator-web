@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import queue
 import re
+import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator
@@ -168,6 +171,19 @@ class MySQLConnection:
 class MySQLBackend:
     def __init__(self, config: MySQLConfig | None = None) -> None:
         self.config = config or MySQLConfig.from_env()
+        self.pool_size = max(2, min(int(os.getenv("MYSQL_POOL_SIZE", "10")), 50))
+        self.pool_timeout = max(
+            0.1,
+            min(float(os.getenv("MYSQL_POOL_TIMEOUT_SECONDS", "5")), 60.0),
+        )
+        self.pool_recycle = max(
+            30.0,
+            min(float(os.getenv("MYSQL_POOL_RECYCLE_SECONDS", "300")), 86400.0),
+        )
+        self._pool: queue.LifoQueue[tuple[Any, float]] = queue.LifoQueue(
+            maxsize=self.pool_size
+        )
+        self._pool_slots = threading.BoundedSemaphore(self.pool_size)
 
     def _connect_raw(self):
         ssl: dict[str, Any] | None = None
@@ -206,13 +222,64 @@ class MySQLBackend:
             cursor.execute("SET time_zone = '+00:00'")
         return con
 
+    def _acquire_raw(self) -> tuple[Any, float]:
+        if not self._pool_slots.acquire(timeout=self.pool_timeout):
+            raise TimeoutError("timed out waiting for a MySQL connection")
+        try:
+            while True:
+                try:
+                    raw, created_at = self._pool.get_nowait()
+                except queue.Empty:
+                    return self._connect_raw(), time.monotonic()
+
+                if time.monotonic() - created_at >= self.pool_recycle:
+                    try:
+                        raw.close()
+                    except Exception:
+                        pass
+                    continue
+
+                try:
+                    raw.ping(reconnect=False)
+                    return raw, created_at
+                except Exception:
+                    try:
+                        raw.close()
+                    except Exception:
+                        pass
+        except Exception:
+            self._pool_slots.release()
+            raise
+
+    def _release_raw(self, raw, created_at: float) -> None:
+        try:
+            try:
+                raw.rollback()
+            except Exception:
+                try:
+                    raw.close()
+                except Exception:
+                    pass
+                return
+
+            if time.monotonic() - created_at >= self.pool_recycle:
+                raw.close()
+                return
+
+            try:
+                self._pool.put_nowait((raw, created_at))
+            except queue.Full:
+                raw.close()
+        finally:
+            self._pool_slots.release()
+
     @contextmanager
     def connect(self) -> Iterator[MySQLConnection]:
-        raw = self._connect_raw()
+        raw, created_at = self._acquire_raw()
         try:
             yield MySQLConnection(raw)
         finally:
-            raw.close()
+            self._release_raw(raw, created_at)
 
     @staticmethod
     def is_retryable_write_error(exc: Exception) -> bool:
@@ -335,7 +402,10 @@ class MySQLBackend:
                 KEY idx_query_log_qname (qname,ts DESC),
                 KEY idx_query_log_matched_list (matched_list,ts DESC),
                 KEY idx_query_log_matched_scope (matched_scope,ts DESC),
-                KEY idx_query_log_server (server_id,ts DESC)
+                KEY idx_query_log_server (server_id,ts DESC),
+                KEY idx_query_log_server_id (server_id,id DESC),
+                KEY idx_query_log_scope_id (matched_scope,id DESC),
+                KEY idx_query_log_blocked_id (blocked,id DESC)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """,
             """
@@ -448,6 +518,24 @@ class MySQLBackend:
                 "idx_query_log_server",
                 "server_id,ts",
             )
+            self._ensure_index(
+                con,
+                "query_log",
+                "idx_query_log_server_id",
+                "server_id,id",
+            )
+            self._ensure_index(
+                con,
+                "query_log",
+                "idx_query_log_scope_id",
+                "matched_scope,id",
+            )
+            self._ensure_index(
+                con,
+                "query_log",
+                "idx_query_log_blocked_id",
+                "blocked,id",
+            )
 
             defaults = {
                 "global_blocking": "1",
@@ -457,6 +545,7 @@ class MySQLBackend:
                 "ui_theme": "dark",
                 "max_query_logs": "25000",
                 "max_query_log_age_days": "0",
+                "log_request_json": "0",
                 "default_timezone": bootstrap_timezone,
                 "tls_mode": "http",
                 "tls_hostname": "",

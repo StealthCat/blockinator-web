@@ -7,12 +7,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
-from .blocklists import fetch_url, fetch_url_conditional, parse_blocklist
+from .blocklists import ParseResult, fetch_parse_url_conditional, fetch_url, parse_blocklist
 from .db import Database
 
 
 class ReloadablePolicy(Protocol):
     def reload(self) -> None: ...
+    def reload_lists(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +53,15 @@ class BlocklistRefresher:
         self._thread: threading.Thread | None = None
         self._run_lock = threading.Lock()
         self._write_lock = threading.Lock()
+
+    def _reload_policy_lists(self) -> None:
+        reload_lists = getattr(self.engine, "reload_lists", None)
+        if callable(reload_lists):
+            reload_lists()
+        else:
+            # Compatibility for tests and external ReloadablePolicy adapters
+            # that implement only the original full reload contract.
+            self.engine.reload()
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -114,7 +124,7 @@ class BlocklistRefresher:
                     )
 
             if any(result.changed for result in results):
-                self.engine.reload()
+                self._reload_policy_lists()
             return results
         finally:
             self._run_lock.release()
@@ -148,22 +158,44 @@ class BlocklistRefresher:
         source_url: str,
         source_etag: str | None,
         source_last_modified: str | None,
-    ) -> tuple[str | None, str | None, str | None, bool]:
-        # The built-in fetcher supports conditional requests. Test/custom
-        # fetchers retain the original simple callable contract.
+        list_format: str,
+        list_type: str,
+    ) -> tuple[
+        str | None,
+        ParseResult | None,
+        str | None,
+        str | None,
+        str | None,
+        bool,
+    ]:
+        # Production refreshes stream directly into the parser and SHA-256
+        # digest. Custom/test fetchers keep the original text contract.
         if self.fetcher is fetch_url:
-            result = fetch_url_conditional(
+            result = fetch_parse_url_conditional(
                 source_url,
+                list_format,
+                list_type,
                 source_etag,
                 source_last_modified,
             )
             return (
-                result.text,
+                None,
+                result.parsed,
                 result.etag,
                 result.last_modified,
+                result.content_hash,
                 result.not_modified,
             )
-        return self.fetcher(source_url), None, None, False
+
+        text = self.fetcher(source_url)
+        return (
+            text,
+            None,
+            None,
+            None,
+            hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            False,
+        )
 
     def _metadata_update_with_retry(
         self,
@@ -247,10 +279,19 @@ class BlocklistRefresher:
         old_count = int(row["entry_count"] or 0)
 
         try:
-            text, etag, last_modified, not_modified = self._fetch(
+            (
+                text,
+                parsed,
+                etag,
+                last_modified,
+                source_hash,
+                not_modified,
+            ) = self._fetch(
                 source_url,
                 old_etag,
                 old_last_modified,
+                list_format,
+                list_type,
             )
 
             if not_modified:
@@ -269,10 +310,8 @@ class BlocklistRefresher:
                     changed=False,
                 )
 
-            assert text is not None
-            source_hash = hashlib.sha256(
-                text.encode("utf-8")
-            ).hexdigest()
+            if source_hash is None:
+                raise ValueError("refreshed list did not produce a source hash")
 
             # An identical source needs only refresh bookkeeping. Avoid parsing,
             # database membership writes, and a policy snapshot rebuild.
@@ -294,7 +333,10 @@ class BlocklistRefresher:
                     changed=False,
                 )
 
-            parsed = parse_blocklist(text, list_format, list_type)
+            if parsed is None:
+                if text is None:
+                    raise ValueError("refreshed list contained no content")
+                parsed = parse_blocklist(text, list_format, list_type)
             if not parsed.domains:
                 raise ValueError("refreshed list contained no usable domains")
 
@@ -405,7 +447,7 @@ class BlocklistRefresher:
                 return RefreshResult(list_id=list_id, refreshed=False)
 
             if membership_changed and reload_engine:
-                self.engine.reload()
+                self._reload_policy_lists()
             return RefreshResult(
                 list_id=list_id,
                 refreshed=True,
