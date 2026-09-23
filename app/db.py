@@ -56,6 +56,7 @@ class Database:
                     source_type TEXT NOT NULL DEFAULT 'manual',
                     source_url TEXT,
                     format TEXT NOT NULL DEFAULT 'auto',
+                    list_type TEXT NOT NULL DEFAULT 'block' CHECK(list_type IN ('block','whitelist')),
                     enabled INTEGER NOT NULL DEFAULT 1,
                     use_globally INTEGER NOT NULL DEFAULT 1,
                     refresh_minutes INTEGER NOT NULL DEFAULT 1440,
@@ -125,6 +126,7 @@ class Database:
                     reason TEXT,
                     matched_scope TEXT,
                     matched_list TEXT,
+                    matched_list_type TEXT,
                     request_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_query_log_ts ON query_log(ts DESC);
@@ -279,6 +281,11 @@ class Database:
                     "ALTER TABLE blocklists ADD COLUMN last_refresh_attempt TEXT"
                 )
 
+            if "list_type" not in blocklist_columns:
+                con.execute(
+                    "ALTER TABLE blocklists ADD COLUMN list_type TEXT NOT NULL DEFAULT 'block'"
+                )
+
             scope_columns = {
                 row["name"] for row in con.execute("PRAGMA table_info(scopes)")
             }
@@ -397,6 +404,8 @@ class Database:
                 con.execute("ALTER TABLE query_log ADD COLUMN client_name TEXT")
             if "policy_scheme" not in query_log_columns:
                 con.execute("ALTER TABLE query_log ADD COLUMN policy_scheme TEXT")
+            if "matched_list_type" not in query_log_columns:
+                con.execute("ALTER TABLE query_log ADD COLUMN matched_list_type TEXT")
             con.execute(
                 "CREATE INDEX IF NOT EXISTS idx_query_log_client_name "
                 "ON query_log(client_name, ts DESC)"
