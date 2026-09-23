@@ -42,6 +42,7 @@ def test_query_log_migration_adds_client_name_and_supports_hostname_filter():
         assert "client_name" in columns
         assert "policy_scheme" in columns
         assert "matched_list_type" in columns
+        assert "response_time_ms" in columns
 
         con.execute(
             """
