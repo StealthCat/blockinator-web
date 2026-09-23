@@ -214,6 +214,12 @@ class PolicySnapshot:
     response_mode: str
     unmatched_scope_action: str
     global_blocklist_scope_mode: str
+    unique_domain_count: int = 0
+    block_domain_count: int = 0
+    whitelist_domain_count: int = 0
+    client_scope_count: int = 0
+    hostname_scope_count: int = 0
+    network_scope_count: int = 0
 
 
 @dataclass(slots=True)
@@ -245,12 +251,15 @@ class QueryLogger:
             {
                 "max_query_logs": "25000",
                 "max_query_log_age_days": "0",
+                "log_request_json": "0",
             }
         )
         self.max_rows = int(settings["max_query_logs"])
         self.max_age_days = int(settings["max_query_log_age_days"])
+        self.capture_request_json = settings["log_request_json"] == "1"
         self._last_prune = monotonic_time.monotonic()
         self._rows_since_prune = 0
+        self._last_legacy_scan = 0.0
 
         self.q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=10000)
         self.rdns_q: queue.Queue[str] = queue.Queue(maxsize=4096)
@@ -276,9 +285,16 @@ class QueryLogger:
     def queue_depth(self) -> int:
         return self.q.qsize()
 
-    def configure_retention(self, max_rows: int, max_age_days: int) -> None:
+    def configure_retention(
+        self,
+        max_rows: int,
+        max_age_days: int,
+        capture_request_json: bool | None = None,
+    ) -> None:
         self.max_rows = max(0, int(max_rows))
         self.max_age_days = max(0, int(max_age_days))
+        if capture_request_json is not None:
+            self.capture_request_json = bool(capture_request_json)
 
     def submit(self, row: dict[str, Any]) -> None:
         try:
@@ -312,6 +328,9 @@ class QueryLogger:
         self._last_prune = monotonic_time.monotonic()
         self._rows_since_prune = 0
         return result
+
+    def queue_rdns(self, addresses) -> None:
+        self._queue_rdns({str(address or "").strip() for address in addresses})
 
     def _queue_rdns(self, addresses: set[str]) -> None:
         for address in addresses:
@@ -355,6 +374,24 @@ class QueryLogger:
                     for address in unique:
                         self._rdns_pending.discard(address)
 
+    def _queue_legacy_backfill(self, con) -> None:
+        now = monotonic_time.monotonic()
+        if now - self._last_legacy_scan < 60.0:
+            return
+        self._last_legacy_scan = now
+        rows = con.execute(
+            """
+            SELECT client_ip, MAX(id) AS latest_id
+            FROM query_log
+            WHERE client_name IS NULL OR client_name=''
+            GROUP BY client_ip
+            ORDER BY latest_id DESC
+            LIMIT 256
+            """
+        ).fetchall()
+        if rows:
+            self._queue_rdns({str(row["client_ip"]) for row in rows})
+
     def _should_prune(self, inserted_rows: int) -> bool:
         self._rows_since_prune += inserted_rows
         now = monotonic_time.monotonic()
@@ -396,6 +433,8 @@ class QueryLogger:
                 except queue.Empty:
                     break
 
+            self._queue_legacy_backfill(con)
+
             if not batch and not identities:
                 continue
 
@@ -430,10 +469,15 @@ class QueryLogger:
                                 r.get("matched_list"),
                                 r.get("matched_list_type"),
                                 r.get("response_time_ms"),
-                                json.dumps(
-                                    r.get("request_obj") or {},
-                                    separators=(",", ":"),
-                                    ensure_ascii=False,
+                                (
+                                    json.dumps(
+                                        r.get("request_obj"),
+                                        separators=(",", ":"),
+                                        ensure_ascii=False,
+                                    )
+                                    if self.capture_request_json
+                                    and r.get("request_obj") is not None
+                                    else None
                                 ),
                             )
                             for r in batch
@@ -613,6 +657,14 @@ class PolicyEngine:
                     domain = str(row["domain"])
                     domain_masks[domain] = domain_masks.get(domain, 0) | bit
 
+            unique_domain_count = len(domain_masks)
+            block_domain_count = sum(
+                1 for mask in domain_masks.values() if mask & block_mask
+            )
+            whitelist_domain_count = sum(
+                1 for mask in domain_masks.values() if mask & whitelist_mask
+            )
+
             memberships: dict[int, set[int]] = {}
             for row in con.execute(
                 "SELECT scope_id,blocklist_id FROM scope_blocklists"
@@ -632,6 +684,9 @@ class PolicyEngine:
             client_build: dict[str, list[Scope]] = {}
             exact_hostname_build: dict[str, list[Scope]] = {}
             wildcard_hostname_build: dict[str, list[Scope]] = {}
+            client_scope_count = 0
+            hostname_scope_count = 0
+            network_scope_count = 0
             network_build_v4: dict[int, dict[int, list[Scope]]] = {}
             network_build_v6: dict[int, dict[int, list[Scope]]] = {}
 
@@ -697,8 +752,10 @@ class PolicyEngine:
                 )
 
                 if scope.kind == "client":
+                    client_scope_count += 1
                     self._scope_tuple_map_add(client_build, scope.target, scope)
                 elif scope.kind == "hostname":
+                    hostname_scope_count += 1
                     if scope.target.startswith("*."):
                         self._scope_tuple_map_add(
                             wildcard_hostname_build,
@@ -712,6 +769,7 @@ class PolicyEngine:
                             scope,
                         )
                 else:
+                    network_scope_count += 1
                     for network in scope.networks:
                         family_map = (
                             network_build_v4
@@ -783,6 +841,12 @@ class PolicyEngine:
                 in {"all_clients", "matched_scopes"}
                 else "all_clients"
             ),
+            unique_domain_count=unique_domain_count,
+            block_domain_count=block_domain_count,
+            whitelist_domain_count=whitelist_domain_count,
+            client_scope_count=client_scope_count,
+            hostname_scope_count=hostname_scope_count,
+            network_scope_count=network_scope_count,
         )
 
         # The expensive rebuild occurs without blocking DNS decisions. The short
@@ -796,6 +860,8 @@ class PolicyEngine:
                 new_snapshot = replace(new_snapshot, client_identities=merged)
             self._snapshot = new_snapshot
             self._active_list_cache = (None, -1, 0)
+
+        self.logger.queue_rdns(new_snapshot.client_scopes.keys())
 
     @staticmethod
     def suffixes(domain: str) -> tuple[str, ...]:
@@ -900,14 +966,12 @@ class PolicyEngine:
     def _matched_list(
         self,
         snapshot: PolicySnapshot,
-        suffixes: tuple[str, ...],
+        suffix_masks: tuple[tuple[str, int], ...],
+        combined_mask: int,
         active_mask: int,
         type_mask: int,
     ) -> tuple[BlockListCache, str] | None:
-        matches = 0
-        for suffix in suffixes:
-            matches |= snapshot.domain_masks.get(suffix, 0)
-        matches &= active_mask & type_mask
+        matches = combined_mask & active_mask & type_mask
         if not matches:
             return None
 
@@ -916,8 +980,8 @@ class PolicyEngine:
         blocklist = snapshot.list_order[index]
         matched_domain = next(
             suffix
-            for suffix in suffixes
-            if snapshot.domain_masks.get(suffix, 0) & bit
+            for suffix, mask in suffix_masks
+            if mask & bit
         )
         return blocklist, matched_domain
 
@@ -1020,10 +1084,18 @@ class PolicyEngine:
             )
 
         suffixes = self.suffixes(qname)
+        suffix_masks = tuple(
+            (suffix, snapshot.domain_masks.get(suffix, 0))
+            for suffix in suffixes
+        )
+        combined_domain_mask = 0
+        for _suffix, mask in suffix_masks:
+            combined_domain_mask |= mask
 
         whitelist_match = self._matched_list(
             snapshot,
-            suffixes,
+            suffix_masks,
+            combined_domain_mask,
             active_mask,
             snapshot.whitelist_mask,
         )
@@ -1041,7 +1113,8 @@ class PolicyEngine:
 
         block_match = self._matched_list(
             snapshot,
-            suffixes,
+            suffix_masks,
+            combined_domain_mask,
             active_mask,
             snapshot.block_mask,
         )
@@ -1130,7 +1203,7 @@ class PolicyEngine:
             "matched_list_type": decision.matched_list_type,
             "response_time_ms": None,
             # Serialize the original payload off the request thread.
-            "request_obj": request_obj,
+            "request_obj": request_obj if self.logger.capture_request_json else None,
         }
         return decision, log_row
 
