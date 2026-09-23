@@ -176,6 +176,36 @@
     });
   }
 
+  function initializeListEditNavigation() {
+    var nav = document.querySelector(".list-edit-section-nav");
+    if (!nav) return;
+
+    var links = Array.prototype.slice.call(nav.querySelectorAll('a[href^="#"]'));
+    if (!links.length) return;
+
+    function activate(hash) {
+      links.forEach(function (link) {
+        link.classList.toggle("active", link.getAttribute("href") === hash);
+      });
+    }
+
+    links.forEach(function (link) {
+      link.addEventListener("click", function () {
+        activate(link.getAttribute("href"));
+      });
+    });
+
+    if (window.location.hash && links.some(function (link) {
+      return link.getAttribute("href") === window.location.hash;
+    })) {
+      activate(window.location.hash);
+    }
+
+    window.addEventListener("hashchange", function () {
+      if (window.location.hash) activate(window.location.hash);
+    });
+  }
+
   function initializeQueryLogRefresh() {
     var panel = document.querySelector("[data-query-log-refresh]");
     if (!panel) return;
@@ -415,6 +445,7 @@
   initializeScopeKindFields();
   initializeTlsSettings();
   initializeSettingsTabs();
+  initializeListEditNavigation();
   initializeQueryLogRefresh();
   initializeStatisticsDashboard();
 })();
