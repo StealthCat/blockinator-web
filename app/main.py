@@ -28,7 +28,7 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.18.3"
+APP_VERSION = "1.18.4"
 
 
 class PolicyResponseTimingMiddleware:
@@ -861,6 +861,16 @@ def _managed_lists_page(request: Request, list_type: str):
         network_target_rows = con.execute(
             "SELECT scope_id,family,target FROM scope_network_targets"
         ).fetchall()
+        preview_rows = con.execute(
+            """
+            SELECT domain
+            FROM block_entries
+            WHERE blocklist_id=?
+            ORDER BY domain
+            LIMIT 10
+            """,
+            (list_id,),
+        ).fetchall()
 
     memberships: dict[int, set[int]] = {}
     for membership in membership_rows:
@@ -1173,109 +1183,221 @@ def managed_list_edit_page(list_id: int, request: Request):
         else ""
     )
 
+    refresh_minutes = int(blocklist["refresh_minutes"])
+    if refresh_minutes % 1440 == 0:
+        refresh_label = (
+            f'{refresh_minutes // 1440} day'
+            f'{"s" if refresh_minutes // 1440 != 1 else ""}'
+        )
+    elif refresh_minutes % 60 == 0:
+        refresh_label = (
+            f'{refresh_minutes // 60} hour'
+            f'{"s" if refresh_minutes // 60 != 1 else ""}'
+        )
+    else:
+        refresh_label = (
+            f'{refresh_minutes} minute'
+            f'{"s" if refresh_minutes != 1 else ""}'
+        )
+
+    source_type_label = {
+        "url": "Remote URL",
+        "upload": "Uploaded file",
+        "manual": "Manual list",
+    }.get(str(blocklist["source_type"]), str(blocklist["source_type"]).title())
+
+    preview_lines = [str(row["domain"]) for row in preview_rows]
+    preview_text = "\n".join(preview_lines) if preview_lines else "No entries to preview."
+    last_updated = str(blocklist["last_updated"] or "Never")
+    list_state_label = "Enabled" if blocklist["enabled"] else "Disabled"
+    scope_state_label = "Global" if global_list else "Scoped"
+    schedule_state_label = "Scheduled" if blocklist["schedule_enabled"] else "Always active"
+    list_kind_icon = "✓" if list_label == "whitelist" else "⊘"
+
     body = f"""<div class="managed-list-edit-page">
-      <section class="managed-list-edit-heading">
-        <a class="back-link" href="{base_path}#list-{list_id}">← Back to {"Whitelists" if list_label == "whitelist" else "Block Lists"}</a>
-        <div class="managed-list-edit-title-row">
+      <div class="list-edit-breadcrumb">
+        <a href="{base_path}">{"Whitelists" if list_label == "whitelist" else "Block Lists"}</a>
+        <span>›</span>
+        <b>Edit</b>
+      </div>
+
+      <section class="list-edit-hero">
+        <div class="list-edit-hero-main">
+          <span class="list-edit-type-icon {"whitelist" if list_label == "whitelist" else "blocklist"}">{list_kind_icon}</span>
           <div>
             <div class="panel-kicker">Edit {esc(list_label)}</div>
             <h2>{esc(blocklist["name"])}</h2>
-            <p>{esc(source_label)}</p>
+            <p>Configure the source, policy targeting, schedule, and update behavior for this {esc(list_label)}.</p>
           </div>
-          <div class="managed-list-edit-summary">
-            <span><b>{int(blocklist["entry_count"]):,}</b><small>Entries</small></span>
-            <span><b>{"Enabled" if blocklist["enabled"] else "Disabled"}</b><small>List state</small></span>
-            <span><b>{esc(assignment_text)}</b><small>Policy reach</small></span>
-            <span><b>{esc("Scheduled" if blocklist["schedule_enabled"] else "Always")}</b><small>{esc(schedule_summary(blocklist))}</small></span>
-          </div>
+        </div>
+        <div class="list-edit-hero-actions">
+          <a class="small-button" href="{base_path}#list-{list_id}">← Back to Lists</a>
+          <form method="post" action="/admin/lists/{list_id}/delete"
+                onsubmit="return confirm('Delete this {list_label}? This cannot be undone.')">
+            <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+            <button class="danger-button" type="submit">Delete List</button>
+          </form>
         </div>
       </section>
 
-      <section class="panel managed-list-edit-panel">
-        <div class="panel-head managed-list-edit-panel-head">
-          <div>
-            <div class="panel-kicker">Configuration</div>
-            <h3>{esc(page_title)} settings</h3>
-            <p>Update source settings, enforcement schedule, assignments, or replace the list contents.</p>
+      <nav class="list-edit-section-nav" aria-label="{esc(page_title)} editor sections">
+        <a class="active" href="#general">General</a>
+        <a href="#policy-targeting">Policy &amp; Targeting</a>
+        <a href="#schedule">Schedule</a>
+        <a href="#import-update">Import &amp; Update</a>
+        <a href="#preview">Preview</a>
+      </nav>
+
+      <section class="list-edit-status-grid" aria-label="List summary">
+        <article>
+          <span class="list-edit-status-icon">▤</span>
+          <div><b>{int(blocklist["entry_count"]):,}</b><small>Entries</small><em>Updated {esc(last_updated)}</em></div>
+        </article>
+        <article>
+          <span class="list-edit-status-icon state">✓</span>
+          <div><b>{esc(list_state_label)}</b><small>Status</small><em>{"List is active and enforced" if blocklist["enabled"] else "List is currently disabled"}</em></div>
+        </article>
+        <article>
+          <span class="list-edit-status-icon scope">◎</span>
+          <div><b>{esc(scope_state_label)}</b><small>Scope</small><em>{esc(assignment_text)}</em></div>
+        </article>
+        <article>
+          <span class="list-edit-status-icon refresh">↻</span>
+          <div><b>{esc(refresh_label)}</b><small>Refresh interval</small><em>{esc(source_type_label)}</em></div>
+        </article>
+      </section>
+
+      <form method="post" action="/admin/lists/{list_id}/edit"
+            enctype="multipart/form-data" class="list-edit-workspace" id="list-edit-form">
+        <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+
+        <section class="list-edit-card" id="general">
+          <div class="list-edit-card-head">
+            <span>▤</span>
+            <div><h3>List Details</h3><p>Basic information about this {esc(list_label)}.</p></div>
           </div>
-          <div class="actions">{manual_manage_link}</div>
-        </div>
+          <div class="list-edit-fields">
+            <label class="full">Name
+              <input name="name" value="{esc(blocklist["name"])}" required>
+            </label>
+            <label>List Format
+              <select name="format">{format_options}</select>
+            </label>
+            <label>Source Type
+              <input value="{esc(source_type_label)}" disabled>
+            </label>
+          </div>
+        </section>
 
-        <form method="post" action="/admin/lists/{list_id}/edit"
-              enctype="multipart/form-data" class="form-grid list-edit-form managed-list-edit-form">
-          <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+        <section class="list-edit-card" id="source-configuration">
+          <div class="list-edit-card-head">
+            <span>↗</span>
+            <div><h3>Source Configuration</h3><p>Configure where and how this list is obtained.</p></div>
+          </div>
+          <div class="list-edit-fields">
+            <label class="full">Source URL
+              <input name="source_url" value="{esc(blocklist["source_url"] or "")}"
+                     placeholder="https://example.com/list.txt">
+              <small>Leave blank for manual or uploaded lists.</small>
+            </label>
+            <label>Refresh Interval
+              <input type="number" name="refresh_minutes" min="1" max="10080"
+                     value="{refresh_minutes}">
+              <small>Minutes between automatic URL refreshes.</small>
+            </label>
+            <label class="list-edit-toggle-field">
+              <span>List State</span>
+              <span class="list-edit-toggle-row">
+                <input type="checkbox" name="enabled" value="1"{" checked" if blocklist["enabled"] else ""}>
+                <span><b>Enabled</b><small>Download updates and enforce this list.</small></span>
+              </span>
+            </label>
+            <button class="small-button list-edit-refresh-button" type="submit" name="action" value="refresh">
+              Save &amp; refresh URL
+            </button>
+          </div>
+        </section>
 
-          <label>Name
-            <input name="name" value="{esc(blocklist["name"])}" required>
-          </label>
-          <label>Format
-            <select name="format">{format_options}</select>
-          </label>
-          <label class="full">Source URL
-            <input name="source_url" value="{esc(blocklist["source_url"] or "")}"
-                   placeholder="https://example.com/list.txt">
-          </label>
-          <label>Automatic refresh interval (minutes)
-            <input type="number" name="refresh_minutes" min="1" max="10080"
-                   value="{int(blocklist["refresh_minutes"])}">
-          </label>
-          <label class="check">
-            <input type="checkbox" name="enabled" value="1"{" checked" if blocklist["enabled"] else ""}>
-            List enabled
-          </label>
-          <label class="check full">
-            <input type="checkbox" name="global_list" value="1" data-global-toggle{" checked" if global_list else ""}>
-            Apply globally to every network, endpoint, and hostname
-          </label>
-
-          <div class="form-section full schedule-section">
-            <div class="form-section-head">
-              <div>
-                <b>Enforcement schedule</b>
-                <p>Leave scheduling off to enforce this list at all times.</p>
-              </div>
+        <section class="list-edit-card" id="policy-targeting">
+          <div class="list-edit-card-head">
+            <span>◎</span>
+            <div><h3>Policy &amp; Targeting</h3><p>Control where this list is applied.</p></div>
+          </div>
+          <div class="list-edit-policy-mode">
+            <label class="list-edit-choice">
+              <input type="checkbox" name="global_list" value="1" data-global-toggle{" checked" if global_list else ""}>
+              <span><b>Apply globally</b><small>Apply to every network, endpoint, and hostname.</small></span>
+            </label>
+            <div class="list-edit-targeting-summary">
+              <span class="list-edit-status-icon scope">◎</span>
+              <div><b>{esc(assignment_text)}</b><small>{"Global policy" if global_list else "Selected policy targets"}</small></div>
             </div>
-            {list_schedule_fields}
           </div>
-
-          <div class="form-section full">
-            <div class="form-section-head">
-              <div>
-                <b>Scope assignments</b>
-                <p>Select every network, endpoint, and hostname scope that should use this list.</p>
-              </div>
+          <div class="list-edit-scope-wrap">
+            <div class="list-edit-subhead">
+              <div><b>Selected policy targets</b><p>Used when global application is disabled.</p></div>
               <span>{len(selected)} selected</span>
             </div>
             {scope_editor_html}
           </div>
+        </section>
 
-          <div class="form-section full replacement-section">
-            <div class="form-section-head">
-              <div>
-                <b>Replace list contents</b>
-                <p>Optional. Leave both fields blank to keep the current {int(blocklist["entry_count"]):,} entries.</p>
-              </div>
-            </div>
-            <label>Upload replacement file
+        <section class="list-edit-card" id="schedule">
+          <div class="list-edit-card-head">
+            <span>◷</span>
+            <div><h3>Schedule</h3><p>Limit when this list is enforced.</p></div>
+          </div>
+          <div class="list-edit-schedule-summary">
+            <span class="list-edit-status-icon schedule">◷</span>
+            <div><b>{esc(schedule_state_label)}</b><small>{esc(schedule_summary(blocklist))}</small></div>
+          </div>
+          <div class="list-edit-schedule-controls">
+            {list_schedule_fields}
+          </div>
+        </section>
+
+        <section class="list-edit-card" id="import-update">
+          <div class="list-edit-card-head">
+            <span>⇧</span>
+            <div><h3>Import &amp; Update</h3><p>Manually replace this list's contents.</p></div>
+          </div>
+          <div class="list-edit-import-grid">
+            <label class="list-edit-file-drop">
+              <span class="list-edit-file-icon">⇧</span>
+              <b>Choose a replacement file</b>
+              <small>Plain text, hosts, domain, or supported Adblock formats.</small>
               <input type="file" name="replacement_file">
             </label>
-            <label>Or paste replacement rules
-              <textarea name="replacement_text" rows="7"
+            <label class="list-edit-paste">Paste replacement rules
+              <textarea name="replacement_text" rows="9"
                         placeholder="One domain per line, hosts format, or supported Adblock domain rules"></textarea>
             </label>
           </div>
+        </section>
 
-          <div class="editor-actions full managed-list-edit-actions">
-            <button class="primary-button" type="submit" name="action" value="save">
-              Save changes
-            </button>
-            <button class="small-button" type="submit" name="action" value="refresh">
-              Save & refresh URL
-            </button>
-            <a class="small-button" href="{base_path}#list-{list_id}">Cancel</a>
+        <section class="list-edit-card" id="preview">
+          <div class="list-edit-card-head">
+            <span>◉</span>
+            <div><h3>List Preview</h3><p>Preview the first entries currently stored for this list.</p></div>
           </div>
-        </form>
-      </section>
+          <pre class="list-edit-preview"><code>{esc(preview_text)}</code></pre>
+          <div class="list-edit-preview-foot">
+            <span>Showing {len(preview_lines)} of {int(blocklist["entry_count"]):,} entr{"y" if int(blocklist["entry_count"]) == 1 else "ies"}</span>
+            {manual_manage_link}
+          </div>
+        </section>
+
+        <div class="list-edit-savebar">
+          <div>
+            <b>Ready to apply changes?</b>
+            <small>Settings and targeting changes take effect after the policy engine reloads.</small>
+          </div>
+          <div class="actions">
+            <a class="small-button" href="{base_path}#list-{list_id}">Cancel</a>
+            <button class="primary-button" type="submit" name="action" value="save">Save Changes</button>
+          </div>
+        </div>
+      </form>
     </div>"""
     return page(
         request,
