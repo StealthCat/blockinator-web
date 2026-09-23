@@ -364,6 +364,19 @@ class QueryLogger:
         )
 
     def _run(self) -> None:
+        # Keep the logger's database connection on its dedicated writer thread.
+        # This avoids a SQLite connection setup (and, for MySQL, a network
+        # handshake) for every query batch.
+        while not self.stop_event.is_set():
+            try:
+                with self.db.connect() as con:
+                    self._run_connected(con)
+            except Exception:
+                # Reconnect after transient database failures without affecting
+                # the DNS decision path.
+                self.stop_event.wait(0.1)
+
+    def _run_connected(self, con) -> None:
         while not self.stop_event.is_set():
             batch: list[dict[str, Any]] = []
             identities: dict[str, str] = {}
@@ -389,96 +402,91 @@ class QueryLogger:
             missing_addresses: set[str] = set()
             inserted_rows = len(batch)
             try:
-                with self.db.connect() as con:
-                    con.execute("BEGIN")
-                    try:
-                        if batch:
-                            con.executemany(
-                                """
-                                INSERT INTO query_log(
-                                  ts,server_id,client_ip,client_name,client_port,protocol,policy_scheme,
-                                  qname,qtype,qclass,blocked,reason,matched_scope,matched_list,
-                                  matched_list_type,request_json
-                                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                                """,
-                                [
-                                    (
-                                        r["ts"],
-                                        r.get("server_id"),
-                                        r["client_ip"],
-                                        r.get("client_name"),
-                                        r.get("client_port"),
-                                        r.get("protocol"),
-                                        r.get("policy_scheme"),
-                                        r.get("qname"),
-                                        r.get("qtype"),
-                                        r.get("qclass"),
-                                        1 if r["blocked"] else 0,
-                                        r.get("reason"),
-                                        r.get("matched_scope"),
-                                        r.get("matched_list"),
-                                        r.get("matched_list_type"),
-                                        json.dumps(
-                                            r.get("request_obj") or {},
-                                            separators=(",", ":"),
-                                            ensure_ascii=False,
-                                        ),
-                                    )
-                                    for r in batch
-                                ],
+                con.execute("BEGIN")
+                if batch:
+                    con.executemany(
+                        """
+                        INSERT INTO query_log(
+                          ts,server_id,client_ip,client_name,client_port,protocol,policy_scheme,
+                          qname,qtype,qclass,blocked,reason,matched_scope,matched_list,
+                          matched_list_type,request_json
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        [
+                            (
+                                r["ts"],
+                                r.get("server_id"),
+                                r["client_ip"],
+                                r.get("client_name"),
+                                r.get("client_port"),
+                                r.get("protocol"),
+                                r.get("policy_scheme"),
+                                r.get("qname"),
+                                r.get("qtype"),
+                                r.get("qclass"),
+                                1 if r["blocked"] else 0,
+                                r.get("reason"),
+                                r.get("matched_scope"),
+                                r.get("matched_list"),
+                                r.get("matched_list_type"),
+                                json.dumps(
+                                    r.get("request_obj") or {},
+                                    separators=(",", ":"),
+                                    ensure_ascii=False,
+                                ),
                             )
-                            missing_addresses = {
-                                str(r.get("client_ip") or "")
-                                for r in batch
-                                if not r.get("client_name")
-                            }
+                            for r in batch
+                        ],
+                    )
+                    missing_addresses = {
+                        str(r.get("client_ip") or "")
+                        for r in batch
+                        if not r.get("client_name")
+                    }
 
-                        if identities:
-                            for client_ip, client_name in identities.items():
-                                con.execute(
-                                    """
-                                    UPDATE query_log
-                                    SET client_name=?
-                                    WHERE client_ip=? AND (client_name IS NULL OR client_name='')
-                                    """,
-                                    (client_name, client_ip),
-                                )
-                            con.executemany(
-                                """
-                                INSERT INTO client_identities(client_ip,client_name,updated_at)
-                                VALUES(?,?,CURRENT_TIMESTAMP)
-                                ON CONFLICT(client_ip) DO UPDATE SET
-                                    client_name=excluded.client_name,
-                                    updated_at=CURRENT_TIMESTAMP
-                                """,
-                                [
-                                    (client_ip, client_name)
-                                    for client_ip, client_name in identities.items()
-                                ],
-                            )
+                if identities:
+                    for client_ip, client_name in identities.items():
+                        con.execute(
+                            """
+                            UPDATE query_log
+                            SET client_name=?
+                            WHERE client_ip=? AND (client_name IS NULL OR client_name='')
+                            """,
+                            (client_name, client_ip),
+                        )
+                    con.executemany(
+                        """
+                        INSERT INTO client_identities(client_ip,client_name,updated_at)
+                        VALUES(?,?,CURRENT_TIMESTAMP)
+                        ON CONFLICT(client_ip) DO UPDATE SET
+                            client_name=excluded.client_name,
+                            updated_at=CURRENT_TIMESTAMP
+                        """,
+                        [
+                            (client_ip, client_name)
+                            for client_ip, client_name in identities.items()
+                        ],
+                    )
 
-                        if self._should_prune(inserted_rows):
-                            _prune_query_logs(
-                                con,
-                                self.max_rows,
-                                self.max_age_days,
-                            )
-                            self._last_prune = monotonic_time.monotonic()
-                            self._rows_since_prune = 0
+                if self._should_prune(inserted_rows):
+                    _prune_query_logs(
+                        con,
+                        self.max_rows,
+                        self.max_age_days,
+                    )
+                    self._last_prune = monotonic_time.monotonic()
+                    self._rows_since_prune = 0
 
-                        con.execute("COMMIT")
-                    except Exception:
-                        if con.in_transaction:
-                            con.execute("ROLLBACK")
-                        raise
-
-                if identities and self.identity_callback is not None:
-                    self.identity_callback(identities)
-                if missing_addresses:
-                    self._queue_rdns(missing_addresses)
+                con.execute("COMMIT")
             except Exception:
-                # Logging and PTR enrichment must never interfere with DNS decisions.
-                pass
+                if con.in_transaction:
+                    con.execute("ROLLBACK")
+                raise
+
+            if identities and self.identity_callback is not None:
+                self.identity_callback(identities)
+            if missing_addresses:
+                self._queue_rdns(missing_addresses)
 
 
 class PolicyEngine:
