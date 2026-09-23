@@ -35,9 +35,11 @@ def normalize_domain(value: str) -> str | None:
     return value
 
 
-def _from_adblock(line: str) -> str | None:
+def _from_adblock(line: str, allow_exceptions: bool = False) -> str | None:
     if line.startswith("@@"):
-        return None
+        if not allow_exceptions:
+            return None
+        line = line[2:]
     if line.startswith("||"):
         candidate = line[2:]
         candidate = candidate.split("^", 1)[0]
@@ -47,7 +49,11 @@ def _from_adblock(line: str) -> str | None:
     return None
 
 
-def parse_blocklist(text: str, list_format: str = "auto") -> ParseResult:
+def parse_blocklist(
+    text: str,
+    list_format: str = "auto",
+    list_type: str = "block",
+) -> ParseResult:
     domains: set[str] = set()
     ignored = 0
     for raw in text.splitlines():
@@ -57,7 +63,10 @@ def parse_blocklist(text: str, list_format: str = "auto") -> ParseResult:
 
         candidate: str | None = None
         if list_format in ("auto", "adblock") and line.startswith(("||", "@@||")):
-            candidate = _from_adblock(line)
+            candidate = _from_adblock(
+                line,
+                allow_exceptions=list_type == "whitelist",
+            )
         elif list_format in ("auto", "hosts"):
             # Hosts-form lines: 0.0.0.0 example.com [aliases...]
             no_comment = line.split("#", 1)[0].strip()
