@@ -901,6 +901,14 @@ def _managed_lists_page(request: Request, list_type: str):
 
 
 
+def _list_base_path(row) -> str:
+    return "/whitelists" if str(row["list_type"] or "block") == "whitelist" else "/lists"
+
+
+def _list_label(row) -> str:
+    return "whitelist" if str(row["list_type"] or "block") == "whitelist" else "block list"
+
+
 def _get_manual_blocklist(list_id: int):
     with db.connect() as con:
         row = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
@@ -930,6 +938,7 @@ def _refresh_manual_list_count(con, list_id: int) -> int:
 
 
 @app.get("/lists/{list_id}/domains", response_class=HTMLResponse)
+@app.get("/whitelists/{list_id}/domains", response_class=HTMLResponse)
 def manual_list_domains_page(
     list_id: int,
     request: Request,
@@ -942,6 +951,9 @@ def manual_list_domains_page(
         return redirect(f"/lists#list-{list_id}", error=error)
 
     assert blocklist is not None
+    base_path = _list_base_path(blocklist)
+    list_label = _list_label(blocklist)
+    page_title = "Whitelist" if list_label == "whitelist" else "Block List"
     q = q.strip()
     page_size = 100
     page_num = max(1, page_num)
@@ -980,7 +992,7 @@ def manual_list_domains_page(
               <td><span class="manual-domain-name mono">{esc(domain)}</span></td>
               <td class="manual-domain-action">
                 <form method="post" action="/admin/lists/{list_id}/domains/remove"
-                      onsubmit="return confirm('Remove {esc(domain)} from this block list?')">
+                      onsubmit="return confirm('Remove {esc(domain)} from this {list_label}?')">
                   <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                   <input type="hidden" name="domain" value="{esc(domain)}">
                   <input type="hidden" name="return_q" value="{esc(q)}">
@@ -998,26 +1010,26 @@ def manual_list_domains_page(
 
     query_suffix = "&q=" + quote(q) if q else ""
     prev_link = (
-        f'<a class="small-button" href="/lists/{list_id}/domains?page_num={page_num - 1}{query_suffix}">← Previous</a>'
+        f'<a class="small-button" href="{base_path}/{list_id}/domains?page_num={page_num - 1}{query_suffix}">← Previous</a>'
         if page_num > 1 else '<span class="small-button disabled">← Previous</span>'
     )
     next_link = (
-        f'<a class="small-button" href="/lists/{list_id}/domains?page_num={page_num + 1}{query_suffix}">Next →</a>'
+        f'<a class="small-button" href="{base_path}/{list_id}/domains?page_num={page_num + 1}{query_suffix}">Next →</a>'
         if page_num < max_page else '<span class="small-button disabled">Next →</span>'
     )
 
     assignment_label = "Global" if blocklist["use_globally"] else "Scoped only"
     clear_search_link = (
-        f'<a class="small-button" href="/lists/{list_id}/domains">Clear</a>'
+        f'<a class="small-button" href="{base_path}/{list_id}/domains">Clear</a>'
         if q
         else ""
     )
     body = f'''<div class="manual-domain-page">
       <section class="manual-domain-heading">
-        <a class="back-link" href="/lists#list-{list_id}">← Back to Block Lists</a>
+        <a class="back-link" href="{base_path}#list-{list_id}">← Back to Block Lists</a>
         <div class="manual-domain-title-row">
           <div>
-            <div class="panel-kicker">Manual block list</div>
+            <div class="panel-kicker">Manual {esc(list_label)}</div>
             <h2>{esc(blocklist["name"])}</h2>
             <p>Add or remove individual domains without replacing the entire list.</p>
           </div>
@@ -1079,7 +1091,13 @@ def manual_list_domains_page(
         </section>
       </div>
     </div>'''
-    return page(request, f"Manual List · {blocklist['name']}", "lists", body, s)
+    return page(
+        request,
+        f"Manual {page_title} · {blocklist['name']}",
+        "whitelists" if list_label == "whitelist" else "lists",
+        body,
+        s,
+    )
 
 
 @app.post("/admin/lists/{list_id}/domains/add")
