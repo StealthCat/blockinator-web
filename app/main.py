@@ -178,10 +178,51 @@ def querying_server_html(server_id: str | None) -> str:
     )
 
 
+def decision_kind(row) -> str:
+    if bool(row["blocked"]):
+        return "blocked"
+    list_type = str(row["matched_list_type"] or "").strip().lower()
+    reason = str(row["reason"] or "").strip().lower()
+    if list_type == "whitelist" or reason == "whitelist_match":
+        return "whitelisted"
+    return "allowed"
+
+
+def decision_pill_html(row) -> str:
+    kind = decision_kind(row)
+    if kind == "blocked":
+        css_class, icon, label, title = (
+            "red blocked",
+            "×",
+            "Blocked",
+            "Blocked by policy",
+        )
+    elif kind == "whitelisted":
+        matched_list = str(row["matched_list"] or "").strip()
+        css_class, icon, label = "whitelist whitelisted", "✦", "Whitelisted"
+        title = (
+            f"Allowed by whitelist: {matched_list}"
+            if matched_list
+            else "Allowed by whitelist"
+        )
+    else:
+        css_class, icon, label, title = (
+            "green allowed",
+            "✓",
+            "Allowed",
+            "Allowed by policy",
+        )
+    return (
+        f'<span class="pill decision-pill {css_class}" title="{esc(title)}">'
+        f'<span class="decision-icon" aria-hidden="true">{icon}</span>'
+        f'<span>{label}</span></span>'
+    )
+
+
 def decision_match_text(row) -> str:
     matched_list = str(row["matched_list"] or "").strip()
     if matched_list:
-        if str(row["matched_list_type"] or "") == "whitelist":
+        if decision_kind(row) == "whitelisted":
             return f"Whitelist: {matched_list}"
         return matched_list
     return str(row["reason"] or "") if row["blocked"] else ""
@@ -671,8 +712,7 @@ def dashboard(request: Request):
         f'<td>{esc((r["policy_scheme"] or "").upper() or "—")}</td>'
         f'<td>{esc(response_time_text(r["response_time_ms"]))}</td>'
         f'<td>{esc(r["matched_scope"] or "—")}</td>'
-        f'<td><span class="pill {"red" if r["blocked"] else "green"}">'
-        f'{"Blocked" if r["blocked"] else "Allowed"}</span></td>'
+        f'<td>{decision_pill_html(r)}</td>'
         f'<td>{esc(decision_match_text(r))}</td></tr>'
         for r in recent
     ) or '<tr><td colspan="9" class="empty">No DNS decisions recorded yet.</td></tr>'
@@ -2481,9 +2521,17 @@ def queries_page(
     if blocklist:
         clauses.append("matched_list LIKE ?")
         args.append("%" + blocklist + "%")
-    if decision in {"blocked", "allowed"}:
-        clauses.append("blocked=?")
-        args.append(1 if decision == "blocked" else 0)
+    if decision == "blocked":
+        clauses.append("blocked=1")
+    elif decision == "whitelisted":
+        clauses.append(
+            "blocked=0 AND (matched_list_type='whitelist' OR reason='whitelist_match')"
+        )
+    elif decision == "allowed":
+        clauses.append(
+            "blocked=0 AND COALESCE(matched_list_type,'')<>'whitelist' "
+            "AND COALESCE(reason,'')<>'whitelist_match'"
+        )
 
     limit = max(25, min(limit, 500))
     refresh = refresh if refresh in {0, 5, 10, 15, 30, 60} else 0
@@ -2532,8 +2580,7 @@ def queries_page(
         f'<td>{esc((r["policy_scheme"] or "").upper() or "—")}</td>'
         f'<td>{esc(response_time_text(r["response_time_ms"]))}</td>'
         f'<td>{esc(r["matched_scope"] or "—")}</td>'
-        f'<td><span class="pill {"red" if r["blocked"] else "green"}">'
-        f'{"Blocked" if r["blocked"] else "Allowed"}</span></td>'
+        f'<td>{decision_pill_html(r)}</td>'
         f'<td>{esc(decision_match_text(r))}</td></tr>'
         for r in rows
     ) or '<tr><td colspan="10" class="empty">No matching queries.</td></tr>'
@@ -2582,6 +2629,7 @@ def queries_page(
         <select name="decision">
           <option value="">All decisions</option>
           <option value="blocked" {"selected" if decision=="blocked" else ""}>Blocked</option>
+          <option value="whitelisted" {"selected" if decision=="whitelisted" else ""}>Whitelisted</option>
           <option value="allowed" {"selected" if decision=="allowed" else ""}>Allowed</option>
         </select>
         <select name="limit">
