@@ -95,8 +95,8 @@ Each list can be:
 
 Assignments can be managed from either side:
 
-- **Block Lists → Edit & assign** shows every target for a selected block list.
-- **Whitelists → Edit & assign** shows every target for a selected whitelist.
+- **Block Lists → Edit** opens a dedicated editor showing every target for the selected block list.
+- **Whitelists → Edit** opens a dedicated editor showing every target for the selected whitelist.
 - **Policy Targets → Edit & assign** shows both block lists and whitelists for a selected target.
 
 Global lists cannot be redundantly assigned to individual targets while **Apply globally** is enabled.
