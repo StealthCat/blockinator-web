@@ -201,6 +201,213 @@
     schedule();
   }
 
+  function statisticsNumber(value) {
+    var numeric = Number(value || 0);
+    return numeric.toLocaleString();
+  }
+
+  function statisticsResponseTime(value) {
+    if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+    var milliseconds = Number(value);
+    if (milliseconds < 1) return milliseconds.toFixed(3) + " ms";
+    if (milliseconds < 100) return milliseconds.toFixed(2) + " ms";
+    return milliseconds.toFixed(1) + " ms";
+  }
+
+  function statisticsSvgElement(name, attributes, text) {
+    var element = document.createElementNS("http://www.w3.org/2000/svg", name);
+    Object.keys(attributes || {}).forEach(function (key) {
+      element.setAttribute(key, String(attributes[key]));
+    });
+    if (text !== undefined) element.textContent = text;
+    return element;
+  }
+
+  function statisticsPath(points, valueKey, left, top, width, height, maxY) {
+    if (!points.length) return "";
+    return points.map(function (point, index) {
+      var x = points.length === 1
+        ? left + width / 2
+        : left + (index / (points.length - 1)) * width;
+      var value = Number(point[valueKey] || 0);
+      var y = top + height - (value / maxY) * height;
+      return (index === 0 ? "M" : "L") + x.toFixed(2) + " " + y.toFixed(2);
+    }).join(" ");
+  }
+
+  function renderStatisticsChart(root, payload) {
+    var svg = root.querySelector("[data-statistics-chart]");
+    if (!svg) return;
+
+    var points = Array.isArray(payload.points) ? payload.points : [];
+    var left = 56;
+    var right = 24;
+    var top = 18;
+    var bottom = 42;
+    var fullWidth = 1000;
+    var fullHeight = 340;
+    var width = fullWidth - left - right;
+    var height = fullHeight - top - bottom;
+    var maxValue = 0;
+
+    points.forEach(function (point) {
+      maxValue = Math.max(maxValue, Number(point.queries || 0), Number(point.blocks || 0));
+    });
+    var step = Math.max(1, Math.ceil(maxValue / 4));
+    var maxY = step * 4;
+
+    svg.textContent = "";
+
+    for (var tick = 0; tick <= 4; tick += 1) {
+      var value = step * tick;
+      var y = top + height - (tick / 4) * height;
+      svg.appendChild(statisticsSvgElement("line", {
+        x1: left,
+        y1: y,
+        x2: left + width,
+        y2: y,
+        "class": "statistics-grid-line"
+      }));
+      svg.appendChild(statisticsSvgElement("text", {
+        x: left - 12,
+        y: y + 4,
+        "text-anchor": "end",
+        "class": "statistics-axis-label"
+      }, String(value)));
+    }
+
+    var labelIndexes = [];
+    if (points.length) {
+      var labelCount = Math.min(6, points.length);
+      for (var labelIndex = 0; labelIndex < labelCount; labelIndex += 1) {
+        labelIndexes.push(Math.round(labelIndex * (points.length - 1) / Math.max(1, labelCount - 1)));
+      }
+    }
+    labelIndexes.filter(function (value, index, array) {
+      return array.indexOf(value) === index;
+    }).forEach(function (index) {
+      var point = points[index];
+      var x = points.length === 1
+        ? left + width / 2
+        : left + (index / (points.length - 1)) * width;
+      svg.appendChild(statisticsSvgElement("text", {
+        x: x,
+        y: fullHeight - 13,
+        "text-anchor": index === 0 ? "start" : index === points.length - 1 ? "end" : "middle",
+        "class": "statistics-axis-label statistics-axis-time"
+      }, point.label || ""));
+    });
+
+    if (points.length) {
+      var queryPath = statisticsPath(points, "queries", left, top, width, height, maxY);
+      var blockPath = statisticsPath(points, "blocks", left, top, width, height, maxY);
+      var baseline = top + height;
+      var firstX = points.length === 1 ? left + width / 2 : left;
+      var lastX = points.length === 1 ? left + width / 2 : left + width;
+
+      if (queryPath) {
+        svg.appendChild(statisticsSvgElement("path", {
+          d: queryPath + " L" + lastX + " " + baseline + " L" + firstX + " " + baseline + " Z",
+          "class": "statistics-area statistics-area-queries"
+        }));
+        svg.appendChild(statisticsSvgElement("path", {
+          d: queryPath,
+          "class": "statistics-series statistics-series-queries"
+        }));
+      }
+      if (blockPath) {
+        svg.appendChild(statisticsSvgElement("path", {
+          d: blockPath,
+          "class": "statistics-series statistics-series-blocks"
+        }));
+      }
+    }
+
+    var empty = root.querySelector("[data-statistics-empty]");
+    if (empty) {
+      var hasActivity = points.some(function (point) {
+        return Number(point.queries || 0) > 0;
+      });
+      empty.hidden = hasActivity;
+    }
+  }
+
+  function initializeStatisticsDashboard() {
+    var root = document.querySelector("[data-statistics-dashboard]");
+    if (!root) return;
+
+    var timer = null;
+    var loading = false;
+    var windowMinutes = parseInt(root.getAttribute("data-window") || "60", 10);
+
+    function updateTotals(payload) {
+      var totals = payload.totals || {};
+      var queries = root.querySelector('[data-statistics-total="queries"]');
+      var blocks = root.querySelector('[data-statistics-total="blocks"]');
+      var response = root.querySelector('[data-statistics-total="response"]');
+      var bucket = root.querySelector("[data-statistics-bucket]");
+      var updated = root.querySelector("[data-statistics-updated]");
+
+      if (queries) queries.textContent = statisticsNumber(totals.queries);
+      if (blocks) blocks.textContent = statisticsNumber(totals.blocks);
+      if (response) response.textContent = statisticsResponseTime(totals.average_response_time_ms);
+      if (bucket) {
+        var bucketMinutes = Number(payload.bucket_minutes || 1);
+        bucket.textContent = bucketMinutes + " minute" + (bucketMinutes === 1 ? "" : "s") + " per interval";
+      }
+      if (updated) {
+        updated.textContent = "Live · updated just now · " + (payload.timezone || "UTC");
+        updated.classList.remove("error");
+      }
+    }
+
+    function load() {
+      if (loading || document.hidden) return;
+      loading = true;
+
+      fetch("/api/v1/statistics?minutes=" + encodeURIComponent(windowMinutes), {
+        method: "GET",
+        credentials: "same-origin",
+        headers: { "Accept": "application/json" }
+      }).then(function (response) {
+        if (!response.ok) throw new Error("Statistics request failed");
+        return response.json();
+      }).then(function (payload) {
+        updateTotals(payload);
+        renderStatisticsChart(root, payload);
+      }).catch(function () {
+        var updated = root.querySelector("[data-statistics-updated]");
+        if (updated) {
+          updated.textContent = "Live data temporarily unavailable";
+          updated.classList.add("error");
+        }
+      }).finally(function () {
+        loading = false;
+      });
+    }
+
+    root.querySelectorAll("[data-statistics-window]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        windowMinutes = parseInt(button.getAttribute("data-statistics-window") || "60", 10);
+        root.setAttribute("data-window", String(windowMinutes));
+        root.querySelectorAll("[data-statistics-window]").forEach(function (candidate) {
+          candidate.classList.toggle("active", candidate === button);
+        });
+        load();
+      });
+    });
+
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) load();
+    });
+
+    load();
+    timer = window.setInterval(load, 5000);
+    window.addEventListener("pagehide", function () {
+      if (timer !== null) window.clearInterval(timer);
+    }, { once: true });
+  }
+
   window.addEventListener("hashchange", openHashDetails);
   openHashDetails();
   initializeGlobalAssignmentControls();
@@ -209,4 +416,5 @@
   initializeTlsSettings();
   initializeSettingsTabs();
   initializeQueryLogRefresh();
+  initializeStatisticsDashboard();
 })();
