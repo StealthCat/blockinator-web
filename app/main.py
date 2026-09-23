@@ -838,14 +838,14 @@ def _managed_lists_page(request: Request, list_type: str):
               </form>
               <a class="small-button edit-link" href="#edit-list-{int(r["id"])}">Edit & assign</a>
               {manual_manage_link}
-              <form method="post" action="/admin/lists/{int(r["id"])}/delete" onsubmit="return confirm('Delete this list and its scope assignments?')">
+              <form method="post" action="/admin/lists/{int(r["id"])}/delete" onsubmit="return confirm('Delete this {singular_label} and its scope assignments?')">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                 <button class="small-button danger">Delete</button>
               </form>
             </div>
           </div>
           <details class="list-editor" id="edit-list-{int(r["id"])}">
-            <summary><span><b>Edit list</b><small>Settings, contents and policy-target assignments</small></span><span class="editor-chevron">⌄</span></summary>
+            <summary><span><b>Edit {singular_label}</b><small>Settings, contents and policy-target assignments</small></span><span class="editor-chevron">⌄</span></summary>
             <div class="list-edit-body">
               <form method="post" action="/admin/lists/{int(r["id"])}/edit" enctype="multipart/form-data" class="form-grid list-edit-form">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
@@ -912,7 +912,7 @@ def _managed_lists_page(request: Request, list_type: str):
             <div class="form-section-head"><div><b>Initial scope assignments</b><p>Optional when the list is global; useful for scoped-only lists.</p></div></div>
             {scope_editor(set(), True)}
           </div>
-          <button class="primary-button full" type="submit">Import list</button>
+          <button class="primary-button full" type="submit">{"Import whitelist" if is_whitelist else "Import block list"}</button>
         </form>
       </section>
     </div>'''
@@ -938,9 +938,9 @@ def _get_manual_blocklist(list_id: int):
     with db.connect() as con:
         row = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
     if not row:
-        return None, "Block list not found"
+        return None, "List not found"
     if row["source_type"] != "manual":
-        return row, "Only manual block lists can be edited one domain at a time"
+        return row, "Only manual lists can be edited one domain at a time"
     return row, None
 
 
@@ -973,7 +973,7 @@ def manual_list_domains_page(
     s = require_session(request)
     blocklist, error = _get_manual_blocklist(list_id)
     if error:
-        return redirect(f"/lists#list-{list_id}", error=error)
+        return redirect("/lists", error=error)
 
     assert blocklist is not None
     base_path = _list_base_path(blocklist)
