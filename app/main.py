@@ -23,11 +23,12 @@ from .db import Database
 from .policy import PolicyEngine, normalize_hostname_pattern
 from .rdns import ReverseDnsResolver
 from .refresher import BlocklistRefresher
+from .statistics import build_statistics_snapshot
 from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.18.1"
+APP_VERSION = "1.18.2"
 
 
 class PolicyResponseTimingMiddleware:
@@ -428,6 +429,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
 
     page_descriptions = {
         "dashboard": "Monitor DNS enforcement, request activity, and policy health at a glance.",
+        "statistics": "Watch live DNS request volume, blocks, and policy response latency over time.",
         "lists": "Import, organize, and control the domain intelligence that powers your blocking policy.",
         "whitelists": "Create explicit allow rules with the same sources, schedules, assignments, and refresh controls as block lists.",
         "scopes": "Define filtering by network, exact endpoint, or reverse-DNS hostname and control each target independently.",
@@ -437,6 +439,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
     }
     page_actions = {
         "dashboard": ('/queries', 'View activity', 'arrow'),
+        "statistics": (None, None, None),
         "lists": ('#add-list', 'Import a list', 'plus'),
         "whitelists": ('#add-list', 'Add whitelist', 'plus'),
         "scopes": ('#add-scope', 'Add endpoint', 'plus'),
@@ -447,6 +450,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
 
     nav = [
         ("/", "dashboard", "Dashboard", "⌂"),
+        ("/statistics", "statistics", "Statistics", "∿"),
         ("/lists", "lists", "Block Lists", "☷"),
         ("/whitelists", "whitelists", "Whitelists", "✓"),
         ("/scopes", "scopes", "Policy Targets", "◎"),
@@ -723,6 +727,102 @@ def dashboard(request: Request):
       <div class="table-wrap"><table><thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Policy API</th><th>Response time</th><th>Policy target</th><th>Decision</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table></div>
     </section>'''
     return page(request, "Dashboard", "dashboard", body, s)
+
+@app.get("/statistics", response_class=HTMLResponse)
+def statistics_page(request: Request):
+    s = require_session(request)
+    display_timezone = system_default_timezone()
+    snapshot = build_statistics_snapshot(
+        db,
+        minutes=60,
+        timezone_name=display_timezone,
+    )
+    totals = snapshot["totals"]
+    average_response = response_time_text(
+        totals["average_response_time_ms"]
+    )
+    body = f"""
+    <section class="statistics-page" data-statistics-dashboard data-window="60">
+      <div class="statistics-live-strip">
+        <div class="statistics-live-state">
+          <span class="statistics-live-dot"></span>
+          <span><b>Live statistics</b><small>Refreshes every 5 seconds</small></span>
+        </div>
+        <div class="statistics-updated" data-statistics-updated>Connecting to live data…</div>
+      </div>
+
+      <div class="stat-grid statistics-summary-grid">
+        <article class="stat statistics-summary-card">
+          <span>Total queries</span>
+          <strong data-statistics-total="queries">{int(totals["queries"]):,}</strong>
+          <small>Queries retained in the log</small>
+        </article>
+        <article class="stat statistics-summary-card">
+          <span>Total blocks</span>
+          <strong data-statistics-total="blocks">{int(totals["blocks"]):,}</strong>
+          <small>Blocked queries retained in the log</small>
+        </article>
+        <article class="stat statistics-summary-card">
+          <span>Average response time</span>
+          <strong data-statistics-total="response">{esc(average_response)}</strong>
+          <small>Measured policy API responses</small>
+        </article>
+      </div>
+
+      <section class="panel statistics-chart-panel">
+        <div class="panel-head statistics-chart-head">
+          <div>
+            <div class="panel-kicker">Live traffic</div>
+            <h3>DNS query activity</h3>
+            <p>Queries and blocked requests per interval · times shown in {esc(display_timezone)}.</p>
+          </div>
+          <div class="statistics-window-picker" role="group" aria-label="Statistics time range">
+            <button type="button" data-statistics-window="15">15m</button>
+            <button type="button" class="active" data-statistics-window="60">1h</button>
+            <button type="button" data-statistics-window="360">6h</button>
+            <button type="button" data-statistics-window="1440">24h</button>
+          </div>
+        </div>
+
+        <div class="statistics-chart-meta">
+          <div class="statistics-legend">
+            <span><i class="statistics-legend-swatch queries"></i>Queries</span>
+            <span><i class="statistics-legend-swatch blocks"></i>Blocks</span>
+          </div>
+          <span data-statistics-bucket>1 minute intervals</span>
+        </div>
+
+        <div class="statistics-chart-shell">
+          <svg
+            class="statistics-chart"
+            data-statistics-chart
+            viewBox="0 0 1000 340"
+            preserveAspectRatio="none"
+            role="img"
+            aria-label="Live DNS query and block statistics"
+          ></svg>
+          <div class="statistics-chart-empty" data-statistics-empty hidden>
+            No query activity in this time range.
+          </div>
+        </div>
+      </section>
+    </section>
+    """
+    return page(request, "Statistics", "statistics", body, s)
+
+
+@app.get("/api/v1/statistics")
+def statistics_api(
+    request: Request,
+    minutes: int = 60,
+):
+    require_session(request)
+    return build_statistics_snapshot(
+        db,
+        minutes=minutes,
+        timezone_name=system_default_timezone(),
+    )
+
 
 @app.post("/admin/global-toggle")
 async def global_toggle(request: Request):
