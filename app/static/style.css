@@ -2267,6 +2267,13 @@ input[type=file]{padding:8px}
   background:#ff6570;
   box-shadow:0 0 8px rgba(255,101,112,.22);
 }
+.statistics-legend-swatch.response{
+  height:0;
+  border-top:2px dashed #f3bd5b;
+  border-radius:0;
+  background:transparent;
+  box-shadow:none;
+}
 .statistics-chart-shell{
   position:relative;
   overflow-x:auto;
@@ -2293,6 +2300,10 @@ input[type=file]{padding:8px}
   font-family:Inter,ui-sans-serif,system-ui,sans-serif;
 }
 .statistics-axis-time{fill:#66889b}
+.statistics-axis-response{
+  fill:#b99554;
+  font-size:9px;
+}
 .statistics-area{
   stroke:none;
   pointer-events:none;
@@ -2315,6 +2326,12 @@ input[type=file]{padding:8px}
 .statistics-series-blocks{
   stroke:#ff6570;
   stroke-width:1.7;
+}
+.statistics-series-response{
+  stroke:#f3bd5b;
+  stroke-width:1.8;
+  stroke-dasharray:6 4;
+  filter:drop-shadow(0 0 3px rgba(243,189,91,.18));
 }
 .statistics-chart-empty{
   position:absolute;
