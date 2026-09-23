@@ -171,6 +171,9 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_query_log_client ON query_log(client_ip, ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_qname ON query_log(qname, ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_matched_list ON query_log(matched_list, ts DESC);
+                CREATE INDEX IF NOT EXISTS idx_query_log_server_id ON query_log(server_id, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_query_log_scope_id ON query_log(matched_scope, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_query_log_blocked_id ON query_log(blocked, id DESC);
 
                 CREATE TABLE IF NOT EXISTS client_identities (
                     client_ip TEXT PRIMARY KEY,
@@ -471,6 +474,18 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_query_log_server "
                 "ON query_log(server_id, ts DESC)"
             )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_log_server_id "
+                "ON query_log(server_id, id DESC)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_log_scope_id "
+                "ON query_log(matched_scope, id DESC)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_log_blocked_id "
+                "ON query_log(blocked, id DESC)"
+            )
 
             # Older SQLite releases used CURRENT_TIMESTAMP's space-separated
             # representation while the asynchronous logger writes ISO-8601 UTC.
@@ -524,6 +539,7 @@ class Database:
             con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('ui_theme','dark')")
             con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('max_query_logs','25000')")
             con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('max_query_log_age_days','0')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('log_request_json','0')")
             bootstrap_timezone = os.getenv("TZ", "UTC").strip() or "UTC"
             con.execute(
                 "INSERT OR IGNORE INTO settings(`key`,value) VALUES('default_timezone',?)",
