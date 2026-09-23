@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
 import tempfile
 import time
 
@@ -364,3 +365,48 @@ def test_whitelist_ui_and_navigation_are_present():
     assert '@app.get("/whitelists", response_class=HTMLResponse)' in source
     assert 'value="{list_type}"' in source
     assert '"Whitelist: {matched_list}"' in source
+
+def test_existing_lists_migrate_to_block_type_by_default():
+    td = tempfile.TemporaryDirectory()
+    path = Path(td.name) / "legacy.db"
+
+    con = sqlite3.connect(path)
+    try:
+        con.executescript(
+            """
+            CREATE TABLE blocklists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                source_type TEXT NOT NULL DEFAULT 'manual',
+                source_url TEXT,
+                format TEXT NOT NULL DEFAULT 'auto',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                use_globally INTEGER NOT NULL DEFAULT 1,
+                refresh_minutes INTEGER NOT NULL DEFAULT 1440,
+                schedule_enabled INTEGER NOT NULL DEFAULT 0,
+                schedule_days TEXT NOT NULL DEFAULT '0,1,2,3,4,5,6',
+                schedule_start TEXT NOT NULL DEFAULT '00:00',
+                schedule_end TEXT NOT NULL DEFAULT '00:00',
+                schedule_timezone TEXT NOT NULL DEFAULT 'UTC',
+                last_updated TEXT,
+                last_refresh_attempt TEXT,
+                last_error TEXT,
+                entry_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO blocklists(name) VALUES('existing-block-list');
+            """
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    db = Database(str(path))
+    with db.connect() as con:
+        row = con.execute(
+            "SELECT list_type FROM blocklists WHERE name='existing-block-list'"
+        ).fetchone()
+
+    assert row["list_type"] == "block"
+    td.cleanup()
+
