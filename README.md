@@ -795,9 +795,15 @@ Selected feedback from the r/technitium community:
 > Hard pass.”  
 > — u/Resistant4375
 
+> “AI Slop.”  
+> — Anonymous
+
 > “So, built a $20 a month app.”  
 > — u/Superb_Raccoon
 
 > “Thanks ChatGPT!”  
 > — u/Key_Pace_2496
+
+> “it deserves to be called slop. I’d argue that “slop” is too kind”  
+> — Anonymous
 
