@@ -1026,7 +1026,7 @@ def manual_list_domains_page(
     )
     body = f'''<div class="manual-domain-page">
       <section class="manual-domain-heading">
-        <a class="back-link" href="{base_path}#list-{list_id}">← Back to Block Lists</a>
+        <a class="back-link" href="{base_path}#list-{list_id}">← Back to {"Whitelists" if list_label == "whitelist" else "Block Lists"}</a>
         <div class="manual-domain-title-row">
           <div>
             <div class="panel-kicker">Manual {esc(list_label)}</div>
@@ -1105,13 +1105,15 @@ async def add_manual_list_domain(list_id: int, request: Request):
     _, form = await require_post_session(request)
     blocklist, error = _get_manual_blocklist(list_id)
     if error:
-        return redirect(f"/lists#list-{list_id}", error=error)
+        return redirect("/lists", error=error)
 
+    assert blocklist is not None
+    base_path = _list_base_path(blocklist)
     raw_domain = str(form.get("domain", ""))
     domain = normalize_domain(raw_domain)
     if not domain:
         return redirect(
-            f"/lists/{list_id}/domains",
+            f"{base_path}/{list_id}/domains",
             error="Enter a valid domain such as example.com",
         )
 
@@ -1125,11 +1127,11 @@ async def add_manual_list_domain(list_id: int, request: Request):
     engine.reload()
     if cur.rowcount == 0:
         return redirect(
-            f"/lists/{list_id}/domains?q={quote(domain)}",
+            f"{base_path}/{list_id}/domains?q={quote(domain)}",
             notice=f"{domain} is already in this list",
         )
     return redirect(
-        f"/lists/{list_id}/domains?q={quote(domain)}",
+        f"{base_path}/{list_id}/domains?q={quote(domain)}",
         notice=f"Added {domain}; manual list now contains {count:,} domains",
     )
 
@@ -1139,8 +1141,10 @@ async def remove_manual_list_domain(list_id: int, request: Request):
     _, form = await require_post_session(request)
     blocklist, error = _get_manual_blocklist(list_id)
     if error:
-        return redirect(f"/lists#list-{list_id}", error=error)
+        return redirect("/lists", error=error)
 
+    assert blocklist is not None
+    base_path = _list_base_path(blocklist)
     domain = normalize_domain(str(form.get("domain", "")))
     return_q = str(form.get("return_q", "")).strip()
     try:
@@ -1148,7 +1152,7 @@ async def remove_manual_list_domain(list_id: int, request: Request):
     except (TypeError, ValueError):
         return_page = 1
 
-    return_path = f"/lists/{list_id}/domains?page_num={return_page}"
+    return_path = f"{base_path}/{list_id}/domains?page_num={return_page}"
     if return_q:
         return_path += "&q=" + quote(return_q)
 
