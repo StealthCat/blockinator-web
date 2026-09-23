@@ -2346,3 +2346,133 @@ input[type=file]{padding:8px}
     flex:1;
   }
 }
+
+
+/* =========================================================
+   Blockinator 1.18.3 — dedicated list editors
+   ========================================================= */
+.managed-list-edit-page{
+  display:grid;
+  gap:16px;
+}
+.managed-list-edit-heading{
+  padding:20px 22px;
+  border:1px solid var(--border-soft);
+  border-radius:14px;
+  background:
+    linear-gradient(145deg,rgba(13,34,48,.96),rgba(8,23,34,.96));
+  box-shadow:var(--shadow-soft);
+}
+.managed-list-edit-heading .back-link{
+  display:inline-flex;
+  margin-bottom:16px;
+}
+.managed-list-edit-title-row{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:24px;
+}
+.managed-list-edit-title-row>div:first-child{
+  min-width:0;
+}
+.managed-list-edit-title-row h2{
+  margin:4px 0 6px;
+  color:var(--text-strong);
+  font-size:27px;
+  letter-spacing:-.035em;
+}
+.managed-list-edit-title-row p{
+  max-width:720px;
+  margin:0;
+  overflow:hidden;
+  color:var(--text-muted);
+  font-size:12px;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.managed-list-edit-summary{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(135px,1fr));
+  gap:8px;
+  min-width:min(100%,360px);
+}
+.managed-list-edit-summary>span{
+  display:grid;
+  gap:3px;
+  padding:10px 11px;
+  border:1px solid rgba(81,146,176,.14);
+  border-radius:10px;
+  background:rgba(6,20,30,.46);
+}
+.managed-list-edit-summary b{
+  overflow:hidden;
+  color:#dceef7;
+  font-size:11px;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.managed-list-edit-summary small{
+  overflow:hidden;
+  color:#5f7f92;
+  font-size:9px;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.managed-list-edit-panel{
+  margin:0;
+  padding:20px 22px 22px;
+}
+.managed-list-edit-panel-head{
+  margin-bottom:18px;
+}
+.managed-list-edit-form{
+  max-width:1180px;
+}
+.managed-list-edit-form .scope-assignment-grid{
+  grid-template-columns:repeat(3,minmax(0,1fr));
+}
+.managed-list-edit-form .scope-group{
+  max-height:360px;
+  overflow:auto;
+}
+.managed-list-edit-actions{
+  position:sticky;
+  z-index:8;
+  bottom:12px;
+  margin:4px -8px -8px;
+  padding:12px;
+  border:1px solid rgba(84,151,181,.15);
+  border-radius:11px;
+  background:rgba(7,20,30,.94);
+  box-shadow:0 12px 30px rgba(0,0,0,.24);
+  backdrop-filter:blur(10px);
+}
+@media(max-width:1000px){
+  .managed-list-edit-title-row{
+    flex-direction:column;
+  }
+  .managed-list-edit-summary{
+    width:100%;
+  }
+  .managed-list-edit-form .scope-assignment-grid{
+    grid-template-columns:1fr;
+  }
+  .managed-list-edit-form .scope-group{
+    max-height:none;
+  }
+}
+@media(max-width:760px){
+  .managed-list-edit-heading,
+  .managed-list-edit-panel{
+    padding-left:14px;
+    padding-right:14px;
+  }
+  .managed-list-edit-summary{
+    grid-template-columns:1fr 1fr;
+  }
+  .managed-list-edit-actions{
+    position:static;
+    margin:4px 0 0;
+  }
+}
