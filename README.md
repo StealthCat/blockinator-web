@@ -4,9 +4,9 @@
 
 # Blockinator
 
-**Blockinator** is a self-hosted DNS policy and block-list management service designed to work with DNS servers such as Technitium DNS Server.
+**Blockinator** is a self-hosted DNS policy, block-list, and whitelist management service designed to work with DNS servers such as Technitium DNS Server.
 
-It accepts DNS query metadata through an authenticated policy API, determines which policy applies to the client, evaluates configured block lists, and returns an allow/block decision. A responsive web console provides policy management, block-list imports, schedules, query logging, security controls, and managed HTTPS.
+It accepts DNS query metadata through an authenticated policy API, determines which policy applies to the client, evaluates configured whitelists and block lists, and returns an allow/block decision. A responsive web console provides policy management, list imports, schedules, query logging, security controls, and managed HTTPS.
 
 Blockinator is packaged for Docker Compose, uses SQLite for persistent configuration and history, and automatically migrates existing databases as features are added.
 
@@ -22,9 +22,9 @@ Blockinator can apply policy by:
 - **Endpoint** — one exact IPv4 or IPv6 client address.
 - **Reverse-DNS hostname** — exact PTR names such as `desktop-01.home.arpa`.
 - **Reverse-DNS wildcard** — suffix patterns such as `*.kids.home.arpa`.
-- **Global policy** — settings and block lists that apply beyond individually defined targets.
+- **Global policy** — settings, whitelists, and block lists that apply beyond individually defined targets.
 
-A dual-stack Network target shares one name, state, schedule, and block-list assignment set across both address families.
+A dual-stack Network target shares one name, state, schedule, and list assignment set across both address families.
 
 ### Policy precedence
 
@@ -38,20 +38,20 @@ Client policy state is evaluated in this order:
 
 A paused matching target permits the query rather than continuing to a lower-priority target.
 
-Block-list assignments are **additive**. The active list set can contain:
+List assignments are **additive**. The active policy set can contain:
 
-- enabled Global lists;
+- enabled Global block lists and whitelists;
 - lists assigned to the matching Network;
 - lists assigned to the matching reverse-DNS hostname; and
 - lists assigned to the matching Endpoint.
 
-All active lists are still subject to their own enabled state and schedule.
+All active lists are still subject to their own enabled state and schedule. Within the resulting active set, **whitelist matches are evaluated before block-list matches**. A whitelist match explicitly allows the query even when the same domain also appears in one or more active block lists. If no whitelist matches, normal block-list evaluation continues.
 
 ### Unmatched clients
 
 Under **System Settings → DNS & logs**, Blockinator provides two controls for clients that do not match any active policy target:
 
-- **Global block-list reach**
+- **Global list reach**
   - **All clients** — Global lists are evaluated for every client.
   - **Matched policy targets only** — Global lists are evaluated only when an active Network, Endpoint, or hostname target matched.
 - **Default action**
@@ -60,11 +60,11 @@ Under **System Settings → DNS & logs**, Blockinator provides two controls for 
 
 This makes it possible to run either an open-by-default or closed-by-default policy model.
 
-## Block-list management
+## Block-list and whitelist management
 
-Blockinator supports multiple independent block lists with their own source, parser, assignments, state, and schedule.
+Blockinator supports multiple independent block lists and whitelists with their own source, parser, assignments, state, and schedule. Whitelists use the same management features as block lists but produce an explicit allow decision when matched.
 
-Domains are stored in a normalized global domain table. If the same domain appears in multiple lists, the domain text is stored once and each list keeps a lightweight membership reference to that shared entry. Removing or refreshing one list does not remove the shared domain until its final list membership is gone.
+Domains are stored in a normalized global domain table. If the same domain appears in multiple block lists, whitelists, or both, the domain text is stored once and each list keeps a lightweight membership reference to that shared entry. Removing or refreshing one list does not remove the shared domain until its final list membership is gone.
 
 ### Sources
 
@@ -95,8 +95,9 @@ Each list can be:
 
 Assignments can be managed from either side:
 
-- **Block Lists → Edit & assign** shows every target for a selected list.
-- **Policy Targets → Edit & assign** shows every list for a selected target.
+- **Block Lists → Edit & assign** shows every target for a selected block list.
+- **Whitelists → Edit & assign** shows every target for a selected whitelist.
+- **Policy Targets → Edit & assign** shows both block lists and whitelists for a selected target.
 
 Global lists cannot be redundantly assigned to individual targets while **Apply globally** is enabled.
 
@@ -139,6 +140,7 @@ BLOCKLIST_REFRESH_POLL_SECONDS=30
 Recurring weekly schedules can be applied independently to:
 
 - Block Lists;
+- Whitelists;
 - Networks;
 - Endpoints; and
 - Reverse-DNS hostname targets.
@@ -204,7 +206,7 @@ The Dashboard shows recent DNS activity, and the full Query Log records:
 - allow/block result;
 - block reason;
 - matched policy target;
-- matched block list; and
+- matched policy list; and
 - the original request payload for detail inspection.
 
 Allowed queries intentionally leave the **Reason/Match** display blank. Blocked queries show the relevant blocking reason or list.
@@ -215,7 +217,7 @@ The Query Log supports filtering by information including:
 
 - querying DNS server;
 - client IP or partial/full PTR hostname;
-- matched block list; and
+- matched policy list; and
 - matched policy target.
 
 Policy-target matching is exact, while client hostname filtering supports partial names.
@@ -516,6 +518,22 @@ Example blocked response:
   "response_mode": "nxdomain"
 }
 ```
+
+Example whitelist response:
+
+```json
+{
+  "block": false,
+  "reason": "whitelist_match",
+  "matched_scope": "Guest Wi-Fi",
+  "matched_list": "Required Services",
+  "matched_list_type": "whitelist",
+  "matched_domain": "updates.example.com",
+  "response_mode": "nxdomain"
+}
+```
+
+Whitelist matches take precedence over block-list matches within the same active policy set.
 
 When multiple DNS questions are supplied, Blockinator evaluates them in order and returns the first blocking decision. If none block, the first allow decision is returned.
 
