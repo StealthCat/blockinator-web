@@ -489,7 +489,12 @@ def api_key_ok(raw: str | None):
         raise HTTPException(status_code=401, detail="invalid API key")
     return info
 
-def import_list(list_id: int, text: str, fmt: str):
+def import_list(
+    list_id: int,
+    text: str,
+    fmt: str,
+    reload_policy: bool = True,
+):
     with db.connect() as con:
         row = con.execute(
             "SELECT list_type FROM blocklists WHERE id=?",
@@ -514,7 +519,8 @@ def import_list(list_id: int, text: str, fmt: str):
             (len(parsed.domains), list_id),
         )
         con.execute("COMMIT")
-    engine.reload()
+    if reload_policy:
+        engine.reload()
     return len(parsed.domains), parsed.ignored
 
 @app.get("/healthz")
@@ -1262,7 +1268,7 @@ async def add_list(request: Request):
         source_type = "upload"
     elif source_url:
         try:
-            content = fetch_url(source_url)
+            content = await run_in_threadpool(fetch_url, source_url)
         except Exception as e:
             return redirect(base_path, error=f"Could not fetch list URL: {e}")
         source_type = "url"
@@ -1291,7 +1297,13 @@ async def add_list(request: Request):
             return redirect(base_path, error=str(e))
 
     try:
-        count, ignored = import_list(list_id, content, format_name)
+        count, ignored = await run_in_threadpool(
+            import_list,
+            list_id,
+            content,
+            format_name,
+            False,
+        )
         with db.connect() as con:
             assigned = _save_list_scope_assignments(con, list_id, scope_ids)
     except Exception as e:
@@ -1354,7 +1366,7 @@ async def edit_list(list_id: int, request: Request):
                     f"{base_path}#edit-list-{list_id}",
                     error="A source URL is required to refresh this list",
                 )
-            replacement_content = fetch_url(source_url)
+            replacement_content = await run_in_threadpool(fetch_url, source_url)
             source_type = "url"
         elif getattr(replacement_file, "filename", None):
             replacement_content = (await replacement_file.read()).decode("utf-8", errors="replace")
@@ -1407,7 +1419,13 @@ async def edit_list(list_id: int, request: Request):
         if not replacement_content.strip():
             return redirect(f"{base_path}#edit-list-{list_id}", error="Replacement list content is empty")
         try:
-            count, ignored = import_list(list_id, replacement_content, format_name)
+            count, ignored = await run_in_threadpool(
+                import_list,
+                list_id,
+                replacement_content,
+                format_name,
+                False,
+            )
             replaced_notice = f"; replaced contents with {count:,} entries ({ignored:,} ignored)"
         except Exception as e:
             return redirect(
