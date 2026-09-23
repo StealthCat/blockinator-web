@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.18.2 — Live statistics dashboard
+
+- Added a dedicated **Statistics** page to the main navigation with a Technitium-inspired live monitoring layout.
+- Added headline totals for retained DNS queries, retained blocked queries, and average measured policy response time.
+- Added a dependency-free SVG line chart showing query and block volume with selectable 15-minute, 1-hour, 6-hour, and 24-hour windows.
+- Live statistics refresh every five seconds without reloading the page and pause background polling while the page is hidden.
+- Added an authenticated read-only statistics API used by the dashboard.
+- Long windows automatically use larger aggregation buckets to keep the chart efficient and readable.
+- Statistics are derived from retained query-log history, so configured query-log retention limits also define the available historical statistics.
+- Added regression coverage for statistics aggregation, window sizing, navigation, and live chart wiring.
+- Updated the application version to 1.18.2.
+
 ## 1.18.1 — Policy response-time logging
 
 - Added end-to-end response-time measurement for policy decision requests.
