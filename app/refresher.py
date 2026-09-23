@@ -188,7 +188,7 @@ class BlocklistRefresher:
             False,
         )
 
-    def _metadata_update_with_retry(    def _metadata_update_with_retry(
+    def _metadata_update_with_retry(
         self,
         list_id: int,
         source_url: str,
