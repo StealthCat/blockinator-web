@@ -164,6 +164,7 @@ class Database:
                     matched_scope TEXT,
                     matched_list TEXT,
                     matched_list_type TEXT,
+                    response_time_ms REAL,
                     request_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_query_log_ts ON query_log(ts DESC);
@@ -452,6 +453,8 @@ class Database:
                 con.execute("ALTER TABLE query_log ADD COLUMN policy_scheme TEXT")
             if "matched_list_type" not in query_log_columns:
                 con.execute("ALTER TABLE query_log ADD COLUMN matched_list_type TEXT")
+            if "response_time_ms" not in query_log_columns:
+                con.execute("ALTER TABLE query_log ADD COLUMN response_time_ms REAL")
             con.execute(
                 "CREATE INDEX IF NOT EXISTS idx_query_log_client_name "
                 "ON query_log(client_name, ts DESC)"
