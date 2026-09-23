@@ -131,7 +131,7 @@ class BlocklistRefresher:
             text = self.fetcher(source_url)
             parsed = parse_blocklist(text, list_format, list_type)
             if not parsed.domains:
-                raise ValueError("refreshed block list contained no usable domains")
+                raise ValueError("refreshed list contained no usable domains")
 
             entry_rows = [(list_id, domain) for domain in parsed.domains]
             write_delays = (0.05, 0.15, 0.45)
@@ -226,7 +226,7 @@ class BlocklistRefresher:
                           AND source_type='url'
                           AND source_url=?
                           AND format=?
-                      AND list_type=?
+                          AND list_type=?
                         """,
                         (message[:2000], list_id, source_url, list_format, list_type),
                     )
