@@ -1435,8 +1435,6 @@ async def delete_list(list_id: int, request: Request):
     return redirect(base_path, notice=f"{label.title()} deleted")
 
 
-def _scope_network_values
-
 def _scope_network_values(scope, network_targets: dict[int, dict[int, str]]) -> tuple[str, str]:
     values = network_targets.get(int(scope["id"]), {})
     ipv4 = str(values.get(4, "") or "")
