@@ -78,7 +78,7 @@ class AuthManager:
         """One-time migration/bootstrap from legacy environment variables.
 
         Existing database credentials always win. This keeps v1.2 upgrades working,
-        while all subsequent credential changes live exclusively in SQLite.
+        while all subsequent credential changes live exclusively in the configured database.
         """
         with self.db.connect() as con:
             user_count = int(con.execute("SELECT COUNT(*) c FROM admin_users").fetchone()["c"])
