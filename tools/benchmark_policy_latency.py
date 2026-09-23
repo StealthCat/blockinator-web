@@ -6,19 +6,31 @@ import json
 import math
 import os
 import statistics
+import threading
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class Result:
     label: str
+    concurrency: int
     samples_ms: tuple[float, ...]
+    elapsed_seconds: float
 
     @property
     def mean(self) -> float:
         return statistics.fmean(self.samples_ms)
+
+    @property
+    def requests_per_second(self) -> float:
+        return (
+            len(self.samples_ms) / self.elapsed_seconds
+            if self.elapsed_seconds > 0
+            else 0.0
+        )
 
     def percentile(self, percentile: float) -> float:
         values = sorted(self.samples_ms)
@@ -35,7 +47,9 @@ class Result:
     def as_dict(self) -> dict[str, float | int | str]:
         return {
             "label": self.label,
+            "concurrency": self.concurrency,
             "requests": len(self.samples_ms),
+            "requests_per_second": round(self.requests_per_second, 2),
             "mean_ms": round(self.mean, 4),
             "p50_ms": round(self.percentile(0.50), 4),
             "p95_ms": round(self.percentile(0.95), 4),
@@ -51,7 +65,26 @@ def connection_for(url: str) -> tuple[http.client.HTTPConnection, str]:
     path = parsed.path or "/api/v1/decision"
     if parsed.query:
         path += "?" + parsed.query
-    return http.client.HTTPConnection(parsed.hostname, port, timeout=5), path
+    return http.client.HTTPConnection(parsed.hostname, port, timeout=10), path
+
+
+def request_once(
+    connection: http.client.HTTPConnection,
+    path: str,
+    headers: dict[str, str],
+    payload: bytes,
+) -> float:
+    start = time.perf_counter_ns()
+    connection.request("POST", path, body=payload, headers=headers)
+    response = connection.getresponse()
+    body = response.read()
+    elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
+    if response.status != 200:
+        raise RuntimeError(
+            f"HTTP {response.status}: "
+            + body.decode("utf-8", errors="replace")[:300]
+        )
+    return elapsed_ms
 
 
 def run_target(
@@ -61,46 +94,78 @@ def run_target(
     payload: bytes,
     warmup: int,
     requests: int,
+    concurrency: int,
 ) -> Result:
-    connection, path = connection_for(url)
     headers = {
         "Content-Type": "application/json",
         "X-Api-Key": api_key,
         "Connection": "keep-alive",
     }
 
+    warm_connection, warm_path = connection_for(url)
     try:
         for _ in range(warmup):
-            connection.request("POST", path, body=payload, headers=headers)
-            response = connection.getresponse()
-            body = response.read()
-            if response.status != 200:
-                raise RuntimeError(
-                    f"{label} warmup returned HTTP {response.status}: "
-                    + body.decode("utf-8", errors="replace")[:300]
-                )
-
-        samples: list[float] = []
-        for _ in range(requests):
-            start = time.perf_counter_ns()
-            connection.request("POST", path, body=payload, headers=headers)
-            response = connection.getresponse()
-            body = response.read()
-            elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
-            if response.status != 200:
-                raise RuntimeError(
-                    f"{label} returned HTTP {response.status}: "
-                    + body.decode("utf-8", errors="replace")[:300]
-                )
-            samples.append(elapsed_ms)
-        return Result(label, tuple(samples))
+            request_once(warm_connection, warm_path, headers, payload)
     finally:
-        connection.close()
+        warm_connection.close()
+
+    worker_counts = [
+        requests // concurrency + (1 if worker < requests % concurrency else 0)
+        for worker in range(concurrency)
+    ]
+    worker_counts = [count for count in worker_counts if count > 0]
+    barrier = threading.Barrier(len(worker_counts))
+
+    def worker_run(count: int) -> list[float]:
+        connection, path = connection_for(url)
+        try:
+            barrier.wait(timeout=10)
+            return [
+                request_once(connection, path, headers, payload)
+                for _ in range(count)
+            ]
+        finally:
+            connection.close()
+
+    started = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=len(worker_counts)) as executor:
+        samples: list[float] = []
+        for values in executor.map(worker_run, worker_counts):
+            samples.extend(values)
+    elapsed = time.perf_counter() - started
+
+    return Result(
+        label=label,
+        concurrency=concurrency,
+        samples_ms=tuple(samples),
+        elapsed_seconds=elapsed,
+    )
+
+
+def parse_levels(value: str) -> list[int]:
+    levels: list[int] = []
+    for raw in value.split(","):
+        try:
+            level = int(raw.strip())
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                "concurrency levels must be comma-separated integers"
+            ) from exc
+        if level < 1:
+            raise argparse.ArgumentTypeError(
+                "concurrency levels must be >= 1"
+            )
+        if level not in levels:
+            levels.append(level)
+    return levels
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Compare Blockinator decision latency direct to Uvicorn vs through Caddy."
+        description=(
+            "Measure Blockinator decision throughput/latency at multiple "
+            "concurrency levels, direct to Uvicorn and through Caddy."
+        )
     )
     parser.add_argument(
         "--direct",
@@ -114,8 +179,19 @@ def main() -> int:
         "--api-key",
         default=os.getenv("POLICY_API_KEY", ""),
     )
-    parser.add_argument("--requests", type=int, default=200)
+    parser.add_argument("--requests", type=int, default=1000)
     parser.add_argument("--warmup", type=int, default=20)
+    parser.add_argument(
+        "--concurrency",
+        type=parse_levels,
+        default=parse_levels("1,2,4,8,16,32"),
+        help="comma-separated concurrency levels",
+    )
+    parser.add_argument(
+        "--qname",
+        default="benchmark.invalid",
+        help="domain to evaluate; use a blocked domain to profile the match path",
+    )
     args = parser.parse_args()
 
     if not args.api_key:
@@ -131,7 +207,7 @@ def main() -> int:
             "dns": {
                 "questions": [
                     {
-                        "name": "benchmark.invalid",
+                        "name": args.qname,
                         "type": "A",
                         "class": "IN",
                     }
@@ -141,44 +217,24 @@ def main() -> int:
         separators=(",", ":"),
     ).encode("utf-8")
 
-    direct = run_target(
-        "direct",
-        args.direct,
-        args.api_key,
-        payload,
-        args.warmup,
-        args.requests,
-    )
-    proxied = run_target(
-        "caddy",
-        args.proxy,
-        args.api_key,
-        payload,
-        args.warmup,
-        args.requests,
-    )
-
-    direct_stats = direct.as_dict()
-    proxied_stats = proxied.as_dict()
-    overhead = {
-        "mean_ms": round(proxied.mean - direct.mean, 4),
-        "p50_ms": round(
-            proxied.percentile(0.50) - direct.percentile(0.50), 4
-        ),
-        "p95_ms": round(
-            proxied.percentile(0.95) - direct.percentile(0.95), 4
-        ),
-        "p99_ms": round(
-            proxied.percentile(0.99) - direct.percentile(0.99), 4
-        ),
+    results: dict[str, list[dict[str, float | int | str]]] = {
+        "direct": [],
+        "caddy": [],
     }
+    for concurrency in args.concurrency:
+        for label, url in (("direct", args.direct), ("caddy", args.proxy)):
+            result = run_target(
+                label,
+                url,
+                args.api_key,
+                payload,
+                args.warmup,
+                args.requests,
+                concurrency,
+            )
+            results[label].append(result.as_dict())
 
-    result = {
-        "direct": direct_stats,
-        "caddy": proxied_stats,
-        "proxy_overhead": overhead,
-    }
-    print(json.dumps(result, indent=2, sort_keys=True))
+    print(json.dumps(results, indent=2, sort_keys=True))
     return 0
 
 
