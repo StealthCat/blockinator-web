@@ -2511,7 +2511,7 @@ def settings_page(request: Request):
           <p class="panel-help">Current application, proxy, and storage information for this Blockinator instance.</p>
           <div class="info-grid">
             <div><span>Version</span><b>{APP_VERSION}</b></div>
-            <div><span>Database</span><b class="mono">{esc(db.path)}</b></div>
+            <div><span>Database</span><b class="mono">{esc(db.backend_summary())}</b></div>
             <div><span>Decision API</span><b class="mono">/api/v1/decision</b></div>
             <div><span>Service</span><b>Blockinator</b></div>
             <div><span>Log age limit</span><b>{age_summary}</b></div>
