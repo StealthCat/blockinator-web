@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import ipaddress
 import os
 import re
@@ -34,10 +35,11 @@ def normalize_domain(value: str) -> str | None:
         value = value[2:]
     if not value or value == "localhost":
         return None
-    try:
-        value = value.encode("idna").decode("ascii")
-    except UnicodeError:
-        return None
+    if not value.isascii():
+        try:
+            value = value.encode("idna").decode("ascii")
+        except UnicodeError:
+            return None
     if not DOMAIN_RE.match(value):
         return None
     # A bare TLD is almost always a malformed list entry and is dangerous to block.
@@ -67,7 +69,7 @@ def parse_blocklist(
 ) -> ParseResult:
     domains: set[str] = set()
     ignored = 0
-    for raw in text.splitlines():
+    for raw in io.StringIO(text):
         line = raw.strip()
         if not line or line.startswith(("#", "!", ";", "[")):
             continue
