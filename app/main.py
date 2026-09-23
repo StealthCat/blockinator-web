@@ -1534,7 +1534,7 @@ def manual_list_domains_page(
     )
     body = f'''<div class="manual-domain-page">
       <section class="manual-domain-heading">
-        <a class="back-link" href="{base_path}#list-{list_id}">← Back to {"Whitelists" if list_label == "whitelist" else "Block Lists"}</a>
+        <a class="back-link" href="{base_path}/{list_id}/edit">← Back to edit {"Whitelist" if list_label == "whitelist" else "Block List"}</a>
         <div class="manual-domain-title-row">
           <div>
             <div class="panel-kicker">Manual {esc(list_label)}</div>
