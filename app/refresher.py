@@ -54,6 +54,15 @@ class BlocklistRefresher:
         self._run_lock = threading.Lock()
         self._write_lock = threading.Lock()
 
+    def _reload_policy_lists(self) -> None:
+        reload_lists = getattr(self.engine, "reload_lists", None)
+        if callable(reload_lists):
+            reload_lists()
+        else:
+            # Compatibility for tests and external ReloadablePolicy adapters
+            # that implement only the original full reload contract.
+            self.engine.reload()
+
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
@@ -115,7 +124,7 @@ class BlocklistRefresher:
                     )
 
             if any(result.changed for result in results):
-                self.engine.reload_lists()
+                self._reload_policy_lists()
             return results
         finally:
             self._run_lock.release()
@@ -438,7 +447,7 @@ class BlocklistRefresher:
                 return RefreshResult(list_id=list_id, refreshed=False)
 
             if membership_changed and reload_engine:
-                self.engine.reload_lists()
+                self._reload_policy_lists()
             return RefreshResult(
                 list_id=list_id,
                 refreshed=True,
