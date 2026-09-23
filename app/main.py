@@ -505,7 +505,7 @@ def import_list(
         list_type = "block"
     parsed = parse_blocklist(text, fmt, list_type)
     with db.connect() as con:
-        con.execute("BEGIN")
+        con.execute("BEGIN IMMEDIATE")
         db.replace_list_domains(con, list_id, parsed.domains)
         con.execute(
             """
