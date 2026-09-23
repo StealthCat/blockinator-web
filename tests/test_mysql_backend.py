@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import os
 import time
 
@@ -10,6 +11,7 @@ from app.db import Database
 from app.mysql_backend import MySQLConnection
 from app.policy import PolicyEngine
 from app.refresher import BlocklistRefresher
+from app.statistics import build_statistics_snapshot
 
 
 pytestmark = pytest.mark.skipif(
@@ -263,3 +265,52 @@ def test_mysql_translation_covers_runtime_sql():
     )
     assert "datetime(" not in translated.lower()
     assert "ts < %s" in translated
+
+
+def test_mysql_statistics_snapshot():
+    db = Database()
+    _clear_database(db)
+
+    with db.connect() as con:
+        con.executemany(
+            """
+            INSERT INTO query_log(
+                ts,server_id,client_ip,qname,blocked,response_time_ms
+            ) VALUES(?,?,?,?,?,?)
+            """,
+            [
+                (
+                    "2026-09-23T17:59:05+00:00",
+                    "mysql-stats",
+                    "192.0.2.10",
+                    "blocked.example",
+                    1,
+                    2.5,
+                ),
+                (
+                    "2026-09-23T17:59:35+00:00",
+                    "mysql-stats",
+                    "192.0.2.11",
+                    "allowed.example",
+                    0,
+                    3.5,
+                ),
+            ],
+        )
+
+    snapshot = build_statistics_snapshot(
+        db,
+        minutes=60,
+        timezone_name="UTC",
+        now_utc=datetime(2026, 9, 23, 18, 0, tzinfo=timezone.utc),
+    )
+
+    assert snapshot["totals"]["queries"] == 2
+    assert snapshot["totals"]["blocks"] == 1
+    assert snapshot["totals"]["average_response_time_ms"] == 3.0
+    point = next(
+        row for row in snapshot["points"]
+        if row["timestamp"].startswith("2026-09-23T17:59")
+    )
+    assert point["queries"] == 2
+    assert point["blocks"] == 1
