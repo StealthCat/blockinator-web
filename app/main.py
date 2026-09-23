@@ -26,7 +26,7 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.15.10"
+APP_VERSION = "1.16.0"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -366,6 +366,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
     page_descriptions = {
         "dashboard": "Monitor DNS enforcement, request activity, and policy health at a glance.",
         "lists": "Import, organize, and control the domain intelligence that powers your blocking policy.",
+        "whitelists": "Create explicit allow rules with the same sources, schedules, assignments, and refresh controls as block lists.",
         "scopes": "Define filtering by network, exact endpoint, or reverse-DNS hostname and control each target independently.",
         "queries": "Inspect DNS decisions, troubleshoot policy matches, and follow activity across your clients.",
         "security": "Manage administrator access and the API credentials used by connected DNS resolvers.",
@@ -374,6 +375,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
     page_actions = {
         "dashboard": ('/queries', 'View activity', 'arrow'),
         "lists": ('#add-list', 'Import a list', 'plus'),
+        "whitelists": ('#add-list', 'Add whitelist', 'plus'),
         "scopes": ('#add-scope', 'Add endpoint', 'plus'),
         "queries": ('/queries', 'Reset filters', 'refresh'),
         "security": ('#create-key', 'Create API key', 'plus'),
@@ -383,6 +385,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
     nav = [
         ("/", "dashboard", "Dashboard", "⌂"),
         ("/lists", "lists", "Block Lists", "☷"),
+        ("/whitelists", "whitelists", "Whitelists", "✓"),
         ("/scopes", "scopes", "Policy Targets", "◎"),
         ("/queries", "queries", "Query Log", "≡"),
     ]
@@ -476,7 +479,15 @@ def api_key_ok(raw: str | None):
     return info
 
 def import_list(list_id: int, text: str, fmt: str):
-    parsed = parse_blocklist(text, fmt)
+    with db.connect() as con:
+        row = con.execute(
+            "SELECT list_type FROM blocklists WHERE id=?",
+            (list_id,),
+        ).fetchone()
+    list_type = str(row["list_type"] or "block") if row else "block"
+    if list_type not in {"block", "whitelist"}:
+        list_type = "block"
+    parsed = parse_blocklist(text, fmt, list_type)
     with db.connect() as con:
         con.execute("BEGIN")
         con.execute("DELETE FROM block_entries WHERE blocklist_id=?", (list_id,))
@@ -525,6 +536,7 @@ def decision(
         "reason": d.reason,
         "matched_scope": d.matched_scope,
         "matched_list": d.matched_list,
+        "matched_list_type": d.matched_list_type,
         "matched_domain": d.matched_domain,
         "response_mode": d.response_mode,
     }
