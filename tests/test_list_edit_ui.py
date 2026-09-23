@@ -68,3 +68,15 @@ def test_list_editor_uses_theme_aware_palette():
     assert '[data-theme="dark"] .list-edit-card' in css
     assert '[data-theme="dark"] .list-edit-section-nav' in css
     assert '[data-theme="light"] .main:has(.managed-list-edit-page)' not in css
+
+def test_manual_domain_add_returns_to_unfiltered_full_list():
+    source = Path("app/main.py").read_text(encoding="utf-8")
+    start = source.index("async def add_manual_list_domain")
+    end = source.index('@app.post("/admin/lists/{list_id}/domains/remove")', start)
+    handler = source[start:end]
+
+    assert 'f"{base_path}/{list_id}/domains",' in handler
+    assert 'notice=f"Added {domain}; manual list now contains {count:,} domains"' in handler
+    assert 'f"{base_path}/{list_id}/domains?q={quote(domain)}",' in handler
+    assert handler.count('f"{base_path}/{list_id}/domains?q={quote(domain)}",') == 1
+

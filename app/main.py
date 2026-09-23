@@ -1636,7 +1636,7 @@ async def add_manual_list_domain(list_id: int, request: Request):
             notice=f"{domain} is already in this list",
         )
     return redirect(
-        f"{base_path}/{list_id}/domains?q={quote(domain)}",
+        f"{base_path}/{list_id}/domains",
         notice=f"Added {domain}; manual list now contains {count:,} domains",
     )
 
