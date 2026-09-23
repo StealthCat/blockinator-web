@@ -199,6 +199,22 @@ RDNS_NAMESERVERS=192.168.1.2,192.168.1.3
 
 Reverse-DNS identity is only as trustworthy as the resolver and reverse zones providing it, so hostname policy is best suited to networks where you control PTR data.
 
+## Live statistics
+
+The **Statistics** page provides a live operational view of policy traffic in the same compact monitoring style used by DNS administration consoles such as Technitium.
+
+It includes:
+
+- total retained DNS queries;
+- total retained blocked queries;
+- average measured policy API response time;
+- a live line chart of queries and blocks per interval; and
+- selectable **15 minute**, **1 hour**, **6 hour**, and **24 hour** windows.
+
+The chart refreshes every five seconds without reloading the page. Longer ranges automatically use larger aggregation intervals so browser rendering and database work remain bounded.
+
+Statistics are calculated from the retained Query Log. If query-log row or age retention removes older records, those records no longer contribute to totals or chart history. Response-time averages include only requests recorded after response-time measurement was introduced.
+
 ## Query logging and Dashboard
 
 DNS decisions are written asynchronously so logging does not block the policy path.
