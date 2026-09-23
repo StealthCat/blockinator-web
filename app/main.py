@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 from datetime import datetime, time as dt_time, timezone
+from time import perf_counter_ns
 from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -26,7 +27,46 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.18.0"
+APP_VERSION = "1.18.1"
+
+
+class PolicyResponseTimingMiddleware:
+    """Measure policy API latency through the final ASGI response send."""
+
+    def __init__(self, app, engine: PolicyEngine) -> None:
+        self.app = app
+        self.engine = engine
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (
+            scope.get("type") != "http"
+            or scope.get("path") != "/api/v1/decision"
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        started_ns = perf_counter_ns()
+        state = scope.setdefault("state", {})
+        logged = False
+
+        async def send_with_timing(message) -> None:
+            nonlocal logged
+            await send(message)
+            if (
+                not logged
+                and message.get("type") == "http.response.body"
+                and not message.get("more_body", False)
+            ):
+                log_row = state.pop("policy_log_row", None)
+                if log_row is not None:
+                    log_row["response_time_ms"] = (
+                        perf_counter_ns() - started_ns
+                    ) / 1_000_000.0
+                    self.engine.logger.submit(log_row)
+                    logged = True
+
+        await self.app(scope, receive, send_with_timing)
+
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -35,6 +75,7 @@ db = Database()
 auth = AuthManager(db)
 rdns = ReverseDnsResolver()
 engine = PolicyEngine(db, rdns=rdns)
+app.add_middleware(PolicyResponseTimingMiddleware, engine=engine)
 refresher = BlocklistRefresher(db, engine)
 tls_manager = TlsManager(db)
 
@@ -131,6 +172,17 @@ def decision_match_text(row) -> str:
             return f"Whitelist: {matched_list}"
         return matched_list
     return str(row["reason"] or "") if row["blocked"] else ""
+
+
+def response_time_text(value) -> str:
+    if value is None:
+        return "—"
+    milliseconds = float(value)
+    if milliseconds < 1:
+        return f"{milliseconds:.3f} ms"
+    if milliseconds < 100:
+        return f"{milliseconds:.2f} ms"
+    return f"{milliseconds:.1f} ms"
 
 
 DAY_LABELS = [
@@ -540,10 +592,11 @@ def decision(
 ):
     api_key_ok(x_api_key)
     policy_scheme = request.url.scheme.lower()
-    d = engine.decide_and_log(
+    d, log_row = engine.decide_with_log_row(
         payload.model_dump(by_alias=True),
         policy_scheme=policy_scheme if policy_scheme in {"http", "https"} else None,
     )
+    request.state.policy_log_row = log_row
     return {
         "block": d.block,
         "reason": d.reason,
@@ -632,7 +685,8 @@ def dashboard(request: Request):
             """
             SELECT
               ts,server_id,client_ip,client_name,qname,blocked,reason,
-              matched_scope,matched_list,matched_list_type,policy_scheme
+              matched_scope,matched_list,matched_list_type,policy_scheme,
+              response_time_ms
             FROM query_log
             ORDER BY id DESC
             LIMIT 8
@@ -647,12 +701,13 @@ def dashboard(request: Request):
         f'<td>{client_identity_html(r["client_ip"], recent_client_names)}</td>'
         f'<td>{esc(r["qname"])}</td>'
         f'<td>{esc((r["policy_scheme"] or "").upper() or "—")}</td>'
+        f'<td>{esc(response_time_text(r["response_time_ms"]))}</td>'
         f'<td>{esc(r["matched_scope"] or "—")}</td>'
         f'<td><span class="pill {"red" if r["blocked"] else "green"}">'
         f'{"Blocked" if r["blocked"] else "Allowed"}</span></td>'
         f'<td>{esc(decision_match_text(r))}</td></tr>'
         for r in recent
-    ) or '<tr><td colspan="8" class="empty">No DNS decisions recorded yet.</td></tr>'
+    ) or '<tr><td colspan="9" class="empty">No DNS decisions recorded yet.</td></tr>'
     body = f'''
     <section class="hero-card"><img src="/static/blockinator-hero.webp" alt="Blockinator"><div class="hero-overlay"><p>BLOCK · FILTER · PROTECT</p><h2>Your network. Your policy.</h2><span>Centralized DNS policy control with client-aware filtering.</span></div></section>
     <div class="stat-grid">
@@ -665,7 +720,7 @@ def dashboard(request: Request):
       <form method="post" action="/admin/global-toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="{"danger-button" if global_on else "primary-button"}">{"Pause blocking" if global_on else "Resume blocking"}</button></form>
     </section>
     <section class="panel"><div class="panel-head"><div><h3>Recent DNS activity</h3><p>Latest policy decisions from connected resolvers · times shown in {esc(display_timezone)}.</p></div><a class="text-link" href="/queries">View all →</a></div>
-      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Policy API</th><th>Policy target</th><th>Decision</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Policy API</th><th>Response time</th><th>Policy target</th><th>Decision</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table></div>
     </section>'''
     return page(request, "Dashboard", "dashboard", body, s)
 
@@ -2085,12 +2140,13 @@ def queries_page(
         f'<td>{esc(r["qname"])}</td>'
         f'<td>{esc(r["qtype"])}</td>'
         f'<td>{esc((r["policy_scheme"] or "").upper() or "—")}</td>'
+        f'<td>{esc(response_time_text(r["response_time_ms"]))}</td>'
         f'<td>{esc(r["matched_scope"] or "—")}</td>'
         f'<td><span class="pill {"red" if r["blocked"] else "green"}">'
         f'{"Blocked" if r["blocked"] else "Allowed"}</span></td>'
         f'<td>{esc(decision_match_text(r))}</td></tr>'
         for r in rows
-    ) or '<tr><td colspan="9" class="empty">No matching queries.</td></tr>'
+    ) or '<tr><td colspan="10" class="empty">No matching queries.</td></tr>'
 
     server_options = '<option value="">All servers</option>' + "".join(
         f'<option value="{esc(row["server_id"])}"'
@@ -2146,7 +2202,7 @@ def queries_page(
         <button class="primary-button">Filter</button>
       </form>
       <div class="table-wrap"><table>
-        <thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Type</th><th>Policy API</th><th>Policy target</th><th>Decision</th><th>Match</th></tr></thead>
+        <thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Type</th><th>Policy API</th><th>Response time</th><th>Policy target</th><th>Decision</th><th>Match</th></tr></thead>
         <tbody>{trs}</tbody>
       </table></div>
     </section>'''
