@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.16.0 — Whitelists
+
+- Added first-class whitelists with the same source, upload/paste, manual-domain, URL refresh, scheduling, enable/disable, Global, and policy-target assignment features as block lists.
+- Added a dedicated **Whitelists** administration page and integrated whitelist choices into Policy Targets.
+- Added a persisted list type with automatic migration of all existing lists to the Block type.
+- Whitelist matches are evaluated before block-list matches and explicitly allow a query even when the same domain is present in active block lists.
+- Global whitelists follow the existing Global list reach setting and scoped whitelists follow the same endpoint, reverse-DNS hostname, and network targeting rules as block lists.
+- Added whitelist support for common Adblock exception syntax such as `@@||example.com^`.
+- URL-backed whitelists use the same per-list automatic refresh scheduler and last-known-good failure behavior.
+- Query logging and the decision API now record the matched list type; Dashboard and Query Log surfaces identify whitelist allows.
+- Block lists and whitelists share the normalized canonical domain table, so a domain appearing in both is still stored only once.
+- Fixed manual list add/remove result detection with normalized domain-storage compatibility views.
+- Added migration, precedence, schedule, scoped assignment, parser, refresh, query-log, storage, and UI regression coverage.
+- Updated the application version to 1.16.0.
+
 ## 1.15.10 — Dashboard block-list reason
 
 - Dashboard Recent DNS activity now shows the triggering block-list name in the **Reason** column for block-list matches.
