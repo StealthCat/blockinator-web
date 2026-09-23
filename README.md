@@ -199,6 +199,12 @@ RDNS_NAMESERVERS=192.168.1.2,192.168.1.3
 
 Reverse-DNS identity is only as trustworthy as the resolver and reverse zones providing it, so hostname policy is best suited to networks where you control PTR data.
 
+## Appearance
+
+System Settings includes an **Appearance** tab with application-wide **Dark** and **Light** themes. The selected theme is stored in Blockinator's database and applies to the entire administration interface, including the sign-in screen.
+
+Dark is the default and uses Blockinator's original control-plane palette. Light preserves the same layout and functionality with bright navigation, cards, forms, tables, statistics, and editor surfaces.
+
 ## Live statistics
 
 The **Statistics** page provides a live operational view of policy traffic in the same compact monitoring style used by DNS administration consoles such as Technitium.
