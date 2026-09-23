@@ -136,12 +136,17 @@ def test_mysql_query_logger_upsert_and_retention():
         )
 
     deadline = time.monotonic() + 3.0
+    identity = None
     while time.monotonic() < deadline:
         with db.connect() as con:
             row = con.execute(
                 "SELECT COUNT(*) AS c FROM query_log"
             ).fetchone()
-        if row and int(row["c"]) >= 1:
+            identity = con.execute(
+                "SELECT client_name FROM client_identities WHERE client_ip=?",
+                ("192.168.1.77",),
+            ).fetchone()
+        if row and int(row["c"]) >= 1 and identity is not None:
             break
         time.sleep(0.05)
 
