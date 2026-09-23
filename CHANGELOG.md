@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.18.0 — Concurrent policy engine and CPU efficiency
+
+- Replaced the decision-path-wide policy lock with immutable policy snapshots that are rebuilt off-path and swapped atomically.
+- Added indexed endpoint, reverse-DNS hostname, wildcard-hostname, and IPv4/IPv6 network lookups so policy matching no longer scans every configured target.
+- Precompiled schedule timezones/times and added a per-minute active-list mask cache.
+- Replaced per-list in-memory domain sets with one canonical domain-to-list bitmask index, preserving whitelist precedence while reducing duplicate memory and Python lookup work.
+- Bulk-loads list memberships during policy reload instead of issuing one domain query per list.
+- Moved request JSON serialization and reverse-DNS enrichment out of the DNS request thread; query-log database writes remain single-writer and batched.
+- Cached query-log retention settings and reduced pruning frequency; age pruning now uses the timestamp index directly.
+- Reused one reverse-DNS resolver/cache across the UI and query logger and reused resolver objects per PTR worker thread.
+- Added concurrent URL-list downloads/parsing with serialized database commits and one policy reload per changed refresh batch.
+- Added HTTP ETag/Last-Modified support plus parser-aware content fingerprints so unchanged sources skip parsing, membership writes, and policy reloads.
+- Changed list synchronization to apply only membership deltas instead of deleting/reinserting an entire list.
+- Added query-log indexes for matched policy targets and querying DNS server IDs on SQLite and MySQL.
+- Expanded the HTTP benchmark for concurrent throughput/latency and added a direct policy-engine microbenchmark.
+- Added concurrency, no-op refresh, parallel refresh, whitelist-precedence, and delta-storage regression coverage.
+- Updated the application version to 1.18.0.
+
 ## 1.17.0 — Selectable SQLite / MySQL database backend
 
 - Added `DATABASE_BACKEND=sqlite|mysql`; SQLite remains the default and requires no external database service.
