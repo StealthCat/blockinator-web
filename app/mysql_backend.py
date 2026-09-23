@@ -199,6 +199,8 @@ class MySQLBackend:
             write_timeout=30,
             cursorclass=DictCursor,
             ssl=ssl,
+            ssl_verify_cert=self.config.ssl_verify_cert if ssl is not None else None,
+            ssl_verify_identity=self.config.ssl_verify_cert if ssl is not None else None,
         )
         with con.cursor() as cursor:
             cursor.execute("SET time_zone = '+00:00'")
