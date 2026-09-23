@@ -250,7 +250,7 @@ class MySQLBackend:
                 last_error LONGTEXT NULL,
                 source_etag TEXT NULL,
                 source_last_modified TEXT NULL,
-                source_hash VARCHAR(64) NULL,
+                source_hash VARCHAR(128) NULL,
                 entry_count BIGINT NOT NULL DEFAULT 0,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -415,7 +415,7 @@ class MySQLBackend:
             for column_name, definition in (
                 ("source_etag", "TEXT NULL"),
                 ("source_last_modified", "TEXT NULL"),
-                ("source_hash", "VARCHAR(64) NULL"),
+                ("source_hash", "VARCHAR(128) NULL"),
             ):
                 self._ensure_column(
                     con,
@@ -423,6 +423,12 @@ class MySQLBackend:
                     column_name,
                     definition,
                 )
+            self._ensure_varchar_min_length(
+                con,
+                "blocklists",
+                "source_hash",
+                128,
+            )
             self._ensure_index(
                 con,
                 "query_log",
@@ -456,6 +462,31 @@ class MySQLBackend:
             con.executemany(
                 "INSERT IGNORE INTO settings(`key`,value) VALUES(?,?)",
                 list(defaults.items()),
+            )
+
+    def _ensure_varchar_min_length(
+        self,
+        con: MySQLConnection,
+        table: str,
+        column: str,
+        min_length: int,
+    ) -> None:
+        row = con.execute(
+            """
+            SELECT CHARACTER_MAXIMUM_LENGTH AS max_length
+            FROM information_schema.columns
+            WHERE table_schema=? AND table_name=? AND column_name=?
+            """,
+            (self.config.database, table, column),
+        ).fetchone()
+        if (
+            row
+            and row["max_length"] is not None
+            and int(row["max_length"]) < min_length
+        ):
+            con.execute(
+                f"ALTER TABLE `{table}` MODIFY COLUMN `{column}` "
+                f"VARCHAR({min_length}) NULL"
             )
 
     def _ensure_index(
