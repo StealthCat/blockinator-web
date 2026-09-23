@@ -113,17 +113,15 @@ class BlocklistRefresher:
             if not parsed.domains:
                 raise ValueError("refreshed list contained no usable domains")
 
-            entry_rows = [(list_id, domain) for domain in parsed.domains]
             write_delays = (0.05, 0.15, 0.45)
             committed = False
 
             for attempt in range(len(write_delays) + 1):
                 try:
                     with self.db.connect() as con:
-                        # Acquire the SQLite writer slot before taking a read
-                        # snapshot. A deferred BEGIN can read successfully and
-                        # then fail to upgrade with SQLITE_BUSY_SNAPSHOT if the
-                        # query logger or an admin request commits meanwhile.
+                        # Acquire the writer transaction before taking a metadata
+                        # snapshot. On SQLite this avoids deferred read-to-write
+                        # upgrade races; on MySQL it keeps replacement atomic.
                         con.execute("BEGIN IMMEDIATE")
                         try:
                             current = con.execute(
