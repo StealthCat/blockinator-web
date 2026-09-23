@@ -2277,7 +2277,7 @@ def settings_page(request: Request):
                 <div><b>Global list reach</b><p>Control whether lists marked Global also apply to clients that do not match an active policy target.</p></div>
                 <span>{"All clients" if global_blocklist_scope_mode == "all_clients" else "Matched targets only"}</span>
               </div>
-              <label class="full">Apply global block lists to
+              <label class="full">Apply global lists to
                 <select name="global_blocklist_scope_mode">
                   <option value="all_clients" {"selected" if global_blocklist_scope_mode=="all_clients" else ""}>All clients, including clients with no matching policy target</option>
                   <option value="matched_scopes" {"selected" if global_blocklist_scope_mode=="matched_scopes" else ""}>Matched policy targets only</option>
@@ -2288,7 +2288,7 @@ def settings_page(request: Request):
 
             <div class="form-section full">
               <div class="form-section-head">
-                <div><b>No matching policy target</b><p>Choose what happens after applicable block lists are evaluated when no active endpoint, hostname, or network target matches the client.</p></div>
+                <div><b>No matching policy target</b><p>Choose what happens after applicable whitelists and block lists are evaluated when no active endpoint, hostname, or network target matches the client.</p></div>
                 <span>{"Allow" if unmatched_scope_action == "allow" else "Deny"}</span>
               </div>
               <label class="full">Default action
