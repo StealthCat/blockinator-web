@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from app.auth import AuthManager
+from app.auth import AuthManager, hash_password
 from app.db import Database
 from app.mysql_backend import MySQLConnection
 from app.policy import PolicyEngine
@@ -217,16 +217,16 @@ def test_mysql_auth_and_case_insensitive_username():
     db = Database()
     _clear_database(db)
 
-    auth = AuthManager(db)
     with db.connect() as con:
         con.execute(
             """
             INSERT INTO admin_users(username,password_hash)
             VALUES(?,?)
             """,
-            ("AdminUser", auth.hash_password("correct horse battery staple")),
+            ("AdminUser", hash_password("correct horse battery staple")),
         )
 
+    auth = AuthManager(db, bootstrap=False)
     authenticated = auth.authenticate(
         "adminuser",
         "correct horse battery staple",
