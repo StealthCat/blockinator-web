@@ -45,5 +45,7 @@ def test_dashboard_reason_prefers_triggering_blocklist_name():
     source = Path("app/main.py").read_text(encoding="utf-8")
 
     assert "matched_scope,matched_list,matched_list_type,policy_scheme" in source
+    assert "response_time_ms" in source
+    assert "Response time" in source
     assert 'decision_match_text(r)' in source
 
