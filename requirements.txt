@@ -6,3 +6,4 @@ pydantic==2.11.7
 dnspython==2.7.0
 tzdata>=2025.2
 cryptography==50.0.1
+PyMySQL>=1.1.1,<2
