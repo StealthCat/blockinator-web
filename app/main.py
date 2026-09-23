@@ -499,11 +499,7 @@ def import_list(list_id: int, text: str, fmt: str):
     parsed = parse_blocklist(text, fmt, list_type)
     with db.connect() as con:
         con.execute("BEGIN")
-        con.execute("DELETE FROM block_entries WHERE blocklist_id=?", (list_id,))
-        con.executemany(
-            "INSERT OR IGNORE INTO block_entries(blocklist_id,domain) VALUES(?,?)",
-            [(list_id, d) for d in parsed.domains],
-        )
+        db.replace_list_domains(con, list_id, parsed.domains)
         con.execute(
             """
             UPDATE blocklists
@@ -1143,19 +1139,11 @@ async def add_manual_list_domain(list_id: int, request: Request):
         )
 
     with db.connect() as con:
-        existed = con.execute(
-            "SELECT 1 FROM block_entries WHERE blocklist_id=? AND domain=?",
-            (list_id, domain),
-        ).fetchone() is not None
-        if not existed:
-            con.execute(
-                "INSERT OR IGNORE INTO block_entries(blocklist_id,domain) VALUES(?,?)",
-                (list_id, domain),
-            )
+        added = db.add_list_domain(con, list_id, domain)
         count = _refresh_manual_list_count(con, list_id)
 
     engine.reload()
-    if existed:
+    if not added:
         return redirect(
             f"{base_path}/{list_id}/domains?q={quote(domain)}",
             notice=f"{domain} is already in this list",
@@ -1190,19 +1178,11 @@ async def remove_manual_list_domain(list_id: int, request: Request):
         return redirect(return_path, error="Invalid domain")
 
     with db.connect() as con:
-        existed = con.execute(
-            "SELECT 1 FROM block_entries WHERE blocklist_id=? AND domain=?",
-            (list_id, domain),
-        ).fetchone() is not None
-        if existed:
-            con.execute(
-                "DELETE FROM block_entries WHERE blocklist_id=? AND domain=?",
-                (list_id, domain),
-            )
+        removed = db.remove_list_domain(con, list_id, domain)
         count = _refresh_manual_list_count(con, list_id)
 
     engine.reload()
-    if not existed:
+    if not removed:
         return redirect(
             return_path,
             error=f"{domain} was not found in this list",
@@ -1314,7 +1294,7 @@ async def add_list(request: Request):
             assigned = _save_list_scope_assignments(con, list_id, scope_ids)
     except Exception as e:
         with db.connect() as con:
-            con.execute("DELETE FROM blocklists WHERE id=?", (list_id,))
+            db.delete_blocklist(con, list_id)
         return redirect(base_path, error=f"Import failed: {e}")
 
     engine.reload()
@@ -1465,7 +1445,7 @@ async def delete_list(list_id: int, request: Request):
             return redirect("/lists", error="List not found")
         base_path = _list_base_path(row)
         label = _list_label(row)
-        con.execute("DELETE FROM blocklists WHERE id=?", (list_id,))
+        db.delete_blocklist(con, list_id)
     engine.reload()
     return redirect(base_path, notice=f"{label.title()} deleted")
 
