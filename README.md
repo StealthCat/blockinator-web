@@ -119,21 +119,30 @@ Every URL-backed list can have its own automatic refresh interval.
 
 On a successful refresh, Blockinator:
 
-- downloads and parses the source;
-- atomically replaces that list's entries;
-- updates timestamps and entry counts;
-- clears the previous refresh error; and
-- reloads the policy engine.
+- uses HTTP ETag/Last-Modified validators when the source supports them;
+- fingerprints downloaded content so unchanged sources skip parsing and policy reloads;
+- downloads and parses multiple due URL lists concurrently;
+- serializes database commits to avoid SQLite writer contention;
+- applies only added/removed domain memberships instead of rebuilding an unchanged list;
+- updates timestamps, source metadata, and entry counts; and
+- reloads the policy engine once after a batch of changed lists.
 
 If a download or parse fails, the last known-good list remains active. An upstream response containing no usable domains is rejected rather than replacing a working list with an empty one.
 
 **Save & refresh URL** performs an immediate import and resets that list's refresh interval clock.
 
-The scheduler scan frequency is controlled by:
+The scheduler scan frequency and bounded URL-download concurrency are controlled by:
 
 ```env
 BLOCKLIST_REFRESH_POLL_SECONDS=30
+BLOCKLIST_REFRESH_WORKERS=4
 ```
+
+### Decision-path concurrency
+
+Policy configuration is compiled into an immutable in-memory snapshot. DNS decision threads capture the current snapshot without taking the policy write lock, while administrative changes and list refreshes build a replacement snapshot and swap it in atomically.
+
+The snapshot also precompiles schedules and scope indexes and stores domains once in a shared `domain → list-membership bitmask` index. Exact endpoint and hostname targets use direct indexes, wildcard hostnames use suffix indexes, and IPv4/IPv6 network targets use prefix indexes. This keeps the request path read-only and minimizes repeated Python work under concurrent DNS load.
 
 ## Scheduling
 
@@ -583,6 +592,7 @@ When multiple DNS questions are supplied, Blockinator evaluates them in order an
 | `HTTPS_PORT` | Host-facing HTTPS TCP/UDP port | `8443` |
 | `MAX_BLOCKLIST_BYTES` | Maximum accepted block-list size | `104857600` |
 | `BLOCKLIST_REFRESH_POLL_SECONDS` | Background due-list scan frequency | `30` |
+| `BLOCKLIST_REFRESH_WORKERS` | Concurrent URL download/parse workers; DB commits remain serialized | `4` |
 | `ADMIN_COOKIE_SECURE` | Force Secure admin cookies when appropriate | `0` |
 | `ADMIN_SESSION_TTL_SECONDS` | Administrator session lifetime | `43200` |
 | `TZ` | Bootstrap/default timezone for a new database | `UTC` |
@@ -663,15 +673,23 @@ The suite covers authentication, persistence/migrations, block-list and whitelis
 
 ## Policy latency benchmark
 
-`tools/benchmark_policy_latency.py` compares the decision API directly against Uvicorn and through the Caddy sidecar using persistent HTTP connections.
+`tools/benchmark_policy_latency.py` compares the decision API directly against Uvicorn and through the Caddy sidecar at concurrency levels 1, 2, 4, 8, 16, and 32. It reports throughput plus mean/p50/p95/p99 latency.
 
 Inside the Blockinator container:
 
 ```bash
-python /srv/tools/benchmark_policy_latency.py --requests 200 --warmup 20
+python /srv/tools/benchmark_policy_latency.py --requests 1000 --warmup 20
 ```
 
-CI also runs a smaller smoke benchmark. Results are informational rather than a hard performance threshold because shared runner performance varies.
+Use `--qname` with a known blocked domain to measure the match path as well as the default allow path.
+
+`tools/benchmark_policy_engine.py` isolates `PolicyEngine.decide()` from HTTP, Caddy, Pydantic, and query logging overhead:
+
+```bash
+python /srv/tools/benchmark_policy_engine.py --domains 100000 --requests 100000
+```
+
+CI also runs smaller smoke benchmarks. Results are informational rather than hard performance thresholds because shared runner performance varies.
 
 ## Security recommendations
 
