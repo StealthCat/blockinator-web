@@ -357,7 +357,7 @@ Controls include:
 
 - NXDOMAIN or REFUSED blocked responses;
 - global pause/resume;
-- Global block-list reach;
+- Global list reach;
 - unmatched-client Allow/Deny fallback;
 - query-log age and row retention; and
 - default display/schedule timezone.
