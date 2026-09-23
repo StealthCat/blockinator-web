@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import threading
 from dataclasses import dataclass
 from typing import Callable, Protocol
@@ -74,26 +73,7 @@ class BlocklistRefresher:
             self._stop.wait(self.poll_seconds)
 
     def due_list_ids(self) -> list[int]:
-        with self.db.connect() as con:
-            rows = con.execute(
-                """
-                SELECT id
-                FROM blocklists
-                WHERE source_type='url'
-                  AND source_url IS NOT NULL
-                  AND TRIM(source_url) <> ''
-                  AND julianday('now') >= julianday(
-                        COALESCE(last_refresh_attempt,last_updated,created_at)
-                      ) + (
-                        CASE
-                          WHEN refresh_minutes < 1 THEN 1
-                          ELSE refresh_minutes
-                        END / 1440.0
-                      )
-                ORDER BY id
-                """
-            ).fetchall()
-        return [int(row["id"]) for row in rows]
+        return self.db.due_url_list_ids()
 
     def refresh_due_once(self) -> list[RefreshResult]:
         if not self._run_lock.acquire(blocking=False):
@@ -164,16 +144,10 @@ class BlocklistRefresher:
                                 con.execute("ROLLBACK")
                                 return RefreshResult(list_id=list_id, refreshed=False)
 
-                            con.execute(
-                                "DELETE FROM block_entries WHERE blocklist_id=?",
-                                (list_id,),
-                            )
-                            con.executemany(
-                                """
-                                INSERT OR IGNORE INTO block_entries(blocklist_id,domain)
-                                VALUES(?,?)
-                                """,
-                                entry_rows,
+                            self.db.replace_list_domains(
+                                con,
+                                list_id,
+                                parsed.domains,
                             )
                             con.execute(
                                 """
@@ -193,11 +167,8 @@ class BlocklistRefresher:
                             raise
                     committed = True
                     break
-                except sqlite3.OperationalError as write_exc:
-                    is_busy = any(
-                        marker in str(write_exc).lower()
-                        for marker in ("database is locked", "database is busy")
-                    )
+                except Exception as write_exc:
+                    is_busy = self.db.is_retryable_write_error(write_exc)
                     if not is_busy or attempt >= len(write_delays):
                         raise
                     if self._stop.wait(write_delays[attempt]):
@@ -230,10 +201,11 @@ class BlocklistRefresher:
                         """,
                         (message[:2000], list_id, source_url, list_format, list_type),
                     )
-            except sqlite3.OperationalError:
-                # If SQLite is still busy, do not let error bookkeeping turn a
-                # recoverable refresh failure into a worker-level exception.
-                pass
+            except Exception as bookkeeping_exc:
+                # Transient SQLite/MySQL writer contention should not turn
+                # error bookkeeping into a worker-level failure.
+                if not self.db.is_retryable_write_error(bookkeeping_exc):
+                    raise
             return RefreshResult(
                 list_id=list_id,
                 refreshed=False,
