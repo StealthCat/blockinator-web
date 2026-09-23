@@ -164,13 +164,33 @@ class BlocklistRefresher:
         previous_etag = str(row["source_etag"] or "") or None
         previous_last_modified = str(row["source_last_modified"] or "") or None
         previous_count = int(row["entry_count"] or 0)
+        config_hash = hashlib.sha256(
+            f"{source_url}\\0{list_format}\\0{list_type}".encode("utf-8")
+        ).hexdigest()[:16]
+        metadata_matches_config = bool(
+            previous_hash
+            and previous_hash.startswith(config_hash + ":")
+        )
 
         try:
             fetched = self._fetch(
                 source_url,
-                previous_etag,
-                previous_last_modified,
+                previous_etag if metadata_matches_config else None,
+                previous_last_modified if metadata_matches_config else None,
             )
+            stored_hash = (
+                f"{config_hash}:{fetched.content_hash}"
+                if fetched.content_hash
+                else previous_hash
+            )
+            if stored_hash != fetched.content_hash:
+                fetched = FetchResult(
+                    text=fetched.text,
+                    etag=fetched.etag,
+                    last_modified=fetched.last_modified,
+                    content_hash=stored_hash,
+                    not_modified=fetched.not_modified,
+                )
 
             if fetched.not_modified or (
                 fetched.content_hash
