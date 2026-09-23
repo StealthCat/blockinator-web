@@ -2,7 +2,7 @@ name: Test
 
 on:
   push:
-    branches: ["main", "acme-tls", "whitelists"]
+    branches: ["main", "acme-tls", "whitelists", "efficiency-optimizations"]
   pull_request:
 
 jobs:
