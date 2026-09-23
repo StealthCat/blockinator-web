@@ -265,13 +265,55 @@
     }).join(" ");
   }
 
+  function statisticsNullablePath(points, valueKey, left, top, width, height, maxY) {
+    var commands = [];
+    var activeSegment = false;
+
+    points.forEach(function (point, index) {
+      var rawValue = point[valueKey];
+      var value = Number(rawValue);
+      if (rawValue === null || rawValue === undefined || !Number.isFinite(value)) {
+        activeSegment = false;
+        return;
+      }
+
+      var x = points.length === 1
+        ? left + width / 2
+        : left + (index / (points.length - 1)) * width;
+      var y = top + height - (value / maxY) * height;
+      commands.push(
+        (activeSegment ? "L" : "M") + x.toFixed(2) + " " + y.toFixed(2)
+      );
+      activeSegment = true;
+    });
+
+    return commands.join(" ");
+  }
+
+  function statisticsResponseTickStep(maxValue) {
+    if (!Number.isFinite(maxValue) || maxValue <= 0) return 1;
+    var rawStep = maxValue / 4;
+    var magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    var normalized = rawStep / magnitude;
+    var nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+    return nice * magnitude;
+  }
+
+  function statisticsResponseAxisLabel(value) {
+    if (value === 0) return "0 ms";
+    if (value < 1) return value.toFixed(2) + " ms";
+    if (value < 10) return value.toFixed(1) + " ms";
+    if (value < 100) return value.toFixed(0) + " ms";
+    return Math.round(value).toLocaleString() + " ms";
+  }
+
   function renderStatisticsChart(root, payload) {
     var svg = root.querySelector("[data-statistics-chart]");
     if (!svg) return;
 
     var points = Array.isArray(payload.points) ? payload.points : [];
     var left = 56;
-    var right = 24;
+    var right = 76;
     var top = 18;
     var bottom = 42;
     var fullWidth = 1000;
@@ -279,12 +321,23 @@
     var width = fullWidth - left - right;
     var height = fullHeight - top - bottom;
     var maxValue = 0;
+    var maxResponseTime = 0;
 
     points.forEach(function (point) {
       maxValue = Math.max(maxValue, Number(point.queries || 0), Number(point.blocks || 0));
+      var responseTime = Number(point.average_response_time_ms);
+      if (
+        point.average_response_time_ms !== null
+        && point.average_response_time_ms !== undefined
+        && Number.isFinite(responseTime)
+      ) {
+        maxResponseTime = Math.max(maxResponseTime, responseTime);
+      }
     });
     var step = Math.max(1, Math.ceil(maxValue / 4));
     var maxY = step * 4;
+    var responseStep = statisticsResponseTickStep(maxResponseTime);
+    var responseMaxY = responseStep * 4;
 
     svg.textContent = "";
 
@@ -304,6 +357,12 @@
         "text-anchor": "end",
         "class": "statistics-axis-label"
       }, String(value)));
+      svg.appendChild(statisticsSvgElement("text", {
+        x: left + width + 12,
+        y: y + 4,
+        "text-anchor": "start",
+        "class": "statistics-axis-label statistics-axis-response"
+      }, statisticsResponseAxisLabel(responseStep * tick)));
     }
 
     var labelIndexes = [];
@@ -331,6 +390,15 @@
     if (points.length) {
       var queryPath = statisticsPath(points, "queries", left, top, width, height, maxY);
       var blockPath = statisticsPath(points, "blocks", left, top, width, height, maxY);
+      var responsePath = statisticsNullablePath(
+        points,
+        "average_response_time_ms",
+        left,
+        top,
+        width,
+        height,
+        responseMaxY
+      );
       var baseline = top + height;
       var firstX = points.length === 1 ? left + width / 2 : left;
       var lastX = points.length === 1 ? left + width / 2 : left + width;
@@ -349,6 +417,12 @@
         svg.appendChild(statisticsSvgElement("path", {
           d: blockPath,
           "class": "statistics-series statistics-series-blocks"
+        }));
+      }
+      if (responsePath) {
+        svg.appendChild(statisticsSvgElement("path", {
+          d: responsePath,
+          "class": "statistics-series statistics-series-response"
         }));
       }
     }

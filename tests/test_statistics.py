@@ -45,6 +45,7 @@ def test_statistics_snapshot_reports_totals_and_live_series():
     )
     assert point["queries"] == 2
     assert point["blocks"] == 1
+    assert point["average_response_time_ms"] == 3.0
     assert point["label"] == "17:59"
 
     td.cleanup()
@@ -78,5 +79,8 @@ def test_statistics_page_is_present_in_navigation_and_has_live_chart_controls():
     assert 'data-statistics-total="blocks"' in source
     assert 'data-statistics-total="response"' in source
     assert 'data-statistics-window="1440"' in source
+    assert 'Average response time</span>' in source
+    assert 'statistics-series-response' in javascript
+    assert 'average_response_time_ms' in javascript
     assert 'initializeStatisticsDashboard' in javascript
     assert 'setInterval(load, 5000)' in javascript

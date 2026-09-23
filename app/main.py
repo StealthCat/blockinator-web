@@ -738,7 +738,7 @@ def statistics_page(request: Request):
           <div>
             <div class="panel-kicker">Live traffic</div>
             <h3>DNS query activity</h3>
-            <p>Queries and blocked requests per interval · times shown in {esc(display_timezone)}.</p>
+            <p>Queries, blocked requests, and average policy response time per interval · times shown in {esc(display_timezone)}.</p>
           </div>
           <div class="statistics-window-picker" role="group" aria-label="Statistics time range">
             <button type="button" data-statistics-window="15">15m</button>
@@ -752,6 +752,7 @@ def statistics_page(request: Request):
           <div class="statistics-legend">
             <span><i class="statistics-legend-swatch queries"></i>Queries</span>
             <span><i class="statistics-legend-swatch blocks"></i>Blocks</span>
+            <span><i class="statistics-legend-swatch response"></i>Average response time</span>
           </div>
           <span data-statistics-bucket>1 minute intervals</span>
         </div>
@@ -763,7 +764,7 @@ def statistics_page(request: Request):
             viewBox="0 0 1000 340"
             preserveAspectRatio="none"
             role="img"
-            aria-label="Live DNS query and block statistics"
+            aria-label="Live DNS queries, blocks, and average response time statistics"
           ></svg>
           <div class="statistics-chart-empty" data-statistics-empty hidden>
             No query activity in this time range.
