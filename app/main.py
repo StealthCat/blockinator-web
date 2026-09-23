@@ -861,16 +861,6 @@ def _managed_lists_page(request: Request, list_type: str):
         network_target_rows = con.execute(
             "SELECT scope_id,family,target FROM scope_network_targets"
         ).fetchall()
-        preview_rows = con.execute(
-            """
-            SELECT domain
-            FROM block_entries
-            WHERE blocklist_id=?
-            ORDER BY domain
-            LIMIT 10
-            """,
-            (list_id,),
-        ).fetchall()
 
     memberships: dict[int, set[int]] = {}
     for membership in membership_rows:
@@ -1087,6 +1077,16 @@ def managed_list_edit_page(list_id: int, request: Request):
         ).fetchall()
         network_target_rows = con.execute(
             "SELECT scope_id,family,target FROM scope_network_targets"
+        ).fetchall()
+        preview_rows = con.execute(
+            """
+            SELECT domain
+            FROM block_entries
+            WHERE blocklist_id=?
+            ORDER BY domain
+            LIMIT 10
+            """,
+            (list_id,),
         ).fetchall()
 
     list_label = _list_label(blocklist)
