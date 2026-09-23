@@ -73,6 +73,17 @@ app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 db = Database()
+_runtime_settings = db.get_settings(
+    {
+        "default_timezone": os.getenv("TZ", "UTC").strip() or "UTC",
+        "ui_theme": "dark",
+    }
+)
+_runtime_default_timezone = (
+    _runtime_settings["default_timezone"].strip() or "UTC"
+)
+_runtime_ui_theme = _runtime_settings["ui_theme"].strip().lower() or "dark"
+
 auth = AuthManager(db)
 rdns = ReverseDnsResolver()
 engine = PolicyEngine(db, rdns=rdns)
@@ -92,6 +103,7 @@ def stop_background_workers() -> None:
     tls_manager.stop()
     refresher.stop()
     engine.close()
+    auth.close()
     rdns.close()
 
 
@@ -305,11 +317,20 @@ def schedule_fields_html(row=None, default_timezone: str = "UTC") -> str:
     </div>'''
 
 
+def _update_runtime_settings_cache(
+    *,
+    default_timezone: str | None = None,
+    ui_theme: str | None = None,
+) -> None:
+    global _runtime_default_timezone, _runtime_ui_theme
+    if default_timezone is not None:
+        _runtime_default_timezone = default_timezone
+    if ui_theme is not None:
+        _runtime_ui_theme = ui_theme
+
+
 def system_default_timezone() -> str:
-    configured = db.get_setting(
-        "default_timezone",
-        os.getenv("TZ", "UTC").strip() or "UTC",
-    ).strip() or "UTC"
+    configured = _runtime_default_timezone
     try:
         ZoneInfo(configured)
     except (ZoneInfoNotFoundError, ValueError):
@@ -318,10 +339,8 @@ def system_default_timezone() -> str:
 
 
 def log_client_names(rows) -> dict[str, str | None]:
-    """Use stored PTR names first, resolve missing names, and backfill old rows."""
+    """Render stored or already-learned PTR identities without blocking on DNS."""
     names: dict[str, str | None] = {}
-    missing: list[str] = []
-
     for row in rows:
         address = str(row["client_ip"] or "").strip()
         stored_name = None
@@ -329,66 +348,13 @@ def log_client_names(rows) -> dict[str, str | None]:
             stored_name = row["client_name"]
         except (IndexError, KeyError):
             stored_name = None
-        if stored_name:
-            names[address] = str(stored_name)
-        else:
-            missing.append(address)
-
-    if missing:
-        resolved = rdns.resolve_many(missing)
-        names.update(resolved)
-        updates = [
-            (hostname, address)
-            for address, hostname in resolved.items()
-            if hostname
-        ]
-        if updates:
-            with db.connect() as con:
-                con.executemany(
-                    """
-                    UPDATE query_log
-                    SET client_name=?
-                    WHERE client_ip=? AND (client_name IS NULL OR client_name='')
-                    """,
-                    updates,
-                )
-
+        names[address] = (
+            str(stored_name)
+            if stored_name
+            else engine.known_client_name(address)
+        )
     return names
 
-
-def backfill_query_client_names(limit: int = 128) -> None:
-    """Resolve a bounded set of legacy log clients before hostname filtering."""
-    with db.connect() as con:
-        rows = con.execute(
-            """
-            SELECT DISTINCT client_ip
-            FROM query_log
-            WHERE client_name IS NULL OR client_name=''
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (max(1, min(limit, 512)),),
-        ).fetchall()
-
-    if not rows:
-        return
-
-    resolved = rdns.resolve_many(row["client_ip"] for row in rows)
-    updates = [
-        (hostname, address)
-        for address, hostname in resolved.items()
-        if hostname
-    ]
-    if updates:
-        with db.connect() as con:
-            con.executemany(
-                """
-                UPDATE query_log
-                SET client_name=?
-                WHERE client_ip=? AND (client_name IS NULL OR client_name='')
-                """,
-                updates,
-            )
 
 def redirect(path: str, notice: str | None = None, error: str | None = None):
     parts = []
@@ -423,7 +389,7 @@ async def require_post_session(request: Request):
 
 
 def application_theme() -> str:
-    theme = db.get_setting("ui_theme", "dark").strip().lower()
+    theme = _runtime_ui_theme
     return theme if theme in {"dark", "light"} else "dark"
 
 
@@ -584,7 +550,7 @@ def import_list(
         )
         con.execute("COMMIT")
     if reload_policy:
-        engine.reload()
+        engine.reload_lists()
     return len(parsed.domains), parsed.ignored
 
 @app.get("/healthz")
@@ -661,40 +627,18 @@ async def logout(request: Request):
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
     s = require_session(request)
+    snapshot = engine.snapshot
     with db.connect() as con:
-        totals = dict(con.execute("""
-            SELECT
-              (SELECT COUNT(*) FROM blocklists WHERE enabled=1) active_lists,
-              (SELECT COUNT(*)
-               FROM domains d
-               WHERE EXISTS (
-                 SELECT 1
-                 FROM blocklist_domain_memberships m
-                 JOIN blocklists b ON b.id=m.blocklist_id
-                 WHERE m.domain_id=d.id AND b.enabled=1
-               )) entries,
-              (SELECT COUNT(*)
-               FROM domains d
-               WHERE EXISTS (
-                 SELECT 1
-                 FROM blocklist_domain_memberships m
-                 JOIN blocklists b ON b.id=m.blocklist_id
-                 WHERE m.domain_id=d.id AND b.enabled=1 AND b.list_type='block'
-               )) block_entries,
-              (SELECT COUNT(*)
-               FROM domains d
-               WHERE EXISTS (
-                 SELECT 1
-                 FROM blocklist_domain_memberships m
-                 JOIN blocklists b ON b.id=m.blocklist_id
-                 WHERE m.domain_id=d.id AND b.enabled=1 AND b.list_type='whitelist'
-               )) whitelist_entries,
-              (SELECT COUNT(*) FROM scopes WHERE kind='network') networks,
-              (SELECT COUNT(*) FROM scopes WHERE kind='client') clients,
-              (SELECT COUNT(*) FROM scopes WHERE kind='hostname') hostnames,
-              (SELECT COUNT(*) FROM query_log WHERE blocked=1) blocked,
-              (SELECT COUNT(*) FROM query_log) queries
-        """).fetchone())
+        query_totals = dict(
+            con.execute(
+                """
+                SELECT
+                    COUNT(*) AS queries,
+                    COALESCE(SUM(blocked),0) AS blocked
+                FROM query_log
+                """
+            ).fetchone()
+        )
         recent = con.execute(
             """
             SELECT
@@ -706,7 +650,17 @@ def dashboard(request: Request):
             LIMIT 8
             """
         ).fetchall()
-    global_on = db.get_setting("global_blocking", "1") == "1"
+    totals = {
+        "queries": int(query_totals["queries"] or 0),
+        "blocked": int(query_totals["blocked"] or 0),
+        "entries": snapshot.unique_domain_count,
+        "block_entries": snapshot.block_domain_count,
+        "whitelist_entries": snapshot.whitelist_domain_count,
+        "networks": snapshot.network_scope_count,
+        "clients": snapshot.client_scope_count,
+        "hostnames": snapshot.hostname_scope_count,
+    }
+    global_on = snapshot.global_blocking
     recent_client_names = log_client_names(recent)
     display_timezone = system_default_timezone()
     rows = "".join(
@@ -839,7 +793,7 @@ async def global_toggle(request: Request):
     _, _form = await require_post_session(request)
     current = db.get_setting("global_blocking", "1") == "1"
     db.set_setting("global_blocking", "0" if current else "1")
-    engine.reload()
+    engine.reload_settings()
     return redirect("/", notice="Global blocking paused" if current else "Global blocking resumed")
 
 @app.get("/lists", response_class=HTMLResponse)
@@ -880,9 +834,11 @@ def _managed_lists_page(request: Request, list_type: str):
     for row in network_target_rows:
         network_targets.setdefault(int(row["scope_id"]), {})[int(row["family"])] = str(row["target"])
 
-    client_names = rdns.resolve_many(
-        scope["target"] for scope in scopes if scope["kind"] == "client"
-    )
+    client_names = {
+        str(scope["target"]): engine.known_client_name(str(scope["target"]))
+        for scope in scopes
+        if scope["kind"] == "client"
+    }
     networks = [scope for scope in scopes if scope["kind"] == "network"]
     clients = [scope for scope in scopes if scope["kind"] == "client"]
     hostnames = [scope for scope in scopes if scope["kind"] == "hostname"]
@@ -1110,9 +1066,11 @@ def managed_list_edit_page(list_id: int, request: Request):
             int(row["family"])
         ] = str(row["target"])
 
-    client_names = rdns.resolve_many(
-        scope["target"] for scope in scopes if scope["kind"] == "client"
-    )
+    client_names = {
+        str(scope["target"]): engine.known_client_name(str(scope["target"]))
+        for scope in scopes
+        if scope["kind"] == "client"
+    }
     networks = [scope for scope in scopes if scope["kind"] == "network"]
     clients = [scope for scope in scopes if scope["kind"] == "client"]
     hostnames = [scope for scope in scopes if scope["kind"] == "hostname"]
@@ -1630,7 +1588,7 @@ async def add_manual_list_domain(list_id: int, request: Request):
         added = db.add_list_domain(con, list_id, domain)
         count = _refresh_manual_list_count(con, list_id)
 
-    engine.reload()
+    engine.reload_lists()
     if not added:
         return redirect(
             f"{base_path}/{list_id}/domains?q={quote(domain)}",
@@ -1669,7 +1627,7 @@ async def remove_manual_list_domain(list_id: int, request: Request):
         removed = db.remove_list_domain(con, list_id, domain)
         count = _refresh_manual_list_count(con, list_id)
 
-    engine.reload()
+    engine.reload_lists()
     if not removed:
         return redirect(
             return_path,
@@ -1791,7 +1749,8 @@ async def add_list(request: Request):
             db.delete_blocklist(con, list_id)
         return redirect(base_path, error=f"Import failed: {e}")
 
-    engine.reload()
+    engine.reload_lists()
+    engine.reload_scopes()
     return redirect(
         f"{base_path}#list-{list_id}",
         notice=f"Imported {count:,} entries, ignored {ignored:,}, assigned to {assigned} scope{'s' if assigned != 1 else ''}",
@@ -1913,7 +1872,8 @@ async def edit_list(list_id: int, request: Request):
                 error=f"Settings were saved, but replacing list contents failed: {e}",
             )
 
-    engine.reload()
+    engine.reload_lists()
+    engine.reload_scopes()
     return redirect(
         f"{base_path}/{list_id}/edit",
         notice=f"Saved {name}; {assigned} scoped assignment{'s' if assigned != 1 else ''}{replaced_notice}",
@@ -1932,7 +1892,7 @@ async def toggle_list(list_id: int, request: Request):
             "UPDATE blocklists SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?",
             (list_id,),
         )
-    engine.reload()
+    engine.reload_lists()
     return redirect(f"{base_path}#list-{list_id}", notice="List state updated")
 
 
@@ -1946,7 +1906,7 @@ async def delete_list(list_id: int, request: Request):
         base_path = _list_base_path(row)
         label = _list_label(row)
         db.delete_blocklist(con, list_id)
-    engine.reload()
+    engine.reload_lists()
     return redirect(base_path, notice=f"{label.title()} deleted")
 
 
@@ -2044,9 +2004,11 @@ def scopes_page(request: Request):
     for row in network_target_rows:
         network_targets.setdefault(int(row["scope_id"]), {})[int(row["family"])] = str(row["target"])
 
-    scope_client_names = rdns.resolve_many(
-        scope["target"] for scope in scopes if scope["kind"] == "client"
-    )
+    scope_client_names = {
+        str(scope["target"]): engine.known_client_name(str(scope["target"]))
+        for scope in scopes
+        if scope["kind"] == "client"
+    }
 
     def blocklist_option(blocklist, selected: set[int]) -> str:
         is_global = bool(blocklist["use_globally"])
@@ -2388,7 +2350,7 @@ async def add_scope(request: Request):
     except Exception as e:
         return redirect("/scopes", error=str(e))
 
-    engine.reload()
+    engine.reload_scopes()
     return redirect(
         f"/scopes#scope-{scope_id}",
         notice=f"Added {name} with {assigned} list assignment{'s' if assigned != 1 else ''}",
@@ -2461,7 +2423,7 @@ async def edit_scope(scope_id: int, request: Request):
             con.execute("ROLLBACK")
             return redirect(f"/scopes#edit-scope-{scope_id}", error=f"Could not save scope: {e}")
 
-    engine.reload()
+    engine.reload_scopes()
     return redirect(
         f"/scopes#scope-{scope_id}",
         notice=f"Saved {name}; {assigned} list assignment{'s' if assigned != 1 else ''}",
@@ -2473,7 +2435,7 @@ async def toggle_scope(scope_id: int, request: Request):
     await require_post_session(request)
     with db.connect() as con:
         con.execute("UPDATE scopes SET state=CASE state WHEN 'active' THEN 'paused' ELSE 'active' END WHERE id=?", (scope_id,))
-    engine.reload()
+    engine.reload_scopes()
     return redirect(f"/scopes#scope-{scope_id}", notice="Scope state updated")
 
 
@@ -2482,7 +2444,7 @@ async def delete_scope(scope_id: int, request: Request):
     await require_post_session(request)
     with db.connect() as con:
         con.execute("DELETE FROM scopes WHERE id=?", (scope_id,))
-    engine.reload()
+    engine.reload_scopes()
     return redirect("/scopes", notice="Scope deleted")
 
 @app.get("/queries", response_class=HTMLResponse)
@@ -2503,10 +2465,12 @@ def queries_page(
         clauses.append("qname LIKE ?")
         args.append("%" + q + "%")
     if client:
-        backfill_query_client_names()
-        clauses.append("(client_ip LIKE ? OR client_name LIKE ?)")
+        clauses.append(
+            "(client_ip LIKE ? OR client_name LIKE ? OR "
+            "client_ip IN (SELECT client_ip FROM client_identities WHERE client_name LIKE ?))"
+        )
         client_pattern = "%" + client + "%"
-        args.extend([client_pattern, client_pattern])
+        args.extend([client_pattern, client_pattern, client_pattern])
     if server:
         clauses.append("server_id = ?")
         args.append(server)
@@ -2700,18 +2664,13 @@ async def delete_key(key_id: int, request: Request):
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request):
     s = require_session(request)
-    mode = db.get_setting("block_response", "nxdomain")
-    unmatched_scope_action = db.get_setting("unmatched_scope_action", "allow")
-    if unmatched_scope_action not in {"allow", "deny"}:
-        unmatched_scope_action = "allow"
-    global_blocklist_scope_mode = db.get_setting(
-        "global_blocklist_scope_mode",
-        "all_clients",
-    )
-    if global_blocklist_scope_mode not in {"all_clients", "matched_scopes"}:
-        global_blocklist_scope_mode = "all_clients"
-    retention = db.get_setting("max_query_logs", "25000")
-    retention_days = db.get_setting("max_query_log_age_days", "0")
+    snapshot = engine.snapshot
+    mode = snapshot.response_mode
+    unmatched_scope_action = snapshot.unmatched_scope_action
+    global_blocklist_scope_mode = snapshot.global_blocklist_scope_mode
+    retention = str(engine.logger.max_rows)
+    retention_days = str(engine.logger.max_age_days)
+    log_request_json = engine.logger.capture_request_json
     default_timezone = system_default_timezone()
     ui_theme = application_theme()
     tls_status = tls_manager.status()
@@ -2830,6 +2789,10 @@ def settings_page(request: Request):
                   <small>Oldest rows are removed when this cap is exceeded.</small>
                 </label>
               </div>
+              <label class="full checkbox-row">
+                <input type="checkbox" name="log_request_json" value="1" {"checked" if log_request_json else ""}>
+                <span><b>Store full policy request JSON</b><small>Disabled by default to reduce serialization work, database writes, and log size. Enable only when raw request payloads are needed for troubleshooting.</small></span>
+              </label>
             </div>
 
             <div class="form-section full">
@@ -3091,6 +3054,7 @@ async def save_appearance_settings(request: Request):
             error="Appearance must be set to Dark or Light",
         )
     db.set_setting("ui_theme", ui_theme)
+    _update_runtime_settings_cache(ui_theme=ui_theme)
     return redirect(
         "/settings#appearance",
         notice=f"Appearance changed to {ui_theme.title()}",
@@ -3129,6 +3093,7 @@ async def save_settings(request: Request):
             error="Default timezone must be a valid IANA timezone such as America/New_York",
         )
 
+    log_request_json = str(form.get("log_request_json", "")).strip() == "1"
     db.set_settings(
         {
             "block_response": mode,
@@ -3136,11 +3101,17 @@ async def save_settings(request: Request):
             "global_blocklist_scope_mode": global_blocklist_scope_mode,
             "max_query_logs": str(retention),
             "max_query_log_age_days": str(retention_days),
+            "log_request_json": "1" if log_request_json else "0",
             "default_timezone": default_timezone,
         }
     )
-    engine.logger.configure_retention(retention, retention_days)
-    engine.reload()
+    _update_runtime_settings_cache(default_timezone=default_timezone)
+    engine.logger.configure_retention(
+        retention,
+        retention_days,
+        capture_request_json=log_request_json,
+    )
+    engine.reload_settings()
 
     try:
         age_deleted, row_deleted = engine.logger.prune_now()
