@@ -1535,11 +1535,17 @@ def scopes_page(request: Request):
 
     def blocklist_option(blocklist, selected: set[int]) -> str:
         is_global = bool(blocklist["use_globally"])
+        is_whitelist = str(blocklist["list_type"] or "block") == "whitelist"
         checked = " checked" if int(blocklist["id"]) in selected else ""
         disabled_attr = " disabled" if is_global else ""
         disabled_class = " global-disabled" if is_global else ""
         status_class = "green" if blocklist["enabled"] else "gray"
         global_badge = '<span class="scope-list-global">Global</span>' if is_global else ""
+        type_badge = (
+            '<span class="scope-list-global">Whitelist</span>'
+            if is_whitelist
+            else '<span class="scope-list-scheduled">Block</span>'
+        )
         schedule_badge = (
             '<span class="scope-list-scheduled">Scheduled</span>'
             if blocklist["schedule_enabled"]
@@ -1561,22 +1567,44 @@ def scopes_page(request: Request):
             f'<span class="scope-list-copy"><span class="scope-list-title">'
             f'<b>{esc(blocklist["name"])}</b>'
             f'<span class="pill {status_class}">{"Enabled" if blocklist["enabled"] else "Disabled"}</span>'
-            f'{global_badge}{schedule_badge}</span>'
+            f'{type_badge}{global_badge}{schedule_badge}</span>'
             f'<small>{detail}</small>{schedule_detail}'
             f'</span></label>'
         )
 
     def blocklist_editor(selected: set[int]) -> str:
+        block_only = [
+            item for item in blocklists
+            if str(item["list_type"] or "block") == "block"
+        ]
+        whitelist_only = [
+            item for item in blocklists
+            if str(item["list_type"] or "block") == "whitelist"
+        ]
         if not blocklists:
             return (
-                '<div class="scope-empty">No block lists exist yet. '
-                '<a href="/lists#add-list">Import one first →</a></div>'
+                '<div class="scope-empty">No block lists or whitelists exist yet. '
+                '<a href="/lists#add-list">Import a block list →</a> · '
+                '<a href="/whitelists#add-list">Add a whitelist →</a></div>'
             )
-        return (
-            '<div class="scope-list-grid">'
-            + "".join(blocklist_option(blocklist, selected) for blocklist in blocklists)
-            + '</div>'
-        )
+
+        sections: list[str] = []
+        if block_only:
+            sections.append(
+                '<section class="scope-group"><div class="scope-group-head"><b>Block Lists</b>'
+                f'<span>{len(block_only)}</span></div>'
+                + "".join(blocklist_option(item, selected) for item in block_only)
+                + '</section>'
+            )
+        if whitelist_only:
+            sections.append(
+                '<section class="scope-group"><div class="scope-group-head"><b>Whitelists</b>'
+                f'<span>{len(whitelist_only)}</span></div>'
+                + "".join(blocklist_option(item, selected) for item in whitelist_only)
+                + '</section>'
+            )
+        return '<div class="scope-list-grid">' + "".join(sections) + '</div>'
+
 
     cards = ""
     for scope in scopes:
@@ -1657,14 +1685,14 @@ def scopes_page(request: Request):
                 <button class="small-button">{"Pause" if scope["state"] == "active" else "Resume"}</button>
               </form>
               <a class="small-button edit-link" href="#edit-scope-{int(scope["id"])}">Edit & assign</a>
-              <form method="post" action="/admin/scopes/{int(scope["id"])}/delete" onsubmit="return confirm('Delete this scope and its block-list assignments?')">
+              <form method="post" action="/admin/scopes/{int(scope["id"])}/delete" onsubmit="return confirm('Delete this scope and its list assignments?')">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                 <button class="small-button danger">Delete</button>
               </form>
             </div>
           </div>
           <details class="scope-editor" id="edit-scope-{int(scope["id"])}">
-            <summary><span><b>Edit {esc(scope_kind_label.lower())}</b><small>Identity, target, state, schedule and block-list assignments</small></span><span class="editor-chevron">⌄</span></summary>
+            <summary><span><b>Edit {esc(scope_kind_label.lower())}</b><small>Identity, target, state, schedule and list assignments</small></span><span class="editor-chevron">⌄</span></summary>
             <div class="scope-edit-body">
               <form method="post" action="/admin/scopes/{int(scope["id"])}/edit" class="form-grid scope-edit-form">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
@@ -1685,7 +1713,7 @@ def scopes_page(request: Request):
 
                 <div class="form-section full">
                   <div class="form-section-head">
-                    <div><b>Block-list assignments</b><p>Select lists that should explicitly apply to this scope. Lists marked Global already apply everywhere, but can also remain explicitly assigned for future policy changes.</p></div>
+                    <div><b>List assignments</b><p>Select block lists and whitelists that should explicitly apply to this scope. Lists marked Global already apply according to the configured global-list reach.</p></div>
                     <span>{len(selected)} selected</span>
                   </div>
                   {blocklist_editor(selected)}
@@ -1708,7 +1736,7 @@ def scopes_page(request: Request):
     body = f'''<div class="split-grid scopes-layout">
       <section class="panel">
         <div class="panel-head">
-          <div><div class="panel-kicker">Policy targets</div><h3>Networks, endpoints & hostnames</h3><p>Edit targets, schedules, pause/resume enforcement, and block-list assignments without leaving this page.</p></div>
+          <div><div class="panel-kicker">Policy targets</div><h3>Networks, endpoints & hostnames</h3><p>Edit targets, schedules, pause/resume enforcement, and block-list and whitelist assignments without leaving this page.</p></div>
           <span class="result-count">{len(scopes)} scopes</span>
         </div>
         <div class="scope-card-list">{cards}</div>
@@ -1732,7 +1760,7 @@ def scopes_page(request: Request):
             {new_scope_schedule_fields}
           </div>
           <div class="form-section full">
-            <div class="form-section-head"><div><b>Initial block-list assignments</b><p>Optional. Global lists apply automatically even when they are not explicitly selected.</p></div></div>
+            <div class="form-section-head"><div><b>Initial list assignments</b><p>Optional. Assign scoped block lists and whitelists; Global lists apply automatically.</p></div></div>
             {new_list_editor}
           </div>
           <button class="primary-button full" type="submit">Add scope</button>
@@ -1848,7 +1876,7 @@ async def add_scope(request: Request):
     engine.reload()
     return redirect(
         f"/scopes#scope-{scope_id}",
-        notice=f"Added {name} with {assigned} block-list assignment{'s' if assigned != 1 else ''}",
+        notice=f"Added {name} with {assigned} list assignment{'s' if assigned != 1 else ''}",
     )
 
 
@@ -1921,7 +1949,7 @@ async def edit_scope(scope_id: int, request: Request):
     engine.reload()
     return redirect(
         f"/scopes#scope-{scope_id}",
-        notice=f"Saved {name}; {assigned} block-list assignment{'s' if assigned != 1 else ''}",
+        notice=f"Saved {name}; {assigned} list assignment{'s' if assigned != 1 else ''}",
     )
 
 
