@@ -1207,23 +1207,31 @@ def _save_list_scope_assignments(con, list_id: int, scope_ids: list[int]) -> int
 @app.post("/admin/lists")
 async def add_list(request: Request):
     _, form = await require_post_session(request)
+    list_type = str(form.get("list_type", "block")).strip().lower()
+    if list_type not in {"block", "whitelist"}:
+        list_type = "block"
+    base_path = "/whitelists" if list_type == "whitelist" else "/lists"
+    list_label = "whitelist" if list_type == "whitelist" else "block list"
+
     name = str(form.get("name", "")).strip()
     format_name = str(form.get("format", "auto")).strip().lower()
     source_url = str(form.get("source_url", "")).strip()
     text = str(form.get("text", ""))
     global_list = str(form.get("global_list", "")) == "1"
     try:
-        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(form)
+        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
+            form, list_label
+        )
     except ValueError as e:
-        return redirect("/lists", error=str(e))
+        return redirect(base_path, error=str(e))
     scope_ids = _scope_ids_from_form(form)
     if global_list:
         scope_ids = []
 
     if not name:
-        return redirect("/lists", error="List name is required")
+        return redirect(base_path, error="List name is required")
     if format_name not in {"auto", "hosts", "adblock", "domains"}:
-        return redirect("/lists", error="Unsupported block-list format")
+        return redirect(base_path, error="Unsupported list format")
     try:
         refresh_minutes = max(1, min(int(form.get("refresh_minutes", "1440")), 10080))
     except (TypeError, ValueError):
@@ -1239,23 +1247,23 @@ async def add_list(request: Request):
         try:
             content = fetch_url(source_url)
         except Exception as e:
-            return redirect("/lists", error=f"Could not fetch list URL: {e}")
+            return redirect(base_path, error=f"Could not fetch list URL: {e}")
         source_type = "url"
 
     if not content.strip():
-        return redirect("/lists", error="Provide a URL, upload, or pasted list content")
+        return redirect(base_path, error="Provide a URL, upload, or pasted list content")
 
     with db.connect() as con:
         try:
             cur = con.execute(
                 """
                 INSERT INTO blocklists(
-                    name,source_type,source_url,format,use_globally,refresh_minutes,
+                    name,source_type,source_url,format,list_type,use_globally,refresh_minutes,
                     schedule_enabled,schedule_days,schedule_start,schedule_end,schedule_timezone
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    name, source_type, source_url or None, format_name,
+                    name, source_type, source_url or None, format_name, list_type,
                     1 if global_list else 0, refresh_minutes,
                     1 if schedule_enabled else 0, schedule_days,
                     schedule_start, schedule_end, schedule_timezone,
@@ -1263,7 +1271,7 @@ async def add_list(request: Request):
             )
             list_id = int(cur.lastrowid)
         except Exception as e:
-            return redirect("/lists", error=str(e))
+            return redirect(base_path, error=str(e))
 
     try:
         count, ignored = import_list(list_id, content, format_name)
@@ -1272,11 +1280,11 @@ async def add_list(request: Request):
     except Exception as e:
         with db.connect() as con:
             con.execute("DELETE FROM blocklists WHERE id=?", (list_id,))
-        return redirect("/lists", error=f"Import failed: {e}")
+        return redirect(base_path, error=f"Import failed: {e}")
 
     engine.reload()
     return redirect(
-        f"/lists#list-{list_id}",
+        f"{base_path}#list-{list_id}",
         notice=f"Imported {count:,} entries, ignored {ignored:,}, assigned to {assigned} scope{'s' if assigned != 1 else ''}",
     )
 
@@ -1284,15 +1292,25 @@ async def add_list(request: Request):
 @app.post("/admin/lists/{list_id}/edit")
 async def edit_list(list_id: int, request: Request):
     _, form = await require_post_session(request)
+
+    with db.connect() as con:
+        existing = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
+    if not existing:
+        return redirect("/lists", error="List not found")
+    base_path = _list_base_path(existing)
+    list_label = _list_label(existing)
+
     name = str(form.get("name", "")).strip()
     format_name = str(form.get("format", "auto")).strip().lower()
     source_url = str(form.get("source_url", "")).strip()
     enabled = str(form.get("enabled", "")) == "1"
     global_list = str(form.get("global_list", "")) == "1"
     try:
-        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(form)
+        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
+            form, list_label
+        )
     except ValueError as e:
-        return redirect(f"/lists#edit-list-{list_id}", error=str(e))
+        return redirect(f"{base_path}#edit-list-{list_id}", error=str(e))
     action = str(form.get("action", "save")).strip().lower()
     replacement_text = str(form.get("replacement_text", ""))
     replacement_file = form.get("replacement_file")
@@ -1301,18 +1319,13 @@ async def edit_list(list_id: int, request: Request):
         scope_ids = []
 
     if not name:
-        return redirect(f"/lists#edit-list-{list_id}", error="List name is required")
+        return redirect(f"{base_path}#edit-list-{list_id}", error="List name is required")
     if format_name not in {"auto", "hosts", "adblock", "domains"}:
-        return redirect(f"/lists#edit-list-{list_id}", error="Unsupported block-list format")
+        return redirect(f"{base_path}#edit-list-{list_id}", error="Unsupported list format")
     try:
         refresh_minutes = max(1, min(int(form.get("refresh_minutes", "1440")), 10080))
     except (TypeError, ValueError):
         refresh_minutes = 1440
-
-    with db.connect() as con:
-        existing = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
-    if not existing:
-        return redirect("/lists", error="Block list not found")
 
     replacement_content: str | None = None
     source_type = str(existing["source_type"])
@@ -1321,7 +1334,7 @@ async def edit_list(list_id: int, request: Request):
         if action == "refresh":
             if not source_url:
                 return redirect(
-                    f"/lists#edit-list-{list_id}",
+                    f"{base_path}#edit-list-{list_id}",
                     error="A source URL is required to refresh this list",
                 )
             replacement_content = fetch_url(source_url)
@@ -1337,7 +1350,7 @@ async def edit_list(list_id: int, request: Request):
         elif source_type == "url":
             source_type = "manual"
     except Exception as e:
-        return redirect(f"/lists#edit-list-{list_id}", error=f"Could not refresh list: {e}")
+        return redirect(f"{base_path}#edit-list-{list_id}", error=f"Could not refresh list: {e}")
 
     with db.connect() as con:
         try:
@@ -1370,24 +1383,24 @@ async def edit_list(list_id: int, request: Request):
             con.execute("COMMIT")
         except Exception as e:
             con.execute("ROLLBACK")
-            return redirect(f"/lists#edit-list-{list_id}", error=f"Could not save list: {e}")
+            return redirect(f"{base_path}#edit-list-{list_id}", error=f"Could not save list: {e}")
 
     replaced_notice = ""
     if replacement_content is not None:
         if not replacement_content.strip():
-            return redirect(f"/lists#edit-list-{list_id}", error="Replacement list content is empty")
+            return redirect(f"{base_path}#edit-list-{list_id}", error="Replacement list content is empty")
         try:
             count, ignored = import_list(list_id, replacement_content, format_name)
             replaced_notice = f"; replaced contents with {count:,} entries ({ignored:,} ignored)"
         except Exception as e:
             return redirect(
-                f"/lists#edit-list-{list_id}",
+                f"{base_path}#edit-list-{list_id}",
                 error=f"Settings were saved, but replacing list contents failed: {e}",
             )
 
     engine.reload()
     return redirect(
-        f"/lists#list-{list_id}",
+        f"{base_path}#list-{list_id}",
         notice=f"Saved {name}; {assigned} scoped assignment{'s' if assigned != 1 else ''}{replaced_notice}",
     )
 
@@ -1396,19 +1409,33 @@ async def edit_list(list_id: int, request: Request):
 async def toggle_list(list_id: int, request: Request):
     await require_post_session(request)
     with db.connect() as con:
-        con.execute("UPDATE blocklists SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (list_id,))
+        row = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
+        if not row:
+            return redirect("/lists", error="List not found")
+        base_path = _list_base_path(row)
+        con.execute(
+            "UPDATE blocklists SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?",
+            (list_id,),
+        )
     engine.reload()
-    return redirect(f"/lists#list-{list_id}", notice="List state updated")
+    return redirect(f"{base_path}#list-{list_id}", notice="List state updated")
 
 
 @app.post("/admin/lists/{list_id}/delete")
 async def delete_list(list_id: int, request: Request):
     await require_post_session(request)
     with db.connect() as con:
+        row = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
+        if not row:
+            return redirect("/lists", error="List not found")
+        base_path = _list_base_path(row)
+        label = _list_label(row)
         con.execute("DELETE FROM blocklists WHERE id=?", (list_id,))
     engine.reload()
-    return redirect("/lists", notice="Block list deleted")
+    return redirect(base_path, notice=f"{label.title()} deleted")
 
+
+def _scope_network_values
 
 def _scope_network_values(scope, network_targets: dict[int, dict[int, str]]) -> tuple[str, str]:
     values = network_targets.get(int(scope["id"]), {})
