@@ -26,15 +26,15 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.17.0"
+APP_VERSION = "1.18.0"
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 db = Database()
 auth = AuthManager(db)
-engine = PolicyEngine(db)
 rdns = ReverseDnsResolver()
+engine = PolicyEngine(db, rdns=rdns)
 refresher = BlocklistRefresher(db, engine)
 tls_manager = TlsManager(db)
 
@@ -49,6 +49,8 @@ def start_background_workers() -> None:
 def stop_background_workers() -> None:
     tls_manager.stop()
     refresher.stop()
+    engine.close()
+    rdns.close()
 
 
 class Question(BaseModel):
@@ -2572,6 +2574,7 @@ async def save_settings(request: Request):
             "default_timezone": default_timezone,
         }
     )
+    engine.logger.configure_retention(retention, retention_days)
     engine.reload()
 
     try:
