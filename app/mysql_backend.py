@@ -21,6 +21,7 @@ class MySQLConfig:
     ssl_ca: str | None
     ssl_cert: str | None
     ssl_key: str | None
+    ssl_enabled: bool
     ssl_verify_cert: bool
 
     @classmethod
@@ -43,6 +44,12 @@ class MySQLConfig:
             timeout = int(os.getenv("MYSQL_CONNECT_TIMEOUT", "10"))
         except ValueError as exc:
             raise ValueError("MYSQL_CONNECT_TIMEOUT must be an integer") from exc
+        ssl_enabled = os.getenv("MYSQL_SSL_ENABLED", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         verify = os.getenv("MYSQL_SSL_VERIFY_CERT", "1").strip().lower() in {
             "1",
             "true",
@@ -59,6 +66,7 @@ class MySQLConfig:
             ssl_ca=os.getenv("MYSQL_SSL_CA", "").strip() or None,
             ssl_cert=os.getenv("MYSQL_SSL_CERT", "").strip() or None,
             ssl_key=os.getenv("MYSQL_SSL_KEY", "").strip() or None,
+            ssl_enabled=ssl_enabled,
             ssl_verify_cert=verify,
         )
 
@@ -163,7 +171,12 @@ class MySQLBackend:
 
     def _connect_raw(self):
         ssl: dict[str, Any] | None = None
-        if self.config.ssl_ca or self.config.ssl_cert or self.config.ssl_key:
+        if (
+            self.config.ssl_enabled
+            or self.config.ssl_ca
+            or self.config.ssl_cert
+            or self.config.ssl_key
+        ):
             ssl = {}
             if self.config.ssl_ca:
                 ssl["ca"] = self.config.ssl_ca
@@ -173,7 +186,7 @@ class MySQLBackend:
                 ssl["key"] = self.config.ssl_key
             ssl["check_hostname"] = self.config.ssl_verify_cert
 
-        return pymysql.connect(
+        con = pymysql.connect(
             host=self.config.host,
             port=self.config.port,
             user=self.config.user,
@@ -187,6 +200,9 @@ class MySQLBackend:
             cursorclass=DictCursor,
             ssl=ssl,
         )
+        with con.cursor() as cursor:
+            cursor.execute("SET time_zone = '+00:00'")
+        return con
 
     @contextmanager
     def connect(self) -> Iterator[MySQLConnection]:
