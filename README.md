@@ -211,6 +211,7 @@ The Dashboard shows recent DNS activity, and the full Query Log records:
 - client port;
 - DNS transport/protocol;
 - whether the policy request arrived over HTTP or HTTPS;
+- end-to-end policy API response time in milliseconds, measured from request receipt through the final response send;
 - query name, type, and class;
 - allow/block result;
 - block reason;
