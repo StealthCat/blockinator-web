@@ -1143,14 +1143,19 @@ async def add_manual_list_domain(list_id: int, request: Request):
         )
 
     with db.connect() as con:
-        cur = con.execute(
-            "INSERT OR IGNORE INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+        existed = con.execute(
+            "SELECT 1 FROM block_entries WHERE blocklist_id=? AND domain=?",
             (list_id, domain),
-        )
+        ).fetchone() is not None
+        if not existed:
+            con.execute(
+                "INSERT OR IGNORE INTO block_entries(blocklist_id,domain) VALUES(?,?)",
+                (list_id, domain),
+            )
         count = _refresh_manual_list_count(con, list_id)
 
     engine.reload()
-    if cur.rowcount == 0:
+    if existed:
         return redirect(
             f"{base_path}/{list_id}/domains?q={quote(domain)}",
             notice=f"{domain} is already in this list",
@@ -1185,14 +1190,19 @@ async def remove_manual_list_domain(list_id: int, request: Request):
         return redirect(return_path, error="Invalid domain")
 
     with db.connect() as con:
-        cur = con.execute(
-            "DELETE FROM block_entries WHERE blocklist_id=? AND domain=?",
+        existed = con.execute(
+            "SELECT 1 FROM block_entries WHERE blocklist_id=? AND domain=?",
             (list_id, domain),
-        )
+        ).fetchone() is not None
+        if existed:
+            con.execute(
+                "DELETE FROM block_entries WHERE blocklist_id=? AND domain=?",
+                (list_id, domain),
+            )
         count = _refresh_manual_list_count(con, list_id)
 
     engine.reload()
-    if cur.rowcount == 0:
+    if not existed:
         return redirect(
             return_path,
             error=f"{domain} was not found in this list",
