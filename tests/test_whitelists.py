@@ -410,3 +410,17 @@ def test_existing_lists_migrate_to_block_type_by_default():
     assert row["list_type"] == "block"
     td.cleanup()
 
+def test_whitelist_decision_has_distinct_dashboard_and_query_log_state():
+    source = Path("app/main.py").read_text(encoding="utf-8")
+    stylesheet = Path("app/static/style.css").read_text(encoding="utf-8")
+
+    assert 'def decision_kind(row) -> str:' in source
+    assert 'return "whitelisted"' in source
+    assert '"✦", "Whitelisted"' in source
+    assert 'decision_pill_html(r)' in source
+    assert '<option value="whitelisted"' in source
+    assert "matched_list_type='whitelist' OR reason='whitelist_match'" in source
+    assert "COALESCE(matched_list_type,'')<>'whitelist'" in source
+    assert ".decision-pill.whitelisted .decision-icon" in stylesheet
+    assert ".pill.whitelist" in stylesheet
+
