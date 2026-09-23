@@ -168,6 +168,7 @@ class Scope:
 class BlockListCache:
     id: int
     name: str
+    list_type: str
     enabled: bool
     use_globally: bool
     domains: frozenset[str]
@@ -196,6 +197,7 @@ class Decision:
     matched_list: str | None = None
     matched_domain: str | None = None
     response_mode: str = "nxdomain"
+    matched_list_type: str | None = None
 
 
 class QueryLogger:
@@ -256,8 +258,8 @@ class QueryLogger:
                         """
                         INSERT INTO query_log(
                           ts,server_id,client_ip,client_name,client_port,protocol,policy_scheme,
-                          qname,qtype,qclass,blocked,reason,matched_scope,matched_list,request_json
-                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                          qname,qtype,qclass,blocked,reason,matched_scope,matched_list,matched_list_type,request_json
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         [
                             (
@@ -267,7 +269,7 @@ class QueryLogger:
                                 r.get("qname"), r.get("qtype"), r.get("qclass"),
                                 1 if r["blocked"] else 0,
                                 r.get("reason"), r.get("matched_scope"), r.get("matched_list"),
-                                r.get("request_json"),
+                                r.get("matched_list_type"), r.get("request_json"),
                             ) for r in batch
                         ],
                     )
@@ -347,7 +349,13 @@ class PolicyEngine:
                     if 0 <= day <= 6:
                         schedule_days.add(day)
                 new_lists[r["id"]] = BlockListCache(
-                    id=r["id"], name=r["name"], enabled=bool(r["enabled"]),
+                    id=r["id"], name=r["name"],
+                    list_type=(
+                        str(r["list_type"] or "block")
+                        if str(r["list_type"] or "block") in {"block", "whitelist"}
+                        else "block"
+                    ),
+                    enabled=bool(r["enabled"]),
                     use_globally=bool(r["use_globally"]), domains=domains,
                     schedule_enabled=bool(r["schedule_enabled"]),
                     schedule_days=frozenset(schedule_days),
@@ -570,12 +578,39 @@ class PolicyEngine:
                 return Decision(False, "no_active_lists", effective_scope, response_mode=self.response_mode)
 
             suffixes = self.suffixes(domain)
+
+            # Whitelists are explicit allow rules and take precedence over
+            # block lists whenever both are active for the same client.
             for lid in sorted(active_ids):
                 bl = self.blocklists[lid]
+                if bl.list_type != "whitelist":
+                    continue
                 for suffix in suffixes:
                     if suffix in bl.domains:
                         return Decision(
-                            True, "blocklist_match", effective_scope, bl.name, suffix, self.response_mode
+                            False,
+                            "whitelist_match",
+                            effective_scope,
+                            bl.name,
+                            suffix,
+                            self.response_mode,
+                            "whitelist",
+                        )
+
+            for lid in sorted(active_ids):
+                bl = self.blocklists[lid]
+                if bl.list_type != "block":
+                    continue
+                for suffix in suffixes:
+                    if suffix in bl.domains:
+                        return Decision(
+                            True,
+                            "blocklist_match",
+                            effective_scope,
+                            bl.name,
+                            suffix,
+                            self.response_mode,
+                            "block",
                         )
             if effective_scope is None and self.unmatched_scope_action == "deny":
                 return Decision(
@@ -626,6 +661,7 @@ class PolicyEngine:
             "reason": decision.reason,
             "matched_scope": decision.matched_scope,
             "matched_list": decision.matched_list,
+            "matched_list_type": decision.matched_list_type,
             "request_json": json.dumps(request_obj, separators=(",", ":"), ensure_ascii=False),
         })
         return decision
