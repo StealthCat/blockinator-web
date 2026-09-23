@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.17.0 — Selectable SQLite / MySQL database backend
+
+- Added `DATABASE_BACKEND=sqlite|mysql`; SQLite remains the default and requires no external database service.
+- Added support for remote MySQL 8.x databases using PyMySQL.
+- Added MySQL schema creation for settings, policy lists, canonical domains, assignments, policy targets, query logs, learned PTR identities, administrator sessions, and API keys.
+- Added a compatibility SQL layer for qmark parameters, transactions, case-insensitive lookups, SQLite-style upserts, and other runtime SQL differences.
+- Preserved normalized domain storage across both backends so duplicate domains are still stored once globally.
+- Added backend-aware URL-list scheduling, atomic list refreshes, transient lock/deadlock retries, query-log retention, and orphan-domain cleanup.
+- Added optional MySQL TLS settings for CA, client certificate/key, certificate verification, and identity verification.
+- MySQL sessions are pinned to UTC so scheduling and timestamps remain consistent with SQLite behavior.
+- System Settings → Runtime now shows the active database backend and connection target without exposing credentials.
+- Docker Compose and `.env.example` now expose the database backend and MySQL connection settings.
+- Added a real MySQL 8.4 GitHub Actions service and integration tests covering schema initialization, settings, authentication, policy decisions, whitelist precedence, canonical domain storage, query logging, retention, refresh scheduling, and list refresh.
+- Database backend changes take effect at startup; selecting a different backend does not automatically migrate data between SQLite and MySQL.
+- Updated the application version to 1.17.0.
+
 ## 1.16.0 — Whitelists
 
 - Added first-class whitelists with the same source, upload/paste, manual-domain, URL refresh, scheduling, enable/disable, Global, and policy-target assignment features as block lists.
