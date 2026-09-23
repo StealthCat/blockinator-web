@@ -197,7 +197,7 @@ def fetch_parse_url_conditional(
         raise
 
 
-def fetch_url_conditional(def fetch_url_conditional(
+def fetch_url_conditional(
     url: str,
     etag: str | None = None,
     last_modified: str | None = None,
