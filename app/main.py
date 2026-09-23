@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 from datetime import datetime, time as dt_time, timezone
+from time import perf_counter_ns
 from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -22,19 +23,71 @@ from .db import Database
 from .policy import PolicyEngine, normalize_hostname_pattern
 from .rdns import ReverseDnsResolver
 from .refresher import BlocklistRefresher
+from .statistics import build_statistics_snapshot
 from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.15.10"
+APP_VERSION = "1.18.5"
+
+
+class PolicyResponseTimingMiddleware:
+    """Measure policy API latency through the final ASGI response send."""
+
+    def __init__(self, app, engine: PolicyEngine) -> None:
+        self.app = app
+        self.engine = engine
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (
+            scope.get("type") != "http"
+            or scope.get("path") != "/api/v1/decision"
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        started_ns = perf_counter_ns()
+        state = scope.setdefault("state", {})
+        logged = False
+
+        async def send_with_timing(message) -> None:
+            nonlocal logged
+            await send(message)
+            if (
+                not logged
+                and message.get("type") == "http.response.body"
+                and not message.get("more_body", False)
+            ):
+                log_row = state.pop("policy_log_row", None)
+                if log_row is not None:
+                    log_row["response_time_ms"] = (
+                        perf_counter_ns() - started_ns
+                    ) / 1_000_000.0
+                    self.engine.logger.submit(log_row)
+                    logged = True
+
+        await self.app(scope, receive, send_with_timing)
+
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 db = Database()
+_runtime_settings = db.get_settings(
+    {
+        "default_timezone": os.getenv("TZ", "UTC").strip() or "UTC",
+        "ui_theme": "dark",
+    }
+)
+_runtime_default_timezone = (
+    _runtime_settings["default_timezone"].strip() or "UTC"
+)
+_runtime_ui_theme = _runtime_settings["ui_theme"].strip().lower() or "dark"
+
 auth = AuthManager(db)
-engine = PolicyEngine(db)
 rdns = ReverseDnsResolver()
+engine = PolicyEngine(db, rdns=rdns)
+app.add_middleware(PolicyResponseTimingMiddleware, engine=engine)
 refresher = BlocklistRefresher(db, engine)
 tls_manager = TlsManager(db)
 
@@ -49,6 +102,9 @@ def start_background_workers() -> None:
 def stop_background_workers() -> None:
     tls_manager.stop()
     refresher.stop()
+    engine.close()
+    auth.close()
+    rdns.close()
 
 
 class Question(BaseModel):
@@ -120,6 +176,67 @@ def querying_server_html(server_id: str | None) -> str:
         f'<span><b>{esc(label)}</b><small>DNS server</small></span>'
         f'</span>'
     )
+
+
+def decision_kind(row) -> str:
+    if bool(row["blocked"]):
+        return "blocked"
+    list_type = str(row["matched_list_type"] or "").strip().lower()
+    reason = str(row["reason"] or "").strip().lower()
+    if list_type == "whitelist" or reason == "whitelist_match":
+        return "whitelisted"
+    return "allowed"
+
+
+def decision_pill_html(row) -> str:
+    kind = decision_kind(row)
+    if kind == "blocked":
+        css_class, icon, label, title = (
+            "red blocked",
+            "×",
+            "Blocked",
+            "Blocked by policy",
+        )
+    elif kind == "whitelisted":
+        matched_list = str(row["matched_list"] or "").strip()
+        css_class, icon, label = "whitelist whitelisted", "✦", "Whitelisted"
+        title = (
+            f"Allowed by whitelist: {matched_list}"
+            if matched_list
+            else "Allowed by whitelist"
+        )
+    else:
+        css_class, icon, label, title = (
+            "green allowed",
+            "✓",
+            "Allowed",
+            "Allowed by policy",
+        )
+    return (
+        f'<span class="pill decision-pill {css_class}" title="{esc(title)}">'
+        f'<span class="decision-icon" aria-hidden="true">{icon}</span>'
+        f'<span>{label}</span></span>'
+    )
+
+
+def decision_match_text(row) -> str:
+    matched_list = str(row["matched_list"] or "").strip()
+    if matched_list:
+        if decision_kind(row) == "whitelisted":
+            return f"Whitelist: {matched_list}"
+        return matched_list
+    return str(row["reason"] or "") if row["blocked"] else ""
+
+
+def response_time_text(value) -> str:
+    if value is None:
+        return "—"
+    milliseconds = float(value)
+    if milliseconds < 1:
+        return f"{milliseconds:.3f} ms"
+    if milliseconds < 100:
+        return f"{milliseconds:.2f} ms"
+    return f"{milliseconds:.1f} ms"
 
 
 DAY_LABELS = [
@@ -241,11 +358,20 @@ def schedule_fields_html(row=None, default_timezone: str = "UTC") -> str:
     </div>'''
 
 
+def _update_runtime_settings_cache(
+    *,
+    default_timezone: str | None = None,
+    ui_theme: str | None = None,
+) -> None:
+    global _runtime_default_timezone, _runtime_ui_theme
+    if default_timezone is not None:
+        _runtime_default_timezone = default_timezone
+    if ui_theme is not None:
+        _runtime_ui_theme = ui_theme
+
+
 def system_default_timezone() -> str:
-    configured = db.get_setting(
-        "default_timezone",
-        os.getenv("TZ", "UTC").strip() or "UTC",
-    ).strip() or "UTC"
+    configured = _runtime_default_timezone
     try:
         ZoneInfo(configured)
     except (ZoneInfoNotFoundError, ValueError):
@@ -254,10 +380,8 @@ def system_default_timezone() -> str:
 
 
 def log_client_names(rows) -> dict[str, str | None]:
-    """Use stored PTR names first, resolve missing names, and backfill old rows."""
+    """Render stored or already-learned PTR identities without blocking on DNS."""
     names: dict[str, str | None] = {}
-    missing: list[str] = []
-
     for row in rows:
         address = str(row["client_ip"] or "").strip()
         stored_name = None
@@ -265,66 +389,13 @@ def log_client_names(rows) -> dict[str, str | None]:
             stored_name = row["client_name"]
         except (IndexError, KeyError):
             stored_name = None
-        if stored_name:
-            names[address] = str(stored_name)
-        else:
-            missing.append(address)
-
-    if missing:
-        resolved = rdns.resolve_many(missing)
-        names.update(resolved)
-        updates = [
-            (hostname, address)
-            for address, hostname in resolved.items()
-            if hostname
-        ]
-        if updates:
-            with db.connect() as con:
-                con.executemany(
-                    """
-                    UPDATE query_log
-                    SET client_name=?
-                    WHERE client_ip=? AND (client_name IS NULL OR client_name='')
-                    """,
-                    updates,
-                )
-
+        names[address] = (
+            str(stored_name)
+            if stored_name
+            else engine.known_client_name(address)
+        )
     return names
 
-
-def backfill_query_client_names(limit: int = 128) -> None:
-    """Resolve a bounded set of legacy log clients before hostname filtering."""
-    with db.connect() as con:
-        rows = con.execute(
-            """
-            SELECT DISTINCT client_ip
-            FROM query_log
-            WHERE client_name IS NULL OR client_name=''
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (max(1, min(limit, 512)),),
-        ).fetchall()
-
-    if not rows:
-        return
-
-    resolved = rdns.resolve_many(row["client_ip"] for row in rows)
-    updates = [
-        (hostname, address)
-        for address, hostname in resolved.items()
-        if hostname
-    ]
-    if updates:
-        with db.connect() as con:
-            con.executemany(
-                """
-                UPDATE query_log
-                SET client_name=?
-                WHERE client_ip=? AND (client_name IS NULL OR client_name='')
-                """,
-                updates,
-            )
 
 def redirect(path: str, notice: str | None = None, error: str | None = None):
     parts = []
@@ -357,6 +428,12 @@ async def require_post_session(request: Request):
         raise HTTPException(status_code=403, detail="invalid CSRF token")
     return session, form
 
+
+def application_theme() -> str:
+    theme = _runtime_ui_theme
+    return theme if theme in {"dark", "light"} else "dark"
+
+
 def page(request: Request, title: str, active: str, body: str, session=None) -> HTMLResponse:
     notice = request.query_params.get("notice")
     error = request.query_params.get("error")
@@ -365,7 +442,9 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
 
     page_descriptions = {
         "dashboard": "Monitor DNS enforcement, request activity, and policy health at a glance.",
+        "statistics": "Watch live DNS request volume, blocks, and policy response latency over time.",
         "lists": "Import, organize, and control the domain intelligence that powers your blocking policy.",
+        "whitelists": "Create explicit allow rules with the same sources, schedules, assignments, and refresh controls as block lists.",
         "scopes": "Define filtering by network, exact endpoint, or reverse-DNS hostname and control each target independently.",
         "queries": "Inspect DNS decisions, troubleshoot policy matches, and follow activity across your clients.",
         "security": "Manage administrator access and the API credentials used by connected DNS resolvers.",
@@ -373,7 +452,9 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
     }
     page_actions = {
         "dashboard": ('/queries', 'View activity', 'arrow'),
+        "statistics": (None, None, None),
         "lists": ('#add-list', 'Import a list', 'plus'),
+        "whitelists": ('#add-list', 'Add whitelist', 'plus'),
         "scopes": ('#add-scope', 'Add endpoint', 'plus'),
         "queries": ('/queries', 'Reset filters', 'refresh'),
         "security": ('#create-key', 'Create API key', 'plus'),
@@ -382,7 +463,9 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
 
     nav = [
         ("/", "dashboard", "Dashboard", "⌂"),
+        ("/statistics", "statistics", "Statistics", "∿"),
         ("/lists", "lists", "Block Lists", "☷"),
+        ("/whitelists", "whitelists", "Whitelists", "✓"),
         ("/scopes", "scopes", "Policy Targets", "◎"),
         ("/queries", "queries", "Query Log", "≡"),
     ]
@@ -404,6 +487,8 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
         flash += f'<div class="flash bad"><span class="flash-icon">!</span><div><b>Something needs attention</b><span>{esc(error)}</span></div></div>'
 
     global_on = db.get_setting("global_blocking", "1") == "1"
+    ui_theme = application_theme()
+    theme_color = "#f4f7fb" if ui_theme == "light" else "#071018"
     status_label = "Protection active" if global_on else "Protection paused"
     status_detail = "DNS policy is being enforced" if global_on else "Requests are currently allowed"
     action_href, action_label, action_icon = page_actions.get(active, (None, None, None))
@@ -422,10 +507,10 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
         </form>"""
 
     return HTMLResponse(f"""<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="{ui_theme}">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#071018">
+<meta name="theme-color" content="{theme_color}">
 <title>{esc(title)} · Blockinator</title>
 <link rel="icon" href="/static/blockinator-mark.webp">
 <link rel="stylesheet" href="/static/style.css">
@@ -475,15 +560,24 @@ def api_key_ok(raw: str | None):
         raise HTTPException(status_code=401, detail="invalid API key")
     return info
 
-def import_list(list_id: int, text: str, fmt: str):
-    parsed = parse_blocklist(text, fmt)
+def import_list(
+    list_id: int,
+    text: str,
+    fmt: str,
+    reload_policy: bool = True,
+):
     with db.connect() as con:
-        con.execute("BEGIN")
-        con.execute("DELETE FROM block_entries WHERE blocklist_id=?", (list_id,))
-        con.executemany(
-            "INSERT OR IGNORE INTO block_entries(blocklist_id,domain) VALUES(?,?)",
-            [(list_id, d) for d in parsed.domains],
-        )
+        row = con.execute(
+            "SELECT list_type FROM blocklists WHERE id=?",
+            (list_id,),
+        ).fetchone()
+    list_type = str(row["list_type"] or "block") if row else "block"
+    if list_type not in {"block", "whitelist"}:
+        list_type = "block"
+    parsed = parse_blocklist(text, fmt, list_type)
+    with db.connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        db.replace_list_domains(con, list_id, parsed.domains)
         con.execute(
             """
             UPDATE blocklists
@@ -496,7 +590,8 @@ def import_list(list_id: int, text: str, fmt: str):
             (len(parsed.domains), list_id),
         )
         con.execute("COMMIT")
-    engine.reload()
+    if reload_policy:
+        engine.reload_lists()
     return len(parsed.domains), parsed.ignored
 
 @app.get("/healthz")
@@ -516,15 +611,17 @@ def decision(
 ):
     api_key_ok(x_api_key)
     policy_scheme = request.url.scheme.lower()
-    d = engine.decide_and_log(
+    d, log_row = engine.decide_with_log_row(
         payload.model_dump(by_alias=True),
         policy_scheme=policy_scheme if policy_scheme in {"http", "https"} else None,
     )
+    request.state.policy_log_row = log_row
     return {
         "block": d.block,
         "reason": d.reason,
         "matched_scope": d.matched_scope,
         "matched_list": d.matched_list,
+        "matched_list_type": d.matched_list_type,
         "matched_domain": d.matched_domain,
         "response_mode": d.response_mode,
     }
@@ -534,8 +631,10 @@ def login_page(request: Request):
     if session_for(request):
         return RedirectResponse("/", status_code=303)
     error = request.query_params.get("error", "")
-    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign in · Blockinator</title><link rel="icon" href="/static/blockinator-mark.webp"><link rel="stylesheet" href="/static/style.css"></head>
+    ui_theme = application_theme()
+    theme_color = "#f4f7fb" if ui_theme == "light" else "#071018"
+    return HTMLResponse(f"""<!doctype html><html data-theme="{ui_theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="{theme_color}"><title>Sign in · Blockinator</title><link rel="icon" href="/static/blockinator-mark.webp"><link rel="stylesheet" href="/static/style.css"></head>
 <body class="login-body"><section class="login-visual"><div class="login-shade"></div><div class="login-copy"><img src="/static/blockinator-mark.webp" alt=""><p>DNS POLICY CONTROL</p><h1>Bad traffic<br>stops here.</h1><span>Block · Filter · Protect</span></div></section>
 <section class="login-panel"><form method="post" action="/login" class="login-card"><div class="mini-brand"><img src="/static/blockinator-mark.webp" alt=""><b>Blockinator</b></div><h2>Welcome back</h2><p>Sign in to manage DNS policy, endpoints, block lists and access keys.</p>
 {"<div class='flash bad'>" + esc(error) + "</div>" if error else ""}
@@ -569,35 +668,40 @@ async def logout(request: Request):
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
     s = require_session(request)
+    snapshot = engine.snapshot
     with db.connect() as con:
-        totals = dict(con.execute("""
-            SELECT
-              (SELECT COUNT(*) FROM blocklists WHERE enabled=1) active_lists,
-              (SELECT COUNT(*)
-               FROM domains d
-               WHERE EXISTS (
-                 SELECT 1
-                 FROM blocklist_domain_memberships m
-                 JOIN blocklists b ON b.id=m.blocklist_id
-                 WHERE m.domain_id=d.id AND b.enabled=1
-               )) entries,
-              (SELECT COUNT(*) FROM scopes WHERE kind='network') networks,
-              (SELECT COUNT(*) FROM scopes WHERE kind='client') clients,
-              (SELECT COUNT(*) FROM scopes WHERE kind='hostname') hostnames,
-              (SELECT COUNT(*) FROM query_log WHERE blocked=1) blocked,
-              (SELECT COUNT(*) FROM query_log) queries
-        """).fetchone())
+        query_totals = dict(
+            con.execute(
+                """
+                SELECT
+                    COUNT(*) AS queries,
+                    COALESCE(SUM(blocked),0) AS blocked
+                FROM query_log
+                """
+            ).fetchone()
+        )
         recent = con.execute(
             """
             SELECT
               ts,server_id,client_ip,client_name,qname,blocked,reason,
-              matched_scope,matched_list,policy_scheme
+              matched_scope,matched_list,matched_list_type,policy_scheme,
+              response_time_ms
             FROM query_log
             ORDER BY id DESC
             LIMIT 8
             """
         ).fetchall()
-    global_on = db.get_setting("global_blocking", "1") == "1"
+    totals = {
+        "queries": int(query_totals["queries"] or 0),
+        "blocked": int(query_totals["blocked"] or 0),
+        "entries": snapshot.unique_domain_count,
+        "block_entries": snapshot.block_domain_count,
+        "whitelist_entries": snapshot.whitelist_domain_count,
+        "networks": snapshot.network_scope_count,
+        "clients": snapshot.client_scope_count,
+        "hostnames": snapshot.hostname_scope_count,
+    }
+    global_on = snapshot.global_blocking
     recent_client_names = log_client_names(recent)
     display_timezone = system_default_timezone()
     rows = "".join(
@@ -606,41 +710,155 @@ def dashboard(request: Request):
         f'<td>{client_identity_html(r["client_ip"], recent_client_names)}</td>'
         f'<td>{esc(r["qname"])}</td>'
         f'<td>{esc((r["policy_scheme"] or "").upper() or "—")}</td>'
+        f'<td>{esc(response_time_text(r["response_time_ms"]))}</td>'
         f'<td>{esc(r["matched_scope"] or "—")}</td>'
-        f'<td><span class="pill {"red" if r["blocked"] else "green"}">'
-        f'{"Blocked" if r["blocked"] else "Allowed"}</span></td>'
-        f'<td>{esc((r["matched_list"] or r["reason"] or "") if r["blocked"] else "")}</td></tr>'
+        f'<td>{decision_pill_html(r)}</td>'
+        f'<td>{esc(decision_match_text(r))}</td></tr>'
         for r in recent
-    ) or '<tr><td colspan="8" class="empty">No DNS decisions recorded yet.</td></tr>'
+    ) or '<tr><td colspan="9" class="empty">No DNS decisions recorded yet.</td></tr>'
     body = f'''
     <section class="hero-card"><img src="/static/blockinator-hero.webp" alt="Blockinator"><div class="hero-overlay"><p>BLOCK · FILTER · PROTECT</p><h2>Your network. Your policy.</h2><span>Centralized DNS policy control with client-aware filtering.</span></div></section>
     <div class="stat-grid">
       <article class="stat"><span>Queries</span><strong>{totals["queries"]:,}</strong><small>Recorded decisions</small></article>
       <article class="stat"><span>Blocked</span><strong>{totals["blocked"]:,}</strong><small>Rejected requests</small></article>
-      <article class="stat"><span>Block entries</span><strong>{totals["entries"]:,}</strong><small>Across enabled lists</small></article>
+      <article class="stat"><span>Policy domains</span><strong>{totals["entries"]:,}</strong><small>{totals["block_entries"]:,} block · {totals["whitelist_entries"]:,} whitelist</small></article>
       <article class="stat"><span>Policy targets</span><strong>{totals["clients"] + totals["networks"] + totals["hostnames"]:,}</strong><small>{totals["networks"]} networks · {totals["clients"]} endpoints · {totals["hostnames"]} hostnames</small></article>
     </div>
     <section class="panel status-panel"><div><span class="big-dot {"green" if global_on else "amber"}"></span><div><h3>Global blocking is {"active" if global_on else "paused"}</h3><p>{"Policy decisions are enforced." if global_on else "All requests are currently allowed."}</p></div></div>
       <form method="post" action="/admin/global-toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="{"danger-button" if global_on else "primary-button"}">{"Pause blocking" if global_on else "Resume blocking"}</button></form>
     </section>
     <section class="panel"><div class="panel-head"><div><h3>Recent DNS activity</h3><p>Latest policy decisions from connected resolvers · times shown in {esc(display_timezone)}.</p></div><a class="text-link" href="/queries">View all →</a></div>
-      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Policy API</th><th>Policy target</th><th>Decision</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Policy API</th><th>Response time</th><th>Policy target</th><th>Decision</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table></div>
     </section>'''
     return page(request, "Dashboard", "dashboard", body, s)
+
+@app.get("/statistics", response_class=HTMLResponse)
+def statistics_page(request: Request):
+    s = require_session(request)
+    display_timezone = system_default_timezone()
+    snapshot = build_statistics_snapshot(
+        db,
+        minutes=60,
+        timezone_name=display_timezone,
+    )
+    totals = snapshot["totals"]
+    average_response = response_time_text(
+        totals["average_response_time_ms"]
+    )
+    body = f"""
+    <section class="statistics-page" data-statistics-dashboard data-window="60">
+      <div class="statistics-live-strip">
+        <div class="statistics-live-state">
+          <span class="statistics-live-dot"></span>
+          <span><b>Live statistics</b><small>Refreshes every 5 seconds</small></span>
+        </div>
+        <div class="statistics-updated" data-statistics-updated>Connecting to live data…</div>
+      </div>
+
+      <div class="stat-grid statistics-summary-grid">
+        <article class="stat statistics-summary-card">
+          <span>Total queries</span>
+          <strong data-statistics-total="queries">{int(totals["queries"]):,}</strong>
+          <small>Queries retained in the log</small>
+        </article>
+        <article class="stat statistics-summary-card">
+          <span>Total blocks</span>
+          <strong data-statistics-total="blocks">{int(totals["blocks"]):,}</strong>
+          <small>Blocked queries retained in the log</small>
+        </article>
+        <article class="stat statistics-summary-card">
+          <span>Average response time</span>
+          <strong data-statistics-total="response">{esc(average_response)}</strong>
+          <small>Measured policy API responses</small>
+        </article>
+      </div>
+
+      <section class="panel statistics-chart-panel">
+        <div class="panel-head statistics-chart-head">
+          <div>
+            <div class="panel-kicker">Live traffic</div>
+            <h3>DNS query activity</h3>
+            <p>Queries, blocked requests, and average policy response time per interval · times shown in {esc(display_timezone)}.</p>
+          </div>
+          <div class="statistics-window-picker" role="group" aria-label="Statistics time range">
+            <button type="button" data-statistics-window="15">15m</button>
+            <button type="button" class="active" data-statistics-window="60">1h</button>
+            <button type="button" data-statistics-window="360">6h</button>
+            <button type="button" data-statistics-window="1440">24h</button>
+          </div>
+        </div>
+
+        <div class="statistics-chart-meta">
+          <div class="statistics-legend">
+            <span><i class="statistics-legend-swatch queries"></i>Queries</span>
+            <span><i class="statistics-legend-swatch blocks"></i>Blocks</span>
+            <span><i class="statistics-legend-swatch response"></i>Average response time</span>
+          </div>
+          <span data-statistics-bucket>1 minute intervals</span>
+        </div>
+
+        <div class="statistics-chart-shell">
+          <svg
+            class="statistics-chart"
+            data-statistics-chart
+            viewBox="0 0 1000 340"
+            preserveAspectRatio="none"
+            role="img"
+            aria-label="Live DNS queries, blocks, and average response time statistics"
+          ></svg>
+          <div class="statistics-chart-empty" data-statistics-empty hidden>
+            No query activity in this time range.
+          </div>
+        </div>
+      </section>
+    </section>
+    """
+    return page(request, "Statistics", "statistics", body, s)
+
+
+@app.get("/api/v1/statistics")
+def statistics_api(
+    request: Request,
+    minutes: int = 60,
+):
+    require_session(request)
+    return build_statistics_snapshot(
+        db,
+        minutes=minutes,
+        timezone_name=system_default_timezone(),
+    )
+
 
 @app.post("/admin/global-toggle")
 async def global_toggle(request: Request):
     _, _form = await require_post_session(request)
     current = db.get_setting("global_blocking", "1") == "1"
     db.set_setting("global_blocking", "0" if current else "1")
-    engine.reload()
+    engine.reload_settings()
     return redirect("/", notice="Global blocking paused" if current else "Global blocking resumed")
 
 @app.get("/lists", response_class=HTMLResponse)
 def lists_page(request: Request):
+    return _managed_lists_page(request, "block")
+
+
+@app.get("/whitelists", response_class=HTMLResponse)
+def whitelists_page(request: Request):
+    return _managed_lists_page(request, "whitelist")
+
+
+def _managed_lists_page(request: Request, list_type: str):
     s = require_session(request)
+    is_whitelist = list_type == "whitelist"
+    base_path = "/whitelists" if is_whitelist else "/lists"
+    active_key = "whitelists" if is_whitelist else "lists"
+    singular_label = "whitelist" if is_whitelist else "block list"
+    plural_label = "whitelists" if is_whitelist else "block lists"
     with db.connect() as con:
-        rows = con.execute("SELECT * FROM blocklists ORDER BY name COLLATE NOCASE").fetchall()
+        rows = con.execute(
+            "SELECT * FROM blocklists WHERE list_type=? ORDER BY name COLLATE NOCASE",
+            (list_type,),
+        ).fetchall()
         scopes = con.execute("SELECT * FROM scopes ORDER BY kind,name COLLATE NOCASE").fetchall()
         membership_rows = con.execute(
             "SELECT blocklist_id,scope_id FROM scope_blocklists"
@@ -657,9 +875,11 @@ def lists_page(request: Request):
     for row in network_target_rows:
         network_targets.setdefault(int(row["scope_id"]), {})[int(row["family"])] = str(row["target"])
 
-    client_names = rdns.resolve_many(
-        scope["target"] for scope in scopes if scope["kind"] == "client"
-    )
+    client_names = {
+        str(scope["target"]): engine.known_client_name(str(scope["target"]))
+        for scope in scopes
+        if scope["kind"] == "client"
+    }
     networks = [scope for scope in scopes if scope["kind"] == "network"]
     clients = [scope for scope in scopes if scope["kind"] == "client"]
     hostnames = [scope for scope in scopes if scope["kind"] == "hostname"]
@@ -728,10 +948,6 @@ def lists_page(request: Request):
             if selected
             else "No assignments"
         )
-        format_options = "".join(
-            f'<option value="{fmt}"{" selected" if r["format"] == fmt else ""}>{fmt}</option>'
-            for fmt in ("auto", "hosts", "adblock", "domains")
-        )
         error_html = (
             f'<div class="list-warning">Last refresh error: {esc(r["last_error"])}</div>'
             if r["last_error"] else ""
@@ -750,13 +966,8 @@ def lists_page(request: Request):
             refresh_summary = "No automatic refresh"
             refresh_detail = "Only URL-backed lists refresh automatically"
         list_schedule_summary = schedule_summary(r)
-        list_schedule_fields = schedule_fields_html(r)
-        refresh_button = (
-            '<button class="small-button" type="submit" name="action" value="refresh">'
-            'Save & refresh URL</button>'
-        )
         manual_manage_link = (
-            f'<a class="small-button domain-manage-link" href="/lists/{int(r["id"])}/domains">'
+            f'<a class="small-button domain-manage-link" href="{base_path}/{int(r["id"])}/domains">'
             'Manage domains</a>'
             if r["source_type"] == "manual"
             else ""
@@ -782,66 +993,31 @@ def lists_page(request: Request):
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                 <button class="small-button">{"Disable" if r["enabled"] else "Enable"}</button>
               </form>
-              <a class="small-button edit-link" href="#edit-list-{int(r["id"])}">Edit & assign</a>
+              <a class="small-button edit-link" href="{base_path}/{int(r["id"])}/edit">Edit</a>
               {manual_manage_link}
-              <form method="post" action="/admin/lists/{int(r["id"])}/delete" onsubmit="return confirm('Delete this list and its scope assignments?')">
+              <form method="post" action="/admin/lists/{int(r["id"])}/delete" onsubmit="return confirm('Delete this {singular_label} and its scope assignments?')">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                 <button class="small-button danger">Delete</button>
               </form>
             </div>
           </div>
-          <details class="list-editor" id="edit-list-{int(r["id"])}">
-            <summary><span><b>Edit list</b><small>Settings, contents and policy-target assignments</small></span><span class="editor-chevron">⌄</span></summary>
-            <div class="list-edit-body">
-              <form method="post" action="/admin/lists/{int(r["id"])}/edit" enctype="multipart/form-data" class="form-grid list-edit-form">
-                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
-                <label>Name<input name="name" value="{esc(r["name"])}" required></label>
-                <label>Format<select name="format">{format_options}</select></label>
-                <label class="full">Source URL<input name="source_url" value="{esc(r["source_url"] or "")}" placeholder="https://example.com/list.txt"></label>
-                <label>Automatic refresh interval (minutes)<input type="number" name="refresh_minutes" min="1" max="10080" value="{int(r["refresh_minutes"])}"></label>
-                <label class="check"><input type="checkbox" name="enabled" value="1"{" checked" if r["enabled"] else ""}> List enabled</label>
-                <label class="check full"><input type="checkbox" name="global_list" value="1" data-global-toggle{" checked" if r["use_globally"] else ""}> Apply globally to every network, endpoint, and hostname</label>
-
-                <div class="form-section full schedule-section">
-                  <div class="form-section-head"><div><b>Enforcement schedule</b><p>Leave scheduling off to enforce this list at all times.</p></div></div>
-                  {list_schedule_fields}
-                </div>
-
-                <div class="form-section full">
-                  <div class="form-section-head"><div><b>Scope assignments</b><p>Select every network, endpoint, and hostname scope that should use this list.</p></div><span>{len(selected)} selected</span></div>
-                  {scope_editor(selected, bool(r["use_globally"]))}
-                </div>
-
-                <div class="form-section full replacement-section">
-                  <div class="form-section-head"><div><b>Replace list contents</b><p>Optional. Leave both fields blank to keep the current {int(r["entry_count"]):,} entries.</p></div></div>
-                  <label>Upload replacement file<input type="file" name="replacement_file"></label>
-                  <label>Or paste replacement rules<textarea name="replacement_text" rows="5" placeholder="One domain per line, hosts format, or supported Adblock domain rules"></textarea></label>
-                </div>
-
-                <div class="editor-actions full">
-                  <button class="primary-button" type="submit" name="action" value="save">Save changes</button>
-                  {refresh_button}
-                  <button class="small-button" type="button" onclick="this.closest('details').open=false">Close editor</button>
-                </div>
-              </form>
-            </div>
-          </details>
         </article>'''
 
     if not cards:
-        cards = '<div class="empty-card">No block lists yet. Import one to start building policy.</div>'
+        cards = f'<div class="empty-card">No {plural_label} yet. Import one to start building policy.</div>'
 
     new_schedule_fields = schedule_fields_html(default_timezone=system_default_timezone())
     body = f'''<div class="split-grid blocklist-layout">
       <section class="panel">
-        <div class="panel-head"><div><div class="panel-kicker">Policy sources</div><h3>Managed block lists</h3><p>Edit each list and assign it to networks or exact endpoints without leaving this page.</p></div><span class="result-count">{len(rows)} lists</span></div>
+        <div class="panel-head"><div><div class="panel-kicker">Policy sources</div><h3>Managed {plural_label}</h3><p>Open a {singular_label} to edit its settings, contents, schedule, and policy-target assignments on a dedicated page.</p></div><span class="result-count">{len(rows)} lists</span></div>
         <div class="blocklist-list">{cards}</div>
       </section>
       <section class="panel action-panel" id="add-list">
-        <div class="panel-kicker">New source</div><h3>Add block list</h3>
+        <div class="panel-kicker">New source</div><h3>Add {singular_label}</h3>
         <p class="panel-help">Import from a URL, upload a file, or paste rules directly. URL sources refresh automatically on their own per-list interval.</p>
         <form method="post" action="/admin/lists" enctype="multipart/form-data" class="form-grid">
           <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+          <input type="hidden" name="list_type" value="{list_type}">
           <label>Name<input name="name" required></label>
           <label>Format<select name="format"><option>auto</option><option>hosts</option><option>adblock</option><option>domains</option></select></label>
           <label class="full">Source URL (optional)<input name="source_url" placeholder="https://example.com/list.txt"></label>
@@ -857,21 +1033,397 @@ def lists_page(request: Request):
             <div class="form-section-head"><div><b>Initial scope assignments</b><p>Optional when the list is global; useful for scoped-only lists.</p></div></div>
             {scope_editor(set(), True)}
           </div>
-          <button class="primary-button full" type="submit">Import list</button>
+          <button class="primary-button full" type="submit">{"Import whitelist" if is_whitelist else "Import block list"}</button>
         </form>
       </section>
     </div>'''
-    return page(request, "Block Lists", "lists", body, s)
+    return page(
+        request,
+        "Whitelists" if is_whitelist else "Block Lists",
+        active_key,
+        body,
+        s,
+    )
 
+
+
+def _list_base_path(row) -> str:
+    return "/whitelists" if str(row["list_type"] or "block") == "whitelist" else "/lists"
+
+
+def _list_label(row) -> str:
+    return "whitelist" if str(row["list_type"] or "block") == "whitelist" else "block list"
+
+
+@app.get("/lists/{list_id}/edit", response_class=HTMLResponse)
+@app.get("/whitelists/{list_id}/edit", response_class=HTMLResponse)
+def managed_list_edit_page(list_id: int, request: Request):
+    s = require_session(request)
+
+    with db.connect() as con:
+        blocklist = con.execute(
+            "SELECT * FROM blocklists WHERE id=?",
+            (list_id,),
+        ).fetchone()
+        if not blocklist:
+            return redirect("/lists", error="List not found")
+
+        base_path = _list_base_path(blocklist)
+        requested_path = request.url.path
+        if requested_path.startswith("/whitelists/") and base_path != "/whitelists":
+            return redirect(f"{base_path}/{list_id}/edit")
+        if requested_path.startswith("/lists/") and base_path != "/lists":
+            return redirect(f"{base_path}/{list_id}/edit")
+
+        scopes = con.execute(
+            "SELECT * FROM scopes ORDER BY kind,name COLLATE NOCASE"
+        ).fetchall()
+        membership_rows = con.execute(
+            "SELECT scope_id FROM scope_blocklists WHERE blocklist_id=?",
+            (list_id,),
+        ).fetchall()
+        network_target_rows = con.execute(
+            "SELECT scope_id,family,target FROM scope_network_targets"
+        ).fetchall()
+        preview_rows = con.execute(
+            """
+            SELECT domain
+            FROM block_entries
+            WHERE blocklist_id=?
+            ORDER BY domain
+            LIMIT 10
+            """,
+            (list_id,),
+        ).fetchall()
+
+    list_label = _list_label(blocklist)
+    page_title = "Whitelist" if list_label == "whitelist" else "Block List"
+    active_key = "whitelists" if list_label == "whitelist" else "lists"
+    selected = {int(row["scope_id"]) for row in membership_rows}
+
+    network_targets: dict[int, dict[int, str]] = {}
+    for row in network_target_rows:
+        network_targets.setdefault(int(row["scope_id"]), {})[
+            int(row["family"])
+        ] = str(row["target"])
+
+    client_names = {
+        str(scope["target"]): engine.known_client_name(str(scope["target"]))
+        for scope in scopes
+        if scope["kind"] == "client"
+    }
+    networks = [scope for scope in scopes if scope["kind"] == "network"]
+    clients = [scope for scope in scopes if scope["kind"] == "client"]
+    hostnames = [scope for scope in scopes if scope["kind"] == "hostname"]
+
+    def scope_option(scope, disabled: bool = False) -> str:
+        checked = " checked" if int(scope["id"]) in selected else ""
+        disabled_attr = " disabled" if disabled else ""
+        disabled_class = " global-disabled" if disabled else ""
+        if scope["kind"] == "client":
+            target_html = client_identity_html(scope["target"], client_names)
+            kind_label = "Endpoint"
+        elif scope["kind"] == "hostname":
+            target_html = (
+                f'<span class="scope-target mono">{esc(scope["target"])}</span>'
+            )
+            kind_label = "Hostname"
+        else:
+            ipv4, ipv6 = _scope_network_values(scope, network_targets)
+            target_html = _network_target_html(ipv4, ipv6)
+            kind_label = "Network"
+        return (
+            f'<label class="scope-option{disabled_class}">'
+            f'<input type="checkbox" name="scope_id" value="{int(scope["id"])}"'
+            f'{checked}{disabled_attr}>'
+            f'<span class="scope-option-copy"><span class="scope-option-title">'
+            f'<b>{esc(scope["name"])}</b><small>{kind_label}</small></span>'
+            f'{target_html}</span></label>'
+        )
+
+    def scope_group(label: str, items, disabled: bool) -> str:
+        options = "".join(scope_option(scope, disabled) for scope in items)
+        return (
+            '<section class="scope-group">'
+            f'<div class="scope-group-head"><b>{esc(label)}</b>'
+            f'<span>{len(items)}</span></div>'
+            f'{options or "<p class=\"scope-empty-inline\">No matching policy targets.</p>"}'
+            '</section>'
+        )
+
+    global_list = bool(blocklist["use_globally"])
+    disabled_class = " is-global-disabled" if global_list else ""
+    if scopes:
+        scope_editor_html = (
+            f'<div class="scope-assignment-grid{disabled_class}" data-scope-assignments>'
+            f'{scope_group("Networks", networks, global_list)}'
+            f'{scope_group("Endpoints", clients, global_list)}'
+            f'{scope_group("Hostnames", hostnames, global_list)}'
+            '</div>'
+        )
+    else:
+        scope_editor_html = (
+            '<div class="scope-empty">No policy targets exist yet. '
+            '<a href="/scopes#add-scope">Create one first →</a></div>'
+        )
+
+    format_options = "".join(
+        f'<option value="{fmt}"'
+        f'{" selected" if blocklist["format"] == fmt else ""}>{fmt}</option>'
+        for fmt in ("auto", "hosts", "adblock", "domains")
+    )
+    list_schedule_fields = schedule_fields_html(blocklist)
+    source_label = blocklist["source_url"] or (
+        "Uploaded list"
+        if blocklist["source_type"] == "upload"
+        else "Manual list"
+    )
+    assignment_text = (
+        "Global"
+        if global_list
+        else f'{len(selected)} scoped assignment{"s" if len(selected) != 1 else ""}'
+        if selected
+        else "No assignments"
+    )
+    manual_manage_link = (
+        f'<a class="small-button" href="{base_path}/{list_id}/domains">'
+        'Manage domains</a>'
+        if blocklist["source_type"] == "manual"
+        else ""
+    )
+
+    refresh_minutes = int(blocklist["refresh_minutes"])
+    if refresh_minutes % 1440 == 0:
+        refresh_label = (
+            f'{refresh_minutes // 1440} day'
+            f'{"s" if refresh_minutes // 1440 != 1 else ""}'
+        )
+    elif refresh_minutes % 60 == 0:
+        refresh_label = (
+            f'{refresh_minutes // 60} hour'
+            f'{"s" if refresh_minutes // 60 != 1 else ""}'
+        )
+    else:
+        refresh_label = (
+            f'{refresh_minutes} minute'
+            f'{"s" if refresh_minutes != 1 else ""}'
+        )
+
+    source_type_label = {
+        "url": "Remote URL",
+        "upload": "Uploaded file",
+        "manual": "Manual list",
+    }.get(str(blocklist["source_type"]), str(blocklist["source_type"]).title())
+
+    preview_lines = [str(row["domain"]) for row in preview_rows]
+    preview_text = "\n".join(preview_lines) if preview_lines else "No entries to preview."
+    last_updated = str(blocklist["last_updated"] or "Never")
+    list_state_label = "Enabled" if blocklist["enabled"] else "Disabled"
+    scope_state_label = "Global" if global_list else "Scoped"
+    schedule_state_label = "Scheduled" if blocklist["schedule_enabled"] else "Always active"
+    list_kind_icon = "✓" if list_label == "whitelist" else "⊘"
+
+    body = f"""<div class="managed-list-edit-page">
+      <div class="list-edit-breadcrumb">
+        <a href="{base_path}">{"Whitelists" if list_label == "whitelist" else "Block Lists"}</a>
+        <span>›</span>
+        <b>Edit</b>
+      </div>
+
+      <section class="list-edit-hero">
+        <div class="list-edit-hero-main">
+          <span class="list-edit-type-icon {"whitelist" if list_label == "whitelist" else "blocklist"}">{list_kind_icon}</span>
+          <div>
+            <div class="panel-kicker">Edit {esc(list_label)}</div>
+            <h2>{esc(blocklist["name"])}</h2>
+            <p>Configure the source, policy targeting, schedule, and update behavior for this {esc(list_label)}.</p>
+          </div>
+        </div>
+        <div class="list-edit-hero-actions">
+          <a class="small-button" href="{base_path}#list-{list_id}">← Back to Lists</a>
+          <form method="post" action="/admin/lists/{list_id}/delete"
+                onsubmit="return confirm('Delete this {list_label}? This cannot be undone.')">
+            <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+            <button class="danger-button" type="submit">Delete List</button>
+          </form>
+        </div>
+      </section>
+
+      <nav class="list-edit-section-nav" aria-label="{esc(page_title)} editor sections">
+        <a class="active" href="#general">General</a>
+        <a href="#policy-targeting">Policy &amp; Targeting</a>
+        <a href="#schedule">Schedule</a>
+        <a href="#import-update">Import &amp; Update</a>
+        <a href="#preview">Preview</a>
+      </nav>
+
+      <section class="list-edit-status-grid" aria-label="List summary">
+        <article>
+          <span class="list-edit-status-icon">▤</span>
+          <div><b>{int(blocklist["entry_count"]):,}</b><small>Entries</small><em>Updated {esc(last_updated)}</em></div>
+        </article>
+        <article>
+          <span class="list-edit-status-icon state">✓</span>
+          <div><b>{esc(list_state_label)}</b><small>Status</small><em>{"List is active and enforced" if blocklist["enabled"] else "List is currently disabled"}</em></div>
+        </article>
+        <article>
+          <span class="list-edit-status-icon scope">◎</span>
+          <div><b>{esc(scope_state_label)}</b><small>Scope</small><em>{esc(assignment_text)}</em></div>
+        </article>
+        <article>
+          <span class="list-edit-status-icon refresh">↻</span>
+          <div><b>{esc(refresh_label)}</b><small>Refresh interval</small><em>{esc(source_type_label)}</em></div>
+        </article>
+      </section>
+
+      <form method="post" action="/admin/lists/{list_id}/edit"
+            enctype="multipart/form-data" class="list-edit-workspace" id="list-edit-form">
+        <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+
+        <section class="list-edit-card" id="general">
+          <div class="list-edit-card-head">
+            <span>▤</span>
+            <div><h3>List Details</h3><p>Basic information about this {esc(list_label)}.</p></div>
+          </div>
+          <div class="list-edit-fields">
+            <label class="full">Name
+              <input name="name" value="{esc(blocklist["name"])}" required>
+            </label>
+            <label>List Format
+              <select name="format">{format_options}</select>
+            </label>
+            <label>Source Type
+              <input value="{esc(source_type_label)}" disabled>
+            </label>
+          </div>
+        </section>
+
+        <section class="list-edit-card" id="source-configuration">
+          <div class="list-edit-card-head">
+            <span>↗</span>
+            <div><h3>Source Configuration</h3><p>Configure where and how this list is obtained.</p></div>
+          </div>
+          <div class="list-edit-fields">
+            <label class="full">Source URL
+              <input name="source_url" value="{esc(blocklist["source_url"] or "")}"
+                     placeholder="https://example.com/list.txt">
+              <small>Leave blank for manual or uploaded lists.</small>
+            </label>
+            <label>Refresh Interval
+              <input type="number" name="refresh_minutes" min="1" max="10080"
+                     value="{refresh_minutes}">
+              <small>Minutes between automatic URL refreshes.</small>
+            </label>
+            <label class="list-edit-toggle-field">
+              <span>List State</span>
+              <span class="list-edit-toggle-row">
+                <input type="checkbox" name="enabled" value="1"{" checked" if blocklist["enabled"] else ""}>
+                <span><b>Enabled</b><small>Download updates and enforce this list.</small></span>
+              </span>
+            </label>
+            <button class="small-button list-edit-refresh-button" type="submit" name="action" value="refresh">
+              Save &amp; refresh URL
+            </button>
+          </div>
+        </section>
+
+        <section class="list-edit-card" id="policy-targeting">
+          <div class="list-edit-card-head">
+            <span>◎</span>
+            <div><h3>Policy &amp; Targeting</h3><p>Control where this list is applied.</p></div>
+          </div>
+          <div class="list-edit-policy-mode">
+            <label class="list-edit-choice">
+              <input type="checkbox" name="global_list" value="1" data-global-toggle{" checked" if global_list else ""}>
+              <span><b>Apply globally</b><small>Apply to every network, endpoint, and hostname.</small></span>
+            </label>
+            <div class="list-edit-targeting-summary">
+              <span class="list-edit-status-icon scope">◎</span>
+              <div><b>{esc(assignment_text)}</b><small>{"Global policy" if global_list else "Selected policy targets"}</small></div>
+            </div>
+          </div>
+          <div class="list-edit-scope-wrap">
+            <div class="list-edit-subhead">
+              <div><b>Selected policy targets</b><p>Used when global application is disabled.</p></div>
+              <span>{len(selected)} selected</span>
+            </div>
+            {scope_editor_html}
+          </div>
+        </section>
+
+        <section class="list-edit-card" id="schedule">
+          <div class="list-edit-card-head">
+            <span>◷</span>
+            <div><h3>Schedule</h3><p>Limit when this list is enforced.</p></div>
+          </div>
+          <div class="list-edit-schedule-summary">
+            <span class="list-edit-status-icon schedule">◷</span>
+            <div><b>{esc(schedule_state_label)}</b><small>{esc(schedule_summary(blocklist))}</small></div>
+          </div>
+          <div class="list-edit-schedule-controls">
+            {list_schedule_fields}
+          </div>
+        </section>
+
+        <section class="list-edit-card" id="import-update">
+          <div class="list-edit-card-head">
+            <span>⇧</span>
+            <div><h3>Import &amp; Update</h3><p>Manually replace this list's contents.</p></div>
+          </div>
+          <div class="list-edit-import-grid">
+            <label class="list-edit-file-drop">
+              <span class="list-edit-file-icon">⇧</span>
+              <b>Choose a replacement file</b>
+              <small>Plain text, hosts, domain, or supported Adblock formats.</small>
+              <input type="file" name="replacement_file">
+            </label>
+            <label class="list-edit-paste">Paste replacement rules
+              <textarea name="replacement_text" rows="9"
+                        placeholder="One domain per line, hosts format, or supported Adblock domain rules"></textarea>
+            </label>
+          </div>
+        </section>
+
+        <section class="list-edit-card" id="preview">
+          <div class="list-edit-card-head">
+            <span>◉</span>
+            <div><h3>List Preview</h3><p>Preview the first entries currently stored for this list.</p></div>
+          </div>
+          <pre class="list-edit-preview"><code>{esc(preview_text)}</code></pre>
+          <div class="list-edit-preview-foot">
+            <span>Showing {len(preview_lines)} of {int(blocklist["entry_count"]):,} entr{"y" if int(blocklist["entry_count"]) == 1 else "ies"}</span>
+            {manual_manage_link}
+          </div>
+        </section>
+
+        <div class="list-edit-savebar">
+          <div>
+            <b>Ready to apply changes?</b>
+            <small>Settings and targeting changes take effect after the policy engine reloads.</small>
+          </div>
+          <div class="actions">
+            <a class="small-button" href="{base_path}#list-{list_id}">Cancel</a>
+            <button class="primary-button" type="submit" name="action" value="save">Save Changes</button>
+          </div>
+        </div>
+      </form>
+    </div>"""
+    return page(
+        request,
+        f"Edit {page_title} · {blocklist['name']}",
+        active_key,
+        body,
+        s,
+    )
 
 
 def _get_manual_blocklist(list_id: int):
     with db.connect() as con:
         row = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
     if not row:
-        return None, "Block list not found"
+        return None, "List not found"
     if row["source_type"] != "manual":
-        return row, "Only manual block lists can be edited one domain at a time"
+        return row, "Only manual lists can be edited one domain at a time"
     return row, None
 
 
@@ -894,6 +1446,7 @@ def _refresh_manual_list_count(con, list_id: int) -> int:
 
 
 @app.get("/lists/{list_id}/domains", response_class=HTMLResponse)
+@app.get("/whitelists/{list_id}/domains", response_class=HTMLResponse)
 def manual_list_domains_page(
     list_id: int,
     request: Request,
@@ -903,9 +1456,12 @@ def manual_list_domains_page(
     s = require_session(request)
     blocklist, error = _get_manual_blocklist(list_id)
     if error:
-        return redirect(f"/lists#list-{list_id}", error=error)
+        return redirect("/lists", error=error)
 
     assert blocklist is not None
+    base_path = _list_base_path(blocklist)
+    list_label = _list_label(blocklist)
+    page_title = "Whitelist" if list_label == "whitelist" else "Block List"
     q = q.strip()
     page_size = 100
     page_num = max(1, page_num)
@@ -944,7 +1500,7 @@ def manual_list_domains_page(
               <td><span class="manual-domain-name mono">{esc(domain)}</span></td>
               <td class="manual-domain-action">
                 <form method="post" action="/admin/lists/{list_id}/domains/remove"
-                      onsubmit="return confirm('Remove {esc(domain)} from this block list?')">
+                      onsubmit="return confirm('Remove {esc(domain)} from this {list_label}?')">
                   <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                   <input type="hidden" name="domain" value="{esc(domain)}">
                   <input type="hidden" name="return_q" value="{esc(q)}">
@@ -962,26 +1518,26 @@ def manual_list_domains_page(
 
     query_suffix = "&q=" + quote(q) if q else ""
     prev_link = (
-        f'<a class="small-button" href="/lists/{list_id}/domains?page_num={page_num - 1}{query_suffix}">← Previous</a>'
+        f'<a class="small-button" href="{base_path}/{list_id}/domains?page_num={page_num - 1}{query_suffix}">← Previous</a>'
         if page_num > 1 else '<span class="small-button disabled">← Previous</span>'
     )
     next_link = (
-        f'<a class="small-button" href="/lists/{list_id}/domains?page_num={page_num + 1}{query_suffix}">Next →</a>'
+        f'<a class="small-button" href="{base_path}/{list_id}/domains?page_num={page_num + 1}{query_suffix}">Next →</a>'
         if page_num < max_page else '<span class="small-button disabled">Next →</span>'
     )
 
     assignment_label = "Global" if blocklist["use_globally"] else "Scoped only"
     clear_search_link = (
-        f'<a class="small-button" href="/lists/{list_id}/domains">Clear</a>'
+        f'<a class="small-button" href="{base_path}/{list_id}/domains">Clear</a>'
         if q
         else ""
     )
     body = f'''<div class="manual-domain-page">
       <section class="manual-domain-heading">
-        <a class="back-link" href="/lists#list-{list_id}">← Back to Block Lists</a>
+        <a class="back-link" href="{base_path}#list-{list_id}">← Back to {"Whitelists" if list_label == "whitelist" else "Block Lists"}</a>
         <div class="manual-domain-title-row">
           <div>
-            <div class="panel-kicker">Manual block list</div>
+            <div class="panel-kicker">Manual {esc(list_label)}</div>
             <h2>{esc(blocklist["name"])}</h2>
             <p>Add or remove individual domains without replacing the entire list.</p>
           </div>
@@ -1043,7 +1599,13 @@ def manual_list_domains_page(
         </section>
       </div>
     </div>'''
-    return page(request, f"Manual List · {blocklist['name']}", "lists", body, s)
+    return page(
+        request,
+        f"Manual {page_title} · {blocklist['name']}",
+        "whitelists" if list_label == "whitelist" else "lists",
+        body,
+        s,
+    )
 
 
 @app.post("/admin/lists/{list_id}/domains/add")
@@ -1051,31 +1613,30 @@ async def add_manual_list_domain(list_id: int, request: Request):
     _, form = await require_post_session(request)
     blocklist, error = _get_manual_blocklist(list_id)
     if error:
-        return redirect(f"/lists#list-{list_id}", error=error)
+        return redirect("/lists", error=error)
 
+    assert blocklist is not None
+    base_path = _list_base_path(blocklist)
     raw_domain = str(form.get("domain", ""))
     domain = normalize_domain(raw_domain)
     if not domain:
         return redirect(
-            f"/lists/{list_id}/domains",
+            f"{base_path}/{list_id}/domains",
             error="Enter a valid domain such as example.com",
         )
 
     with db.connect() as con:
-        cur = con.execute(
-            "INSERT OR IGNORE INTO block_entries(blocklist_id,domain) VALUES(?,?)",
-            (list_id, domain),
-        )
+        added = db.add_list_domain(con, list_id, domain)
         count = _refresh_manual_list_count(con, list_id)
 
-    engine.reload()
-    if cur.rowcount == 0:
+    engine.reload_lists()
+    if not added:
         return redirect(
-            f"/lists/{list_id}/domains?q={quote(domain)}",
+            f"{base_path}/{list_id}/domains?q={quote(domain)}",
             notice=f"{domain} is already in this list",
         )
     return redirect(
-        f"/lists/{list_id}/domains?q={quote(domain)}",
+        f"{base_path}/{list_id}/domains?q={quote(domain)}",
         notice=f"Added {domain}; manual list now contains {count:,} domains",
     )
 
@@ -1085,8 +1646,10 @@ async def remove_manual_list_domain(list_id: int, request: Request):
     _, form = await require_post_session(request)
     blocklist, error = _get_manual_blocklist(list_id)
     if error:
-        return redirect(f"/lists#list-{list_id}", error=error)
+        return redirect("/lists", error=error)
 
+    assert blocklist is not None
+    base_path = _list_base_path(blocklist)
     domain = normalize_domain(str(form.get("domain", "")))
     return_q = str(form.get("return_q", "")).strip()
     try:
@@ -1094,7 +1657,7 @@ async def remove_manual_list_domain(list_id: int, request: Request):
     except (TypeError, ValueError):
         return_page = 1
 
-    return_path = f"/lists/{list_id}/domains?page_num={return_page}"
+    return_path = f"{base_path}/{list_id}/domains?page_num={return_page}"
     if return_q:
         return_path += "&q=" + quote(return_q)
 
@@ -1102,14 +1665,11 @@ async def remove_manual_list_domain(list_id: int, request: Request):
         return redirect(return_path, error="Invalid domain")
 
     with db.connect() as con:
-        cur = con.execute(
-            "DELETE FROM block_entries WHERE blocklist_id=? AND domain=?",
-            (list_id, domain),
-        )
+        removed = db.remove_list_domain(con, list_id, domain)
         count = _refresh_manual_list_count(con, list_id)
 
-    engine.reload()
-    if cur.rowcount == 0:
+    engine.reload_lists()
+    if not removed:
         return redirect(
             return_path,
             error=f"{domain} was not found in this list",
@@ -1149,23 +1709,31 @@ def _save_list_scope_assignments(con, list_id: int, scope_ids: list[int]) -> int
 @app.post("/admin/lists")
 async def add_list(request: Request):
     _, form = await require_post_session(request)
+    list_type = str(form.get("list_type", "block")).strip().lower()
+    if list_type not in {"block", "whitelist"}:
+        list_type = "block"
+    base_path = "/whitelists" if list_type == "whitelist" else "/lists"
+    list_label = "whitelist" if list_type == "whitelist" else "block list"
+
     name = str(form.get("name", "")).strip()
     format_name = str(form.get("format", "auto")).strip().lower()
     source_url = str(form.get("source_url", "")).strip()
     text = str(form.get("text", ""))
     global_list = str(form.get("global_list", "")) == "1"
     try:
-        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(form)
+        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
+            form, list_label
+        )
     except ValueError as e:
-        return redirect("/lists", error=str(e))
+        return redirect(base_path, error=str(e))
     scope_ids = _scope_ids_from_form(form)
     if global_list:
         scope_ids = []
 
     if not name:
-        return redirect("/lists", error="List name is required")
+        return redirect(base_path, error="List name is required")
     if format_name not in {"auto", "hosts", "adblock", "domains"}:
-        return redirect("/lists", error="Unsupported block-list format")
+        return redirect(base_path, error="Unsupported list format")
     try:
         refresh_minutes = max(1, min(int(form.get("refresh_minutes", "1440")), 10080))
     except (TypeError, ValueError):
@@ -1179,25 +1747,25 @@ async def add_list(request: Request):
         source_type = "upload"
     elif source_url:
         try:
-            content = fetch_url(source_url)
+            content = await run_in_threadpool(fetch_url, source_url)
         except Exception as e:
-            return redirect("/lists", error=f"Could not fetch list URL: {e}")
+            return redirect(base_path, error=f"Could not fetch list URL: {e}")
         source_type = "url"
 
     if not content.strip():
-        return redirect("/lists", error="Provide a URL, upload, or pasted list content")
+        return redirect(base_path, error="Provide a URL, upload, or pasted list content")
 
     with db.connect() as con:
         try:
             cur = con.execute(
                 """
                 INSERT INTO blocklists(
-                    name,source_type,source_url,format,use_globally,refresh_minutes,
+                    name,source_type,source_url,format,list_type,use_globally,refresh_minutes,
                     schedule_enabled,schedule_days,schedule_start,schedule_end,schedule_timezone
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    name, source_type, source_url or None, format_name,
+                    name, source_type, source_url or None, format_name, list_type,
                     1 if global_list else 0, refresh_minutes,
                     1 if schedule_enabled else 0, schedule_days,
                     schedule_start, schedule_end, schedule_timezone,
@@ -1205,20 +1773,27 @@ async def add_list(request: Request):
             )
             list_id = int(cur.lastrowid)
         except Exception as e:
-            return redirect("/lists", error=str(e))
+            return redirect(base_path, error=str(e))
 
     try:
-        count, ignored = import_list(list_id, content, format_name)
+        count, ignored = await run_in_threadpool(
+            import_list,
+            list_id,
+            content,
+            format_name,
+            False,
+        )
         with db.connect() as con:
             assigned = _save_list_scope_assignments(con, list_id, scope_ids)
     except Exception as e:
         with db.connect() as con:
-            con.execute("DELETE FROM blocklists WHERE id=?", (list_id,))
-        return redirect("/lists", error=f"Import failed: {e}")
+            db.delete_blocklist(con, list_id)
+        return redirect(base_path, error=f"Import failed: {e}")
 
-    engine.reload()
+    engine.reload_lists()
+    engine.reload_scopes()
     return redirect(
-        f"/lists#list-{list_id}",
+        f"{base_path}#list-{list_id}",
         notice=f"Imported {count:,} entries, ignored {ignored:,}, assigned to {assigned} scope{'s' if assigned != 1 else ''}",
     )
 
@@ -1226,15 +1801,25 @@ async def add_list(request: Request):
 @app.post("/admin/lists/{list_id}/edit")
 async def edit_list(list_id: int, request: Request):
     _, form = await require_post_session(request)
+
+    with db.connect() as con:
+        existing = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
+    if not existing:
+        return redirect("/lists", error="List not found")
+    base_path = _list_base_path(existing)
+    list_label = _list_label(existing)
+
     name = str(form.get("name", "")).strip()
     format_name = str(form.get("format", "auto")).strip().lower()
     source_url = str(form.get("source_url", "")).strip()
     enabled = str(form.get("enabled", "")) == "1"
     global_list = str(form.get("global_list", "")) == "1"
     try:
-        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(form)
+        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
+            form, list_label
+        )
     except ValueError as e:
-        return redirect(f"/lists#edit-list-{list_id}", error=str(e))
+        return redirect(f"{base_path}/{list_id}/edit", error=str(e))
     action = str(form.get("action", "save")).strip().lower()
     replacement_text = str(form.get("replacement_text", ""))
     replacement_file = form.get("replacement_file")
@@ -1243,18 +1828,13 @@ async def edit_list(list_id: int, request: Request):
         scope_ids = []
 
     if not name:
-        return redirect(f"/lists#edit-list-{list_id}", error="List name is required")
+        return redirect(f"{base_path}/{list_id}/edit", error="List name is required")
     if format_name not in {"auto", "hosts", "adblock", "domains"}:
-        return redirect(f"/lists#edit-list-{list_id}", error="Unsupported block-list format")
+        return redirect(f"{base_path}/{list_id}/edit", error="Unsupported list format")
     try:
         refresh_minutes = max(1, min(int(form.get("refresh_minutes", "1440")), 10080))
     except (TypeError, ValueError):
         refresh_minutes = 1440
-
-    with db.connect() as con:
-        existing = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
-    if not existing:
-        return redirect("/lists", error="Block list not found")
 
     replacement_content: str | None = None
     source_type = str(existing["source_type"])
@@ -1263,10 +1843,10 @@ async def edit_list(list_id: int, request: Request):
         if action == "refresh":
             if not source_url:
                 return redirect(
-                    f"/lists#edit-list-{list_id}",
+                    f"{base_path}/{list_id}/edit",
                     error="A source URL is required to refresh this list",
                 )
-            replacement_content = fetch_url(source_url)
+            replacement_content = await run_in_threadpool(fetch_url, source_url)
             source_type = "url"
         elif getattr(replacement_file, "filename", None):
             replacement_content = (await replacement_file.read()).decode("utf-8", errors="replace")
@@ -1279,7 +1859,7 @@ async def edit_list(list_id: int, request: Request):
         elif source_type == "url":
             source_type = "manual"
     except Exception as e:
-        return redirect(f"/lists#edit-list-{list_id}", error=f"Could not refresh list: {e}")
+        return redirect(f"{base_path}/{list_id}/edit", error=f"Could not refresh list: {e}")
 
     with db.connect() as con:
         try:
@@ -1312,24 +1892,31 @@ async def edit_list(list_id: int, request: Request):
             con.execute("COMMIT")
         except Exception as e:
             con.execute("ROLLBACK")
-            return redirect(f"/lists#edit-list-{list_id}", error=f"Could not save list: {e}")
+            return redirect(f"{base_path}/{list_id}/edit", error=f"Could not save list: {e}")
 
     replaced_notice = ""
     if replacement_content is not None:
         if not replacement_content.strip():
-            return redirect(f"/lists#edit-list-{list_id}", error="Replacement list content is empty")
+            return redirect(f"{base_path}/{list_id}/edit", error="Replacement list content is empty")
         try:
-            count, ignored = import_list(list_id, replacement_content, format_name)
+            count, ignored = await run_in_threadpool(
+                import_list,
+                list_id,
+                replacement_content,
+                format_name,
+                False,
+            )
             replaced_notice = f"; replaced contents with {count:,} entries ({ignored:,} ignored)"
         except Exception as e:
             return redirect(
-                f"/lists#edit-list-{list_id}",
+                f"{base_path}/{list_id}/edit",
                 error=f"Settings were saved, but replacing list contents failed: {e}",
             )
 
-    engine.reload()
+    engine.reload_lists()
+    engine.reload_scopes()
     return redirect(
-        f"/lists#list-{list_id}",
+        f"{base_path}/{list_id}/edit",
         notice=f"Saved {name}; {assigned} scoped assignment{'s' if assigned != 1 else ''}{replaced_notice}",
     )
 
@@ -1338,18 +1925,30 @@ async def edit_list(list_id: int, request: Request):
 async def toggle_list(list_id: int, request: Request):
     await require_post_session(request)
     with db.connect() as con:
-        con.execute("UPDATE blocklists SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (list_id,))
-    engine.reload()
-    return redirect(f"/lists#list-{list_id}", notice="List state updated")
+        row = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
+        if not row:
+            return redirect("/lists", error="List not found")
+        base_path = _list_base_path(row)
+        con.execute(
+            "UPDATE blocklists SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?",
+            (list_id,),
+        )
+    engine.reload_lists()
+    return redirect(f"{base_path}#list-{list_id}", notice="List state updated")
 
 
 @app.post("/admin/lists/{list_id}/delete")
 async def delete_list(list_id: int, request: Request):
     await require_post_session(request)
     with db.connect() as con:
-        con.execute("DELETE FROM blocklists WHERE id=?", (list_id,))
-    engine.reload()
-    return redirect("/lists", notice="Block list deleted")
+        row = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
+        if not row:
+            return redirect("/lists", error="List not found")
+        base_path = _list_base_path(row)
+        label = _list_label(row)
+        db.delete_blocklist(con, list_id)
+    engine.reload_lists()
+    return redirect(base_path, notice=f"{label.title()} deleted")
 
 
 def _scope_network_values(scope, network_targets: dict[int, dict[int, str]]) -> tuple[str, str]:
@@ -1446,17 +2045,25 @@ def scopes_page(request: Request):
     for row in network_target_rows:
         network_targets.setdefault(int(row["scope_id"]), {})[int(row["family"])] = str(row["target"])
 
-    scope_client_names = rdns.resolve_many(
-        scope["target"] for scope in scopes if scope["kind"] == "client"
-    )
+    scope_client_names = {
+        str(scope["target"]): engine.known_client_name(str(scope["target"]))
+        for scope in scopes
+        if scope["kind"] == "client"
+    }
 
     def blocklist_option(blocklist, selected: set[int]) -> str:
         is_global = bool(blocklist["use_globally"])
+        is_whitelist = str(blocklist["list_type"] or "block") == "whitelist"
         checked = " checked" if int(blocklist["id"]) in selected else ""
         disabled_attr = " disabled" if is_global else ""
         disabled_class = " global-disabled" if is_global else ""
         status_class = "green" if blocklist["enabled"] else "gray"
         global_badge = '<span class="scope-list-global">Global</span>' if is_global else ""
+        type_badge = (
+            '<span class="scope-list-global">Whitelist</span>'
+            if is_whitelist
+            else '<span class="scope-list-scheduled">Block</span>'
+        )
         schedule_badge = (
             '<span class="scope-list-scheduled">Scheduled</span>'
             if blocklist["schedule_enabled"]
@@ -1478,22 +2085,44 @@ def scopes_page(request: Request):
             f'<span class="scope-list-copy"><span class="scope-list-title">'
             f'<b>{esc(blocklist["name"])}</b>'
             f'<span class="pill {status_class}">{"Enabled" if blocklist["enabled"] else "Disabled"}</span>'
-            f'{global_badge}{schedule_badge}</span>'
+            f'{type_badge}{global_badge}{schedule_badge}</span>'
             f'<small>{detail}</small>{schedule_detail}'
             f'</span></label>'
         )
 
     def blocklist_editor(selected: set[int]) -> str:
+        block_only = [
+            item for item in blocklists
+            if str(item["list_type"] or "block") == "block"
+        ]
+        whitelist_only = [
+            item for item in blocklists
+            if str(item["list_type"] or "block") == "whitelist"
+        ]
         if not blocklists:
             return (
-                '<div class="scope-empty">No block lists exist yet. '
-                '<a href="/lists#add-list">Import one first →</a></div>'
+                '<div class="scope-empty">No block lists or whitelists exist yet. '
+                '<a href="/lists#add-list">Import a block list →</a> · '
+                '<a href="/whitelists#add-list">Add a whitelist →</a></div>'
             )
-        return (
-            '<div class="scope-list-grid">'
-            + "".join(blocklist_option(blocklist, selected) for blocklist in blocklists)
-            + '</div>'
-        )
+
+        sections: list[str] = []
+        if block_only:
+            sections.append(
+                '<section class="scope-group"><div class="scope-group-head"><b>Block Lists</b>'
+                f'<span>{len(block_only)}</span></div>'
+                + "".join(blocklist_option(item, selected) for item in block_only)
+                + '</section>'
+            )
+        if whitelist_only:
+            sections.append(
+                '<section class="scope-group"><div class="scope-group-head"><b>Whitelists</b>'
+                f'<span>{len(whitelist_only)}</span></div>'
+                + "".join(blocklist_option(item, selected) for item in whitelist_only)
+                + '</section>'
+            )
+        return '<div class="scope-list-grid">' + "".join(sections) + '</div>'
+
 
     cards = ""
     for scope in scopes:
@@ -1574,14 +2203,14 @@ def scopes_page(request: Request):
                 <button class="small-button">{"Pause" if scope["state"] == "active" else "Resume"}</button>
               </form>
               <a class="small-button edit-link" href="#edit-scope-{int(scope["id"])}">Edit & assign</a>
-              <form method="post" action="/admin/scopes/{int(scope["id"])}/delete" onsubmit="return confirm('Delete this scope and its block-list assignments?')">
+              <form method="post" action="/admin/scopes/{int(scope["id"])}/delete" onsubmit="return confirm('Delete this scope and its list assignments?')">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                 <button class="small-button danger">Delete</button>
               </form>
             </div>
           </div>
           <details class="scope-editor" id="edit-scope-{int(scope["id"])}">
-            <summary><span><b>Edit {esc(scope_kind_label.lower())}</b><small>Identity, target, state, schedule and block-list assignments</small></span><span class="editor-chevron">⌄</span></summary>
+            <summary><span><b>Edit {esc(scope_kind_label.lower())}</b><small>Identity, target, state, schedule and list assignments</small></span><span class="editor-chevron">⌄</span></summary>
             <div class="scope-edit-body">
               <form method="post" action="/admin/scopes/{int(scope["id"])}/edit" class="form-grid scope-edit-form">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
@@ -1602,7 +2231,7 @@ def scopes_page(request: Request):
 
                 <div class="form-section full">
                   <div class="form-section-head">
-                    <div><b>Block-list assignments</b><p>Select lists that should explicitly apply to this scope. Lists marked Global already apply everywhere, but can also remain explicitly assigned for future policy changes.</p></div>
+                    <div><b>List assignments</b><p>Select block lists and whitelists that should explicitly apply to this scope. Lists marked Global already apply according to the configured global-list reach.</p></div>
                     <span>{len(selected)} selected</span>
                   </div>
                   {blocklist_editor(selected)}
@@ -1625,7 +2254,7 @@ def scopes_page(request: Request):
     body = f'''<div class="split-grid scopes-layout">
       <section class="panel">
         <div class="panel-head">
-          <div><div class="panel-kicker">Policy targets</div><h3>Networks, endpoints & hostnames</h3><p>Edit targets, schedules, pause/resume enforcement, and block-list assignments without leaving this page.</p></div>
+          <div><div class="panel-kicker">Policy targets</div><h3>Networks, endpoints & hostnames</h3><p>Edit targets, schedules, pause/resume enforcement, and block-list and whitelist assignments without leaving this page.</p></div>
           <span class="result-count">{len(scopes)} scopes</span>
         </div>
         <div class="scope-card-list">{cards}</div>
@@ -1649,7 +2278,7 @@ def scopes_page(request: Request):
             {new_scope_schedule_fields}
           </div>
           <div class="form-section full">
-            <div class="form-section-head"><div><b>Initial block-list assignments</b><p>Optional. Global lists apply automatically even when they are not explicitly selected.</p></div></div>
+            <div class="form-section-head"><div><b>Initial list assignments</b><p>Optional. Assign scoped block lists and whitelists; Global lists apply automatically.</p></div></div>
             {new_list_editor}
           </div>
           <button class="primary-button full" type="submit">Add scope</button>
@@ -1762,10 +2391,10 @@ async def add_scope(request: Request):
     except Exception as e:
         return redirect("/scopes", error=str(e))
 
-    engine.reload()
+    engine.reload_scopes()
     return redirect(
         f"/scopes#scope-{scope_id}",
-        notice=f"Added {name} with {assigned} block-list assignment{'s' if assigned != 1 else ''}",
+        notice=f"Added {name} with {assigned} list assignment{'s' if assigned != 1 else ''}",
     )
 
 
@@ -1835,10 +2464,10 @@ async def edit_scope(scope_id: int, request: Request):
             con.execute("ROLLBACK")
             return redirect(f"/scopes#edit-scope-{scope_id}", error=f"Could not save scope: {e}")
 
-    engine.reload()
+    engine.reload_scopes()
     return redirect(
         f"/scopes#scope-{scope_id}",
-        notice=f"Saved {name}; {assigned} block-list assignment{'s' if assigned != 1 else ''}",
+        notice=f"Saved {name}; {assigned} list assignment{'s' if assigned != 1 else ''}",
     )
 
 
@@ -1847,7 +2476,7 @@ async def toggle_scope(scope_id: int, request: Request):
     await require_post_session(request)
     with db.connect() as con:
         con.execute("UPDATE scopes SET state=CASE state WHEN 'active' THEN 'paused' ELSE 'active' END WHERE id=?", (scope_id,))
-    engine.reload()
+    engine.reload_scopes()
     return redirect(f"/scopes#scope-{scope_id}", notice="Scope state updated")
 
 
@@ -1856,7 +2485,7 @@ async def delete_scope(scope_id: int, request: Request):
     await require_post_session(request)
     with db.connect() as con:
         con.execute("DELETE FROM scopes WHERE id=?", (scope_id,))
-    engine.reload()
+    engine.reload_scopes()
     return redirect("/scopes", notice="Scope deleted")
 
 @app.get("/queries", response_class=HTMLResponse)
@@ -1877,10 +2506,12 @@ def queries_page(
         clauses.append("qname LIKE ?")
         args.append("%" + q + "%")
     if client:
-        backfill_query_client_names()
-        clauses.append("(client_ip LIKE ? OR client_name LIKE ?)")
+        clauses.append(
+            "(client_ip LIKE ? OR client_name LIKE ? OR "
+            "client_ip IN (SELECT client_ip FROM client_identities WHERE client_name LIKE ?))"
+        )
         client_pattern = "%" + client + "%"
-        args.extend([client_pattern, client_pattern])
+        args.extend([client_pattern, client_pattern, client_pattern])
     if server:
         clauses.append("server_id = ?")
         args.append(server)
@@ -1890,9 +2521,17 @@ def queries_page(
     if blocklist:
         clauses.append("matched_list LIKE ?")
         args.append("%" + blocklist + "%")
-    if decision in {"blocked", "allowed"}:
-        clauses.append("blocked=?")
-        args.append(1 if decision == "blocked" else 0)
+    if decision == "blocked":
+        clauses.append("blocked=1")
+    elif decision == "whitelisted":
+        clauses.append(
+            "blocked=0 AND (matched_list_type='whitelist' OR reason='whitelist_match')"
+        )
+    elif decision == "allowed":
+        clauses.append(
+            "blocked=0 AND COALESCE(matched_list_type,'')<>'whitelist' "
+            "AND COALESCE(reason,'')<>'whitelist_match'"
+        )
 
     limit = max(25, min(limit, 500))
     refresh = refresh if refresh in {0, 5, 10, 15, 30, 60} else 0
@@ -1939,12 +2578,12 @@ def queries_page(
         f'<td>{esc(r["qname"])}</td>'
         f'<td>{esc(r["qtype"])}</td>'
         f'<td>{esc((r["policy_scheme"] or "").upper() or "—")}</td>'
+        f'<td>{esc(response_time_text(r["response_time_ms"]))}</td>'
         f'<td>{esc(r["matched_scope"] or "—")}</td>'
-        f'<td><span class="pill {"red" if r["blocked"] else "green"}">'
-        f'{"Blocked" if r["blocked"] else "Allowed"}</span></td>'
-        f'<td>{esc((r["matched_list"] or r["reason"]) if r["blocked"] else "")}</td></tr>'
+        f'<td>{decision_pill_html(r)}</td>'
+        f'<td>{esc(decision_match_text(r))}</td></tr>'
         for r in rows
-    ) or '<tr><td colspan="9" class="empty">No matching queries.</td></tr>'
+    ) or '<tr><td colspan="10" class="empty">No matching queries.</td></tr>'
 
     server_options = '<option value="">All servers</option>' + "".join(
         f'<option value="{esc(row["server_id"])}"'
@@ -1985,11 +2624,12 @@ def queries_page(
         <input name="client" value="{esc(client)}" placeholder="Client IP or hostname…">
         <select name="server">{server_options}</select>
         <select name="target">{target_options}</select>
-        <input name="blocklist" value="{esc(blocklist)}" list="query-blocklists" placeholder="Block list contains…">
+        <input name="blocklist" value="{esc(blocklist)}" list="query-blocklists" placeholder="List name contains…">
         <datalist id="query-blocklists">{blocklist_options}</datalist>
         <select name="decision">
           <option value="">All decisions</option>
           <option value="blocked" {"selected" if decision=="blocked" else ""}>Blocked</option>
+          <option value="whitelisted" {"selected" if decision=="whitelisted" else ""}>Whitelisted</option>
           <option value="allowed" {"selected" if decision=="allowed" else ""}>Allowed</option>
         </select>
         <select name="limit">
@@ -2000,7 +2640,7 @@ def queries_page(
         <button class="primary-button">Filter</button>
       </form>
       <div class="table-wrap"><table>
-        <thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Type</th><th>Policy API</th><th>Policy target</th><th>Decision</th><th>Match</th></tr></thead>
+        <thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Type</th><th>Policy API</th><th>Response time</th><th>Policy target</th><th>Decision</th><th>Match</th></tr></thead>
         <tbody>{trs}</tbody>
       </table></div>
     </section>'''
@@ -2073,19 +2713,15 @@ async def delete_key(key_id: int, request: Request):
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request):
     s = require_session(request)
-    mode = db.get_setting("block_response", "nxdomain")
-    unmatched_scope_action = db.get_setting("unmatched_scope_action", "allow")
-    if unmatched_scope_action not in {"allow", "deny"}:
-        unmatched_scope_action = "allow"
-    global_blocklist_scope_mode = db.get_setting(
-        "global_blocklist_scope_mode",
-        "all_clients",
-    )
-    if global_blocklist_scope_mode not in {"all_clients", "matched_scopes"}:
-        global_blocklist_scope_mode = "all_clients"
-    retention = db.get_setting("max_query_logs", "25000")
-    retention_days = db.get_setting("max_query_log_age_days", "0")
+    snapshot = engine.snapshot
+    mode = snapshot.response_mode
+    unmatched_scope_action = snapshot.unmatched_scope_action
+    global_blocklist_scope_mode = snapshot.global_blocklist_scope_mode
+    retention = str(engine.logger.max_rows)
+    retention_days = str(engine.logger.max_age_days)
+    log_request_json = engine.logger.capture_request_json
     default_timezone = system_default_timezone()
+    ui_theme = application_theme()
     tls_status = tls_manager.status()
     tls_settings = tls_status.settings
     https_port = os.getenv("HTTPS_PORT", "8443")
@@ -2132,6 +2768,10 @@ def settings_page(request: Request):
           <span class="settings-tab-icon">◆</span>
           <span><b>HTTPS & TLS</b><small>Certificates and ACME</small></span>
         </button>
+        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="appearance" aria-controls="settings-appearance">
+          <span class="settings-tab-icon">◐</span>
+          <span><b>Appearance</b><small>Light or dark interface</small></span>
+        </button>
         <button type="button" class="settings-tab-button" role="tab" data-settings-tab="runtime" aria-controls="settings-runtime">
           <span class="settings-tab-icon">◈</span>
           <span><b>Runtime</b><small>Service and storage status</small></span>
@@ -2148,10 +2788,10 @@ def settings_page(request: Request):
 
             <div class="form-section full">
               <div class="form-section-head">
-                <div><b>Global block-list reach</b><p>Control whether lists marked Global also apply to clients that do not match an active policy target.</p></div>
+                <div><b>Global list reach</b><p>Control whether lists marked Global also apply to clients that do not match an active policy target.</p></div>
                 <span>{"All clients" if global_blocklist_scope_mode == "all_clients" else "Matched targets only"}</span>
               </div>
-              <label class="full">Apply global block lists to
+              <label class="full">Apply global lists to
                 <select name="global_blocklist_scope_mode">
                   <option value="all_clients" {"selected" if global_blocklist_scope_mode=="all_clients" else ""}>All clients, including clients with no matching policy target</option>
                   <option value="matched_scopes" {"selected" if global_blocklist_scope_mode=="matched_scopes" else ""}>Matched policy targets only</option>
@@ -2162,7 +2802,7 @@ def settings_page(request: Request):
 
             <div class="form-section full">
               <div class="form-section-head">
-                <div><b>No matching policy target</b><p>Choose what happens after applicable block lists are evaluated when no active endpoint, hostname, or network target matches the client.</p></div>
+                <div><b>No matching policy target</b><p>Choose what happens after applicable whitelists and block lists are evaluated when no active endpoint, hostname, or network target matches the client.</p></div>
                 <span>{"Allow" if unmatched_scope_action == "allow" else "Deny"}</span>
               </div>
               <label class="full">Default action
@@ -2198,6 +2838,10 @@ def settings_page(request: Request):
                   <small>Oldest rows are removed when this cap is exceeded.</small>
                 </label>
               </div>
+              <label class="full checkbox-row">
+                <input type="checkbox" name="log_request_json" value="1" {"checked" if log_request_json else ""}>
+                <span><b>Store full policy request JSON</b><small>Disabled by default to reduce serialization work, database writes, and log size. Enable only when raw request payloads are needed for troubleshooting.</small></span>
+              </label>
             </div>
 
             <div class="form-section full">
@@ -2379,18 +3023,63 @@ def settings_page(request: Request):
         </section>
       </section>
 
+      <section id="settings-appearance" class="settings-tab-panel" role="tabpanel" data-settings-panel="appearance" hidden>
+        <section class="panel action-panel appearance-settings-panel">
+          <div class="panel-kicker">Interface</div>
+          <h3>Appearance</h3>
+          <p class="panel-help">Choose the color scheme used throughout Blockinator, including the sign-in screen.</p>
+          <form method="post" action="/admin/settings/appearance" class="appearance-theme-form">
+            <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+            <div class="appearance-choice-grid">
+              <label class="appearance-choice {"selected" if ui_theme == "dark" else ""}">
+                <input type="radio" name="ui_theme" value="dark" {"checked" if ui_theme == "dark" else ""}>
+                <span class="appearance-preview appearance-preview-dark" aria-hidden="true">
+                  <i class="appearance-preview-sidebar"></i>
+                  <i class="appearance-preview-header"></i>
+                  <i class="appearance-preview-card first"></i>
+                  <i class="appearance-preview-card second"></i>
+                </span>
+                <span class="appearance-choice-copy">
+                  <b>Dark</b>
+                  <small>Blockinator's original dark control-plane interface.</small>
+                </span>
+              </label>
+              <label class="appearance-choice {"selected" if ui_theme == "light" else ""}">
+                <input type="radio" name="ui_theme" value="light" {"checked" if ui_theme == "light" else ""}>
+                <span class="appearance-preview appearance-preview-light" aria-hidden="true">
+                  <i class="appearance-preview-sidebar"></i>
+                  <i class="appearance-preview-header"></i>
+                  <i class="appearance-preview-card first"></i>
+                  <i class="appearance-preview-card second"></i>
+                </span>
+                <span class="appearance-choice-copy">
+                  <b>Light</b>
+                  <small>A bright workspace with the same Blockinator layout and controls.</small>
+                </span>
+              </label>
+            </div>
+            <div class="appearance-current">
+              <span>Current theme</span>
+              <b>{esc(ui_theme.title())}</b>
+            </div>
+            <button class="primary-button" type="submit">Save appearance</button>
+          </form>
+        </section>
+      </section>
+
       <section id="settings-runtime" class="settings-tab-panel" role="tabpanel" data-settings-panel="runtime" hidden>
         <section class="panel">
           <div class="panel-kicker">Service details</div><h3>Runtime</h3>
           <p class="panel-help">Current application, proxy, and storage information for this Blockinator instance.</p>
           <div class="info-grid">
             <div><span>Version</span><b>{APP_VERSION}</b></div>
-            <div><span>Database</span><b class="mono">{esc(db.path)}</b></div>
+            <div><span>Database</span><b class="mono">{esc(db.backend_summary())}</b></div>
             <div><span>Decision API</span><b class="mono">/api/v1/decision</b></div>
             <div><span>Service</span><b>Blockinator</b></div>
             <div><span>Log age limit</span><b>{age_summary}</b></div>
             <div><span>Log row limit</span><b>{int(retention):,}</b></div>
             <div><span>Default timezone</span><b class="mono">{esc(default_timezone)}</b></div>
+            <div><span>Interface theme</span><b>{esc(ui_theme.title())}</b></div>
             <div><span>Unmatched target action</span><b>{esc(unmatched_scope_action.title())}</b></div>
             <div><span>Global list reach</span><b>{"All clients" if global_blocklist_scope_mode == "all_clients" else "Matched targets only"}</b></div>
             <div><span>TLS mode</span><b>{esc(tls_mode_label)}</b></div>
@@ -2403,6 +3092,23 @@ def settings_page(request: Request):
       </section>
     </div>'''
     return page(request, "System Settings", "settings", body, s)
+
+@app.post("/admin/settings/appearance")
+async def save_appearance_settings(request: Request):
+    _, form = await require_post_session(request)
+    ui_theme = str(form.get("ui_theme", "dark")).strip().lower()
+    if ui_theme not in {"dark", "light"}:
+        return redirect(
+            "/settings#appearance",
+            error="Appearance must be set to Dark or Light",
+        )
+    db.set_setting("ui_theme", ui_theme)
+    _update_runtime_settings_cache(ui_theme=ui_theme)
+    return redirect(
+        "/settings#appearance",
+        notice=f"Appearance changed to {ui_theme.title()}",
+    )
+
 
 @app.post("/admin/settings")
 async def save_settings(request: Request):
@@ -2436,6 +3142,7 @@ async def save_settings(request: Request):
             error="Default timezone must be a valid IANA timezone such as America/New_York",
         )
 
+    log_request_json = str(form.get("log_request_json", "")).strip() == "1"
     db.set_settings(
         {
             "block_response": mode,
@@ -2443,10 +3150,17 @@ async def save_settings(request: Request):
             "global_blocklist_scope_mode": global_blocklist_scope_mode,
             "max_query_logs": str(retention),
             "max_query_log_age_days": str(retention_days),
+            "log_request_json": "1" if log_request_json else "0",
             "default_timezone": default_timezone,
         }
     )
-    engine.reload()
+    _update_runtime_settings_cache(default_timezone=default_timezone)
+    engine.logger.configure_retention(
+        retention,
+        retention_days,
+        capture_request_json=log_request_json,
+    )
+    engine.reload_settings()
 
     try:
         age_deleted, row_deleted = engine.logger.prune_now()

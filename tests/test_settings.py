@@ -66,3 +66,17 @@ def test_global_blocklist_scope_mode_defaults_to_all_clients(tmp_path):
     db = Database(str(tmp_path / "settings.db"))
 
     assert db.get_setting("global_blocklist_scope_mode") == "all_clients"
+
+
+def test_ui_theme_defaults_to_dark(tmp_path):
+    db = Database(str(tmp_path / "settings.db"))
+
+    assert db.get_setting("ui_theme") == "dark"
+
+
+def test_ui_theme_setting_persists(tmp_path):
+    db = Database(str(tmp_path / "settings.db"))
+    db.set_setting("ui_theme", "light")
+
+    db_again = Database(str(tmp_path / "settings.db"))
+    assert db_again.get_setting("ui_theme") == "light"

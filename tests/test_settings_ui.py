@@ -6,9 +6,11 @@ def test_system_settings_has_tabbed_configuration_areas():
 
     assert 'data-settings-tab="general"' in source
     assert 'data-settings-tab="tls"' in source
+    assert 'data-settings-tab="appearance"' in source
     assert 'data-settings-tab="runtime"' in source
     assert 'data-settings-panel="general"' in source
     assert 'data-settings-panel="tls"' in source
+    assert 'data-settings-panel="appearance"' in source
     assert 'data-settings-panel="runtime"' in source
 
 
@@ -39,11 +41,25 @@ def test_system_settings_exposes_global_blocklist_scope_mode():
     assert 'name="global_blocklist_scope_mode"' in source
     assert 'value="all_clients"' in source
     assert 'value="matched_scopes"' in source
-    assert 'Global block-list reach' in source
+    assert 'Global list reach' in source
 
 def test_dashboard_reason_prefers_triggering_blocklist_name():
     source = Path("app/main.py").read_text(encoding="utf-8")
 
-    assert "matched_scope,matched_list,policy_scheme" in source
-    assert 'r["matched_list"] or r["reason"] or ""' in source
+    assert "matched_scope,matched_list,matched_list_type,policy_scheme" in source
+    assert "response_time_ms" in source
+    assert "Response time" in source
+    assert 'decision_match_text(r)' in source
 
+
+
+def test_system_settings_exposes_application_theme():
+    source = Path("app/main.py").read_text(encoding="utf-8")
+    css = Path("app/static/style.css").read_text(encoding="utf-8")
+
+    assert 'name="ui_theme" value="dark"' in source
+    assert 'name="ui_theme" value="light"' in source
+    assert '@app.post("/admin/settings/appearance")' in source
+    assert 'data-theme="{ui_theme}"' in source
+    assert '[data-theme="light"]' in css
+    assert '[data-theme="dark"] .managed-list-edit-page' in css

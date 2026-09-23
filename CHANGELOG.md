@@ -1,5 +1,110 @@
 # Changelog
 
+## 1.18.5 — Global light/dark appearance
+
+- Restored the redesigned Block List and Whitelist editors to Blockinator's native dark control-plane palette by default.
+- Added a persistent application-wide **Appearance** setting with Dark and Light options under System Settings.
+- Theme selection is stored in the configured SQLite or MySQL database and applies to all administrator pages and the sign-in screen.
+- Dark remains the default for existing and new installations.
+- Added a full light palette for navigation, workspace headers, cards, tables, forms, list/scopes management, query logging, statistics, TLS/settings surfaces, manual-domain management, and sign-in.
+- Added theme previews and current-theme status in the Appearance settings tab.
+- Added database, MySQL, settings-UI, and editor-theme regression coverage.
+- Updated the application version to 1.18.5.
+
+## 1.18.4 — Rendered block-list and whitelist editor redesign
+
+- Reworked the dedicated Block List and Whitelist editor pages to match the rendered dashboard concept.
+- Added a prominent editor header with list type, back navigation, and delete action.
+- Added a tab-style section navigator for General, Policy & Targeting, Schedule, Import & Update, and Preview.
+- Added summary tiles for entries, state, scope, and refresh interval.
+- Reorganized editing into paired cards for list details, source configuration, targeting, scheduling, import/update, and list preview.
+- Added a live 10-entry database preview of the currently stored list contents.
+- Added a persistent save bar with Cancel and Save Changes actions.
+- Preserved the existing edit POST contract, schedule controls, scope assignment behavior, URL refresh behavior, manual-domain management, and delete behavior.
+- Added a light editor workspace inspired by the approved rendering while retaining Blockinator's dark navigation shell.
+- Added responsive styling and regression coverage for the redesigned editor.
+- Updated the application version to 1.18.4.
+
+## 1.18.3 — Dedicated block-list and whitelist editors
+
+- Block-list and whitelist cards now open a dedicated edit page instead of expanding an inline editor.
+- Added `/lists/<id>/edit` and `/whitelists/<id>/edit` pages with the existing name, format, source URL, refresh interval, enabled state, global reach, schedule, policy-target assignment, and content-replacement controls.
+- Save, validation-error, replacement-error, and immediate URL-refresh results now return to the dedicated editor page.
+- Manual lists retain direct access to the existing per-domain management page from both the list card and the new editor.
+- Removed the inline list editor markup from the main Block Lists and Whitelists pages, reducing page size and visual clutter.
+- Added responsive styling and regression coverage for the dedicated editor routes and controls.
+- Updated the application version to 1.18.3.
+
+## 1.18.2 — Live statistics dashboard
+
+- Added a dedicated **Statistics** page to the main navigation with a Technitium-inspired live monitoring layout.
+- Added headline totals for retained DNS queries, retained blocked queries, and average measured policy response time.
+- Added a dependency-free SVG line chart showing query and block volume with selectable 15-minute, 1-hour, 6-hour, and 24-hour windows.
+- Live statistics refresh every five seconds without reloading the page and pause background polling while the page is hidden.
+- Added an authenticated read-only statistics API used by the dashboard.
+- Long windows automatically use larger aggregation buckets to keep the chart efficient and readable.
+- Statistics are derived from retained query-log history, so configured query-log retention limits also define the available historical statistics.
+- Added regression coverage for statistics aggregation, window sizing, navigation, and live chart wiring.
+- Updated the application version to 1.18.2.
+
+## 1.18.1 — Policy response-time logging
+
+- Added end-to-end response-time measurement for policy decision requests.
+- Timing starts when the ASGI application receives `/api/v1/decision` and ends after the final response body has been sent downstream.
+- Query logs now persist `response_time_ms` on both SQLite and MySQL.
+- Dashboard Recent DNS activity and the Query Log now display response time in milliseconds.
+- Existing query-log databases are migrated automatically; historical rows show no response time.
+- Updated the application version to 1.18.1.
+
+## 1.18.0 — Concurrent policy engine and CPU efficiency
+
+- Replaced the decision-path-wide policy lock with immutable policy snapshots that are rebuilt off-path and swapped atomically.
+- Added indexed endpoint, reverse-DNS hostname, wildcard-hostname, and IPv4/IPv6 network lookups so policy matching no longer scans every configured target.
+- Precompiled schedule timezones/times and added a per-minute active-list mask cache.
+- Replaced per-list in-memory domain sets with one canonical domain-to-list bitmask index, preserving whitelist precedence while reducing duplicate memory and Python lookup work.
+- Bulk-loads list memberships during policy reload instead of issuing one domain query per list.
+- Moved request JSON serialization and reverse-DNS enrichment out of the DNS request thread; query-log database writes remain single-writer and batched.
+- Cached query-log retention settings and reduced pruning frequency; age pruning now uses the timestamp index directly.
+- Reused one reverse-DNS resolver/cache across the UI and query logger and reused resolver objects per PTR worker thread.
+- Added concurrent URL-list downloads/parsing with serialized database commits and one policy reload per changed refresh batch.
+- Added HTTP ETag/Last-Modified support plus parser-aware content fingerprints so unchanged sources skip parsing, membership writes, and policy reloads.
+- Changed list synchronization to apply only membership deltas instead of deleting/reinserting an entire list.
+- Added query-log indexes for matched policy targets and querying DNS server IDs on SQLite and MySQL.
+- Expanded the HTTP benchmark for concurrent throughput/latency and added a direct policy-engine microbenchmark.
+- Added concurrency, no-op refresh, parallel refresh, whitelist-precedence, and delta-storage regression coverage.
+- Updated the application version to 1.18.0.
+
+## 1.17.0 — Selectable SQLite / MySQL database backend
+
+- Added `DATABASE_BACKEND=sqlite|mysql`; SQLite remains the default and requires no external database service.
+- Added support for remote MySQL 8.x databases using PyMySQL.
+- Added MySQL schema creation for settings, policy lists, canonical domains, assignments, policy targets, query logs, learned PTR identities, administrator sessions, and API keys.
+- Added a compatibility SQL layer for qmark parameters, transactions, case-insensitive lookups, SQLite-style upserts, and other runtime SQL differences.
+- Preserved normalized domain storage across both backends so duplicate domains are still stored once globally.
+- Added backend-aware URL-list scheduling, atomic list refreshes, transient lock/deadlock retries, query-log retention, and orphan-domain cleanup.
+- Added optional MySQL TLS settings for CA, client certificate/key, certificate verification, and identity verification.
+- MySQL sessions are pinned to UTC so scheduling and timestamps remain consistent with SQLite behavior.
+- System Settings → Runtime now shows the active database backend and connection target without exposing credentials.
+- Docker Compose and `.env.example` now expose the database backend and MySQL connection settings.
+- Added a real MySQL 8.4 GitHub Actions service and integration tests covering schema initialization, settings, authentication, policy decisions, whitelist precedence, canonical domain storage, query logging, retention, refresh scheduling, and list refresh.
+- Database backend changes take effect at startup; selecting a different backend does not automatically migrate data between SQLite and MySQL.
+- Updated the application version to 1.17.0.
+
+## 1.16.0 — Whitelists
+
+- Added first-class whitelists with the same source, upload/paste, manual-domain, URL refresh, scheduling, enable/disable, Global, and policy-target assignment features as block lists.
+- Added a dedicated **Whitelists** administration page and integrated whitelist choices into Policy Targets.
+- Added a persisted list type with automatic migration of all existing lists to the Block type.
+- Whitelist matches are evaluated before block-list matches and explicitly allow a query even when the same domain is present in active block lists.
+- Global whitelists follow the existing Global list reach setting and scoped whitelists follow the same endpoint, reverse-DNS hostname, and network targeting rules as block lists.
+- Added whitelist support for common Adblock exception syntax such as `@@||example.com^`.
+- URL-backed whitelists use the same per-list automatic refresh scheduler and last-known-good failure behavior.
+- Query logging and the decision API now record the matched list type; Dashboard and Query Log surfaces identify whitelist allows.
+- Block lists and whitelists share the normalized canonical domain table, so a domain appearing in both is still stored only once.
+- Fixed manual list add/remove result detection with normalized domain-storage compatibility views.
+- Added migration, precedence, schedule, scoped assignment, parser, refresh, query-log, storage, and UI regression coverage.
+- Updated the application version to 1.16.0.
+
 ## 1.15.10 — Dashboard block-list reason
 
 - Dashboard Recent DNS activity now shows the triggering block-list name in the **Reason** column for block-list matches.

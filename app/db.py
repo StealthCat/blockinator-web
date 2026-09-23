@@ -8,14 +8,33 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from .mysql_backend import MySQLBackend
+
 
 class Database:
     def __init__(self, path: str | None = None) -> None:
-        data_dir = Path(os.getenv("DATA_DIR", "/data"))
-        data_dir.mkdir(parents=True, exist_ok=True)
-        self.path = str(Path(path) if path else data_dir / "policy.db")
+        configured_backend = os.getenv("DATABASE_BACKEND", "sqlite").strip().lower()
+        self.backend = "sqlite" if path is not None else configured_backend
+        if self.backend not in {"sqlite", "mysql"}:
+            raise ValueError("DATABASE_BACKEND must be either 'sqlite' or 'mysql'")
+
         self._init_lock = threading.Lock()
-        self._enable_wal()
+        self._mysql: MySQLBackend | None = None
+
+        if self.backend == "mysql":
+            self.path = ""
+            self._mysql = MySQLBackend()
+        else:
+            if path is not None:
+                db_path = Path(path)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                data_dir = Path(os.getenv("DATA_DIR", "/data"))
+                data_dir.mkdir(parents=True, exist_ok=True)
+                db_path = data_dir / "policy.db"
+            self.path = str(db_path)
+            self._enable_wal()
+
         self.initialize()
 
     def _enable_wal(self) -> None:
@@ -30,7 +49,13 @@ class Database:
             con.close()
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
+    def connect(self) -> Iterator:
+        if self.backend == "mysql":
+            assert self._mysql is not None
+            with self._mysql.connect() as con:
+                yield con
+            return
+
         con = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys=ON")
@@ -42,6 +67,15 @@ class Database:
             con.close()
 
     def initialize(self) -> None:
+        if self.backend == "mysql":
+            assert self._mysql is not None
+            bootstrap_timezone = os.getenv("TZ", "UTC").strip() or "UTC"
+            with self._init_lock:
+                self._mysql.initialize(bootstrap_timezone)
+            return
+        self._initialize_sqlite()
+
+    def _initialize_sqlite(self) -> None:
         with self._init_lock, self.connect() as con:
             con.executescript(
                 """
@@ -56,6 +90,7 @@ class Database:
                     source_type TEXT NOT NULL DEFAULT 'manual',
                     source_url TEXT,
                     format TEXT NOT NULL DEFAULT 'auto',
+                    list_type TEXT NOT NULL DEFAULT 'block' CHECK(list_type IN ('block','whitelist')),
                     enabled INTEGER NOT NULL DEFAULT 1,
                     use_globally INTEGER NOT NULL DEFAULT 1,
                     refresh_minutes INTEGER NOT NULL DEFAULT 1440,
@@ -67,6 +102,9 @@ class Database:
                     last_updated TEXT,
                     last_refresh_attempt TEXT,
                     last_error TEXT,
+                    source_etag TEXT,
+                    source_last_modified TEXT,
+                    source_hash TEXT,
                     entry_count INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -125,12 +163,17 @@ class Database:
                     reason TEXT,
                     matched_scope TEXT,
                     matched_list TEXT,
+                    matched_list_type TEXT,
+                    response_time_ms REAL,
                     request_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_query_log_ts ON query_log(ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_client ON query_log(client_ip, ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_qname ON query_log(qname, ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_matched_list ON query_log(matched_list, ts DESC);
+                CREATE INDEX IF NOT EXISTS idx_query_log_server_id ON query_log(server_id, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_query_log_scope_id ON query_log(matched_scope, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_query_log_blocked_id ON query_log(blocked, id DESC);
 
                 CREATE TABLE IF NOT EXISTS client_identities (
                     client_ip TEXT PRIMARY KEY,
@@ -278,6 +321,20 @@ class Database:
                 con.execute(
                     "ALTER TABLE blocklists ADD COLUMN last_refresh_attempt TEXT"
                 )
+            for metadata_column in (
+                "source_etag",
+                "source_last_modified",
+                "source_hash",
+            ):
+                if metadata_column not in blocklist_columns:
+                    con.execute(
+                        f"ALTER TABLE blocklists ADD COLUMN {metadata_column} TEXT"
+                    )
+
+            if "list_type" not in blocklist_columns:
+                con.execute(
+                    "ALTER TABLE blocklists ADD COLUMN list_type TEXT NOT NULL DEFAULT 'block'"
+                )
 
             scope_columns = {
                 row["name"] for row in con.execute("PRAGMA table_info(scopes)")
@@ -397,6 +454,10 @@ class Database:
                 con.execute("ALTER TABLE query_log ADD COLUMN client_name TEXT")
             if "policy_scheme" not in query_log_columns:
                 con.execute("ALTER TABLE query_log ADD COLUMN policy_scheme TEXT")
+            if "matched_list_type" not in query_log_columns:
+                con.execute("ALTER TABLE query_log ADD COLUMN matched_list_type TEXT")
+            if "response_time_ms" not in query_log_columns:
+                con.execute("ALTER TABLE query_log ADD COLUMN response_time_ms REAL")
             con.execute(
                 "CREATE INDEX IF NOT EXISTS idx_query_log_client_name "
                 "ON query_log(client_name, ts DESC)"
@@ -405,6 +466,52 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_query_log_matched_list "
                 "ON query_log(matched_list, ts DESC)"
             )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_log_matched_scope "
+                "ON query_log(matched_scope, ts DESC)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_log_server "
+                "ON query_log(server_id, ts DESC)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_log_server_id "
+                "ON query_log(server_id, id DESC)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_log_scope_id "
+                "ON query_log(matched_scope, id DESC)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_log_blocked_id "
+                "ON query_log(blocked, id DESC)"
+            )
+
+            # Older SQLite releases used CURRENT_TIMESTAMP's space-separated
+            # representation while the asynchronous logger writes ISO-8601 UTC.
+            # Normalize legacy rows once so direct indexed timestamp comparisons
+            # remain chronologically correct across both formats.
+            timestamp_migration = con.execute(
+                "SELECT value FROM settings WHERE key='query_log_ts_normalized'"
+            ).fetchone()
+            if (
+                timestamp_migration is None
+                or str(timestamp_migration["value"]) != "1"
+            ):
+                con.execute(
+                    """
+                    UPDATE query_log
+                    SET ts=replace(ts,' ','T') || '+00:00'
+                    WHERE length(ts)=19
+                      AND substr(ts,11,1)=' '
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT OR REPLACE INTO settings(key,value)
+                    VALUES('query_log_ts_normalized','1')
+                    """
+                )
 
             for row in con.execute(
                 """
@@ -425,28 +532,245 @@ class Database:
                     (row["client_ip"], row["client_name"]),
                 )
 
-            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('global_blocking','1')")
-            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('block_response','nxdomain')")
-            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('unmatched_scope_action','allow')")
-            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('global_blocklist_scope_mode','all_clients')")
-            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('max_query_logs','25000')")
-            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('max_query_log_age_days','0')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('global_blocking','1')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('block_response','nxdomain')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('unmatched_scope_action','allow')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('global_blocklist_scope_mode','all_clients')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('ui_theme','dark')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('max_query_logs','25000')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('max_query_log_age_days','0')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('log_request_json','0')")
             bootstrap_timezone = os.getenv("TZ", "UTC").strip() or "UTC"
             con.execute(
-                "INSERT OR IGNORE INTO settings(key,value) VALUES('default_timezone',?)",
+                "INSERT OR IGNORE INTO settings(`key`,value) VALUES('default_timezone',?)",
                 (bootstrap_timezone,),
             )
-            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tls_mode','http')")
-            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tls_hostname','')")
-            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tls_acme_email','')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('tls_mode','http')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('tls_hostname','')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('tls_acme_email','')")
             con.execute(
-                "INSERT OR IGNORE INTO settings(key,value) "
+                "INSERT OR IGNORE INTO settings(`key`,value) "
                 "VALUES('tls_acme_directory','https://acme-v02.api.letsencrypt.org/directory')"
             )
-            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tls_acme_eab_key_id','')")
-            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tls_http_redirect','0')")
-            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tls_last_applied','')")
-            con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tls_last_error','')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('tls_acme_eab_key_id','')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('tls_http_redirect','0')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('tls_last_applied','')")
+            con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('tls_last_error','')")
+
+    def is_retryable_write_error(self, exc: Exception) -> bool:
+        if self.backend == "mysql":
+            assert self._mysql is not None
+            return self._mysql.is_retryable_write_error(exc)
+        return isinstance(exc, sqlite3.OperationalError) and any(
+            marker in str(exc).lower()
+            for marker in ("database is locked", "database is busy")
+        )
+
+    def backend_summary(self) -> str:
+        if self.backend == "mysql":
+            assert self._mysql is not None
+            cfg = self._mysql.config
+            return f"MySQL · {cfg.host}:{cfg.port}/{cfg.database}"
+        return f"SQLite · {self.path}"
+
+    def due_url_list_ids(self) -> list[int]:
+        if self.backend == "mysql":
+            sql = """
+                SELECT id
+                FROM blocklists
+                WHERE source_type='url'
+                  AND source_url IS NOT NULL
+                  AND TRIM(source_url) <> ''
+                  AND TIMESTAMPDIFF(
+                        MINUTE,
+                        COALESCE(last_refresh_attempt,last_updated,created_at),
+                        UTC_TIMESTAMP()
+                      ) >= GREATEST(refresh_minutes,1)
+                ORDER BY id
+            """
+        else:
+            sql = """
+                SELECT id
+                FROM blocklists
+                WHERE source_type='url'
+                  AND source_url IS NOT NULL
+                  AND TRIM(source_url) <> ''
+                  AND julianday('now') >= julianday(
+                        COALESCE(last_refresh_attempt,last_updated,created_at)
+                      ) + (
+                        CASE
+                          WHEN refresh_minutes < 1 THEN 1
+                          ELSE refresh_minutes
+                        END / 1440.0
+                      )
+                ORDER BY id
+            """
+        with self.connect() as con:
+            rows = con.execute(sql).fetchall()
+        return [int(row["id"]) for row in rows]
+
+    @staticmethod
+    def _domain_chunks(values: list, size: int = 750):
+        for offset in range(0, len(values), size):
+            yield values[offset : offset + size]
+
+    def _insert_domain_memberships(
+        self,
+        con,
+        list_id: int,
+        domains: list[str] | tuple[str, ...] | set[str],
+    ) -> None:
+        unique_domains = list(dict.fromkeys(str(domain) for domain in domains))
+        if not unique_domains:
+            return
+
+        insert_domain_sql = (
+            "INSERT IGNORE INTO domains(domain) VALUES(?)"
+            if self.backend == "mysql"
+            else "INSERT OR IGNORE INTO domains(domain) VALUES(?)"
+        )
+        con.executemany(insert_domain_sql, [(domain,) for domain in unique_domains])
+
+        for chunk in self._domain_chunks(unique_domains):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = con.execute(
+                f"SELECT id,domain FROM domains WHERE domain IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            memberships = [(list_id, int(row["id"])) for row in rows]
+            if not memberships:
+                continue
+            insert_membership_sql = (
+                "INSERT IGNORE INTO blocklist_domain_memberships(blocklist_id,domain_id) VALUES(?,?)"
+                if self.backend == "mysql"
+                else "INSERT OR IGNORE INTO blocklist_domain_memberships(blocklist_id,domain_id) VALUES(?,?)"
+            )
+            con.executemany(insert_membership_sql, memberships)
+
+    def _cleanup_domain_ids(self, con, domain_ids: list[int]) -> None:
+        if not domain_ids:
+            return
+        for chunk in self._domain_chunks(list(dict.fromkeys(domain_ids))):
+            placeholders = ",".join("?" for _ in chunk)
+            if self.backend == "mysql":
+                con.execute(
+                    f"""
+                    DELETE d
+                    FROM domains AS d
+                    LEFT JOIN blocklist_domain_memberships AS memberships
+                      ON memberships.domain_id=d.id
+                    WHERE d.id IN ({placeholders})
+                      AND memberships.domain_id IS NULL
+                    """,
+                    chunk,
+                )
+            else:
+                con.execute(
+                    f"""
+                    DELETE FROM domains
+                    WHERE id IN ({placeholders})
+                      AND NOT EXISTS(
+                        SELECT 1
+                        FROM blocklist_domain_memberships AS memberships
+                        WHERE memberships.domain_id=domains.id
+                      )
+                    """,
+                    chunk,
+                )
+
+    def replace_list_domains(self, con, list_id: int, domains) -> bool:
+        """Synchronize list membership by applying only the changed rows.
+
+        Returns True when membership changed. This avoids deleting/reinserting
+        hundreds of thousands of unchanged memberships during routine refreshes.
+        """
+        incoming = domains if isinstance(domains, set) else set(domains)
+        if any(not isinstance(domain, str) for domain in incoming):
+            incoming = {str(domain) for domain in incoming}
+        existing_rows = con.execute(
+            """
+            SELECT domains.id AS domain_id, domains.domain
+            FROM blocklist_domain_memberships AS memberships
+            JOIN domains ON domains.id=memberships.domain_id
+            WHERE memberships.blocklist_id=?
+            """,
+            (list_id,),
+        ).fetchall()
+        existing = {
+            str(row["domain"]): int(row["domain_id"])
+            for row in existing_rows
+        }
+
+        remove_domains = set(existing) - incoming
+        add_domains = incoming - set(existing)
+        if not remove_domains and not add_domains:
+            return False
+
+        remove_ids = [existing[domain] for domain in remove_domains]
+        for chunk in self._domain_chunks(remove_ids):
+            placeholders = ",".join("?" for _ in chunk)
+            con.execute(
+                f"""
+                DELETE FROM blocklist_domain_memberships
+                WHERE blocklist_id=?
+                  AND domain_id IN ({placeholders})
+                """,
+                [list_id, *chunk],
+            )
+
+        if add_domains:
+            self._insert_domain_memberships(con, list_id, add_domains)
+        self._cleanup_domain_ids(con, remove_ids)
+        return True
+
+    def add_list_domain(self, con, list_id: int, domain: str) -> bool:
+        existing = con.execute(
+            """
+            SELECT 1 AS found
+            FROM block_entries
+            WHERE blocklist_id=? AND domain=?
+            """,
+            (list_id, domain),
+        ).fetchone()
+        if existing is not None:
+            return False
+        self._insert_domain_memberships(con, list_id, [domain])
+        return True
+
+    def remove_list_domain(self, con, list_id: int, domain: str) -> bool:
+        row = con.execute(
+            """
+            SELECT domains.id AS domain_id
+            FROM domains
+            JOIN blocklist_domain_memberships AS memberships
+              ON memberships.domain_id=domains.id
+            WHERE memberships.blocklist_id=? AND domains.domain=?
+            """,
+            (list_id, domain),
+        ).fetchone()
+        if row is None:
+            return False
+        domain_id = int(row["domain_id"])
+        con.execute(
+            """
+            DELETE FROM blocklist_domain_memberships
+            WHERE blocklist_id=? AND domain_id=?
+            """,
+            (list_id, domain_id),
+        )
+        self._cleanup_domain_ids(con, [domain_id])
+        return True
+
+    def delete_blocklist(self, con, list_id: int) -> None:
+        domain_ids = [
+            int(row["domain_id"])
+            for row in con.execute(
+                "SELECT domain_id FROM blocklist_domain_memberships WHERE blocklist_id=?",
+                (list_id,),
+            ).fetchall()
+        ]
+        con.execute("DELETE FROM blocklists WHERE id=?", (list_id,))
+        self._cleanup_domain_ids(con, domain_ids)
 
     def get_settings(self, defaults: dict[str, str]) -> dict[str, str]:
         if not defaults:
@@ -456,7 +780,7 @@ class Database:
         values = dict(defaults)
         with self.connect() as con:
             rows = con.execute(
-                f"SELECT key,value FROM settings WHERE key IN ({placeholders})",
+                f"SELECT `key` AS `key`,value FROM settings WHERE `key` IN ({placeholders})",
                 keys,
             ).fetchall()
         for row in rows:
@@ -471,7 +795,7 @@ class Database:
             try:
                 con.executemany(
                     """
-                    INSERT INTO settings(key,value)
+                    INSERT INTO settings(`key`,value)
                     VALUES(?,?)
                     ON CONFLICT(key) DO UPDATE SET value=excluded.value
                     """,

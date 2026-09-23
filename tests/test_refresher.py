@@ -270,3 +270,99 @@ def test_refresh_waits_for_concurrent_writer_without_recording_lock_error():
     assert domains == {"new.example.com"}
     td.cleanup()
 
+
+
+
+def test_unchanged_refresh_skips_policy_reload_and_membership_rewrite():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    engine = FakeEngine()
+    list_id = _create_url_list(
+        db,
+        "remote",
+        "https://example.test/list.txt",
+        60,
+    )
+
+    refresher = BlocklistRefresher(
+        db,
+        engine,
+        fetcher=lambda url: "old.example.com\n",
+        poll_seconds=5,
+    )
+    try:
+        first = refresher.refresh_list(list_id)
+        second = refresher.refresh_list(list_id)
+
+        assert first.refreshed is True
+        assert first.changed is False
+        assert second.refreshed is True
+        assert second.changed is False
+        assert engine.reloads == 0
+
+        with db.connect() as con:
+            row = con.execute(
+                "SELECT source_hash,entry_count FROM blocklists WHERE id=?",
+                (list_id,),
+            ).fetchone()
+            count = con.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM blocklist_domain_memberships
+                WHERE blocklist_id=?
+                """,
+                (list_id,),
+            ).fetchone()["c"]
+
+        assert row["source_hash"]
+        assert row["entry_count"] == 1
+        assert count == 1
+    finally:
+        refresher.stop()
+        td.cleanup()
+
+
+def test_due_refreshes_download_in_parallel_and_reload_once():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+    engine = FakeEngine()
+    _create_url_list(
+        db,
+        "first",
+        "https://example.test/first.txt",
+        1,
+        "datetime('now','-2 minutes')",
+    )
+    _create_url_list(
+        db,
+        "second",
+        "https://example.test/second.txt",
+        1,
+        "datetime('now','-2 minutes')",
+    )
+
+    barrier = threading.Barrier(2, timeout=2)
+
+    def fetcher(url: str) -> str:
+        barrier.wait()
+        return (
+            "first.example.com\n"
+            if "first" in url
+            else "second.example.com\n"
+        )
+
+    refresher = BlocklistRefresher(
+        db,
+        engine,
+        fetcher=fetcher,
+        poll_seconds=5,
+    )
+    try:
+        results = refresher.refresh_due_once()
+        assert len(results) == 2
+        assert all(result.refreshed for result in results)
+        assert all(result.changed for result in results)
+        assert engine.reloads == 1
+    finally:
+        refresher.stop()
+        td.cleanup()

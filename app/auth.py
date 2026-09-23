@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import queue
 import secrets
 import threading
 import time
@@ -69,16 +70,70 @@ class AuthManager:
         self._api_lock = threading.RLock()
         self._api_keys: dict[str, dict[str, Any]] = {}
         self._last_used_write: dict[int, float] = {}
+        self._usage_queue: queue.Queue[int] = queue.Queue(maxsize=256)
+        self._usage_stop = threading.Event()
+        self._usage_thread: threading.Thread | None = None
         if bootstrap:
             self.bootstrap_from_environment()
         self.reload_api_keys()
         self.cleanup_sessions()
 
+    def close(self) -> None:
+        self._usage_stop.set()
+        thread = self._usage_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+
+    def _ensure_usage_worker(self) -> None:
+        with self._api_lock:
+            if self._usage_thread is not None and self._usage_thread.is_alive():
+                return
+            if self._usage_stop.is_set():
+                return
+            self._usage_thread = threading.Thread(
+                target=self._usage_worker,
+                name="api-key-usage-writer",
+                daemon=True,
+            )
+            self._usage_thread.start()
+
+    def _queue_api_key_usage(self, key_id: int) -> None:
+        try:
+            self._usage_queue.put_nowait(key_id)
+        except queue.Full:
+            return
+        self._ensure_usage_worker()
+
+    def _usage_worker(self) -> None:
+        while not self._usage_stop.is_set():
+            try:
+                first = self._usage_queue.get(timeout=2.0)
+            except queue.Empty:
+                return
+
+            key_ids = {first}
+            while len(key_ids) < 128:
+                try:
+                    key_ids.add(self._usage_queue.get_nowait())
+                except queue.Empty:
+                    break
+
+            try:
+                with self.db.connect() as con:
+                    con.executemany(
+                        "UPDATE api_keys SET last_used_at=CURRENT_TIMESTAMP WHERE id=?",
+                        [(key_id,) for key_id in key_ids],
+                    )
+            except Exception:
+                # Usage timestamps are best-effort telemetry and must never
+                # delay or fail policy authentication.
+                pass
+
     def bootstrap_from_environment(self) -> None:
         """One-time migration/bootstrap from legacy environment variables.
 
         Existing database credentials always win. This keeps v1.2 upgrades working,
-        while all subsequent credential changes live exclusively in SQLite.
+        while all subsequent credential changes live exclusively in the configured database.
         """
         with self.db.connect() as con:
             user_count = int(con.execute("SELECT COUNT(*) c FROM admin_users").fetchone()["c"])
@@ -223,11 +278,7 @@ class AuthManager:
             if should_write:
                 self._last_used_write[key_id] = now
         if should_write:
-            try:
-                with self.db.connect() as con:
-                    con.execute("UPDATE api_keys SET last_used_at=CURRENT_TIMESTAMP WHERE id=?", (key_id,))
-            except Exception:
-                pass
+            self._queue_api_key_usage(key_id)
         return dict(info)
 
     @staticmethod
