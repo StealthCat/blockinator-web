@@ -327,6 +327,7 @@ class MySQLBackend:
                 matched_scope VARCHAR(255) NULL,
                 matched_list VARCHAR(255) NULL,
                 matched_list_type VARCHAR(16) NULL,
+                response_time_ms DOUBLE NULL,
                 request_json LONGTEXT NULL,
                 KEY idx_query_log_ts (ts DESC),
                 KEY idx_query_log_client (client_ip,ts DESC),
@@ -411,6 +412,12 @@ class MySQLBackend:
                 "query_log",
                 "matched_list_type",
                 "VARCHAR(16) NULL",
+            )
+            self._ensure_column(
+                con,
+                "query_log",
+                "response_time_ms",
+                "DOUBLE NULL",
             )
             for column_name, definition in (
                 ("source_etag", "TEXT NULL"),
