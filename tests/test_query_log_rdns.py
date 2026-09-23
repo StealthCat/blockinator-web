@@ -67,3 +67,70 @@ def test_query_log_migration_adds_client_name_and_supports_hostname_filter():
     assert rows[0]["client_name"] == "desktop-01.home.arpa"
 
     td.cleanup()
+
+
+
+def test_query_log_migration_normalizes_legacy_sqlite_timestamps_once():
+    td = tempfile.TemporaryDirectory()
+    path = Path(td.name) / "legacy-timestamps.db"
+
+    con = sqlite3.connect(path)
+    try:
+        con.executescript(
+            """
+            CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE query_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                server_id TEXT,
+                client_ip TEXT NOT NULL,
+                client_port INTEGER,
+                protocol TEXT,
+                qname TEXT,
+                qtype TEXT,
+                qclass TEXT,
+                blocked INTEGER NOT NULL,
+                reason TEXT,
+                matched_scope TEXT,
+                matched_list TEXT,
+                request_json TEXT
+            );
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO query_log(ts,client_ip,qname,blocked)
+            VALUES('2026-01-15 20:43:34','192.0.2.10','legacy.example.com',0)
+            """
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    db = Database(str(path))
+    with db.connect() as con:
+        row = con.execute(
+            "SELECT ts FROM query_log WHERE qname='legacy.example.com'"
+        ).fetchone()
+        marker = con.execute(
+            """
+            SELECT value FROM settings
+            WHERE key='query_log_ts_normalized'
+            """
+        ).fetchone()
+
+    assert row["ts"] == "2026-01-15T20:43:34+00:00"
+    assert marker["value"] == "1"
+
+    # A second initialization should see the marker and leave canonical rows alone.
+    Database(str(path))
+    with db.connect() as con:
+        row = con.execute(
+            "SELECT ts FROM query_log WHERE qname='legacy.example.com'"
+        ).fetchone()
+    assert row["ts"] == "2026-01-15T20:43:34+00:00"
+
+    td.cleanup()
