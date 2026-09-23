@@ -475,7 +475,7 @@ class MySQLBackend:
         ).fetchone()
         if not row or int(row["c"]) == 0:
             con.execute(
-                f"CREATE INDEX \`{index_name}\` ON \`{table}\` ({columns})"
+                f"CREATE INDEX `{index_name}` ON `{table}` ({columns})"
             )
 
     def _ensure_column(
