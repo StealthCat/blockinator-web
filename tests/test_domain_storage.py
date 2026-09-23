@@ -224,3 +224,66 @@ def test_shared_domain_remains_enforced_when_one_list_is_removed():
     engine.close()
     td.cleanup()
 
+
+
+
+def test_replace_list_domains_applies_only_membership_delta():
+    td = tempfile.TemporaryDirectory()
+    db = Database(str(Path(td.name) / "test.db"))
+
+    with db.connect() as con:
+        list_id = int(
+            con.execute(
+                "INSERT INTO blocklists(name,use_globally) VALUES('delta',1)"
+            ).lastrowid
+        )
+        db._insert_domain_memberships(
+            con,
+            list_id,
+            ["keep.example.com", "remove.example.com"],
+        )
+        before = {
+            row["domain"]: int(row["id"])
+            for row in con.execute(
+                """
+                SELECT domains.id,domains.domain
+                FROM domains
+                JOIN blocklist_domain_memberships AS memberships
+                  ON memberships.domain_id=domains.id
+                WHERE memberships.blocklist_id=?
+                """,
+                (list_id,),
+            )
+        }
+
+        changed = db.replace_list_domains(
+            con,
+            list_id,
+            {"keep.example.com", "add.example.com"},
+        )
+        after = {
+            row["domain"]: int(row["id"])
+            for row in con.execute(
+                """
+                SELECT domains.id,domains.domain
+                FROM domains
+                JOIN blocklist_domain_memberships AS memberships
+                  ON memberships.domain_id=domains.id
+                WHERE memberships.blocklist_id=?
+                """,
+                (list_id,),
+            )
+        }
+
+        assert changed is True
+        assert after["keep.example.com"] == before["keep.example.com"]
+        assert set(after) == {"keep.example.com", "add.example.com"}
+
+        unchanged = db.replace_list_domains(
+            con,
+            list_id,
+            {"keep.example.com", "add.example.com"},
+        )
+        assert unchanged is False
+
+    td.cleanup()
