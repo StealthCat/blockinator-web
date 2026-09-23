@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.18.3 — Dedicated block-list and whitelist editors
+
+- Block-list and whitelist cards now open a dedicated edit page instead of expanding an inline editor.
+- Added `/lists/<id>/edit` and `/whitelists/<id>/edit` pages with the existing name, format, source URL, refresh interval, enabled state, global reach, schedule, policy-target assignment, and content-replacement controls.
+- Save, validation-error, replacement-error, and immediate URL-refresh results now return to the dedicated editor page.
+- Manual lists retain direct access to the existing per-domain management page from both the list card and the new editor.
+- Removed the inline list editor markup from the main Block Lists and Whitelists pages, reducing page size and visual clutter.
+- Added responsive styling and regression coverage for the dedicated editor routes and controls.
+- Updated the application version to 1.18.3.
+
 ## 1.18.2 — Live statistics dashboard
 
 - Added a dedicated **Statistics** page to the main navigation with a Technitium-inspired live monitoring layout.
