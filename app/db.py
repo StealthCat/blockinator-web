@@ -464,6 +464,32 @@ class Database:
                 "ON query_log(server_id, ts DESC)"
             )
 
+            # Older SQLite releases used CURRENT_TIMESTAMP's space-separated
+            # representation while the asynchronous logger writes ISO-8601 UTC.
+            # Normalize legacy rows once so direct indexed timestamp comparisons
+            # remain chronologically correct across both formats.
+            timestamp_migration = con.execute(
+                "SELECT value FROM settings WHERE key='query_log_ts_normalized'"
+            ).fetchone()
+            if (
+                timestamp_migration is None
+                or str(timestamp_migration["value"]) != "1"
+            ):
+                con.execute(
+                    """
+                    UPDATE query_log
+                    SET ts=replace(ts,' ','T') || '+00:00'
+                    WHERE length(ts)=19
+                      AND substr(ts,11,1)=' '
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT OR REPLACE INTO settings(key,value)
+                    VALUES('query_log_ts_normalized','1')
+                    """
+                )
+
             for row in con.execute(
                 """
                 SELECT client_ip, client_name, MAX(id) AS latest_id
