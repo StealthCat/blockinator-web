@@ -296,7 +296,7 @@ class QueryLogger:
 
     def prune_now(self, now_utc: datetime | None = None) -> tuple[int, int]:
         with self.db.connect() as con:
-            con.execute("BEGIN")
+            con.execute("BEGIN IMMEDIATE")
             try:
                 result = _prune_query_logs(
                     con,
