@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import os
 import re
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Iterable
@@ -15,6 +17,15 @@ DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.
 class ParseResult:
     domains: set[str]
     ignored: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class FetchResult:
+    text: str | None
+    etag: str | None = None
+    last_modified: str | None = None
+    content_hash: str | None = None
+    not_modified: bool = False
 
 
 def normalize_domain(value: str) -> str | None:
@@ -95,17 +106,47 @@ def parse_blocklist(
     return ParseResult(domains=domains, ignored=ignored)
 
 
+def fetch_url_conditional(
+    url: str,
+    etag: str | None = None,
+    last_modified: str | None = None,
+) -> FetchResult:
+    headers = {"User-Agent": "Technitium-Remote-Policy-Blocker/1.0"}
+    if etag:
+        headers["If-None-Match"] = etag
+    if last_modified:
+        headers["If-Modified-Since"] = last_modified
+
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            length = resp.headers.get("Content-Length")
+            if length and int(length) > MAX_BYTES:
+                raise ValueError(
+                    f"block list exceeds MAX_BLOCKLIST_BYTES ({MAX_BYTES})"
+                )
+            data = resp.read(MAX_BYTES + 1)
+            if len(data) > MAX_BYTES:
+                raise ValueError(
+                    f"block list exceeds MAX_BLOCKLIST_BYTES ({MAX_BYTES})"
+                )
+            return FetchResult(
+                text=data.decode("utf-8", errors="replace"),
+                etag=resp.headers.get("ETag"),
+                last_modified=resp.headers.get("Last-Modified"),
+                content_hash=hashlib.sha256(data).hexdigest(),
+            )
+    except urllib.error.HTTPError as exc:
+        if exc.code == 304:
+            return FetchResult(
+                text=None,
+                etag=exc.headers.get("ETag") or etag,
+                last_modified=exc.headers.get("Last-Modified") or last_modified,
+                not_modified=True,
+            )
+        raise
+
+
 def fetch_url(url: str) -> str:
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Technitium-Remote-Policy-Blocker/1.0"},
-        method="GET",
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        length = resp.headers.get("Content-Length")
-        if length and int(length) > MAX_BYTES:
-            raise ValueError(f"block list exceeds MAX_BLOCKLIST_BYTES ({MAX_BYTES})")
-        data = resp.read(MAX_BYTES + 1)
-        if len(data) > MAX_BYTES:
-            raise ValueError(f"block list exceeds MAX_BLOCKLIST_BYTES ({MAX_BYTES})")
-        return data.decode("utf-8", errors="replace")
+    result = fetch_url_conditional(url)
+    return result.text or ""
