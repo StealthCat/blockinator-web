@@ -792,9 +792,12 @@ Blockinator is licensed under the **GNU General Public License v3.0**. See [LICE
 Selected feedback from the r/technitium community:
 
 > “Vibe coded slop.  
-> Hard pass.”
+> Hard pass.”  
+> — u/Resistant4375
 
-> “AI Slop.”
+> “So, built a $20 a month app.”  
+> — u/Superb_Raccoon
 
-> “Thanks ChatGPT!”
+> “Thanks ChatGPT!”  
+> — u/Key_Pace_2496
 
