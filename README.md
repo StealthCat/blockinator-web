@@ -237,7 +237,7 @@ Query timestamps are stored in UTC and converted for display using the configure
 
 ## Administration and security
 
-The administration console includes Dashboard, Block Lists, Policy Targets, Query Log, Access & Security, and System Settings pages with responsive desktop/mobile layouts.
+The administration console includes Dashboard, Block Lists, Whitelists, Policy Targets, Query Log, Access & Security, and System Settings pages with responsive desktop/mobile layouts.
 
 Security features include:
 
