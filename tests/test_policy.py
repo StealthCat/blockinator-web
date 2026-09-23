@@ -67,6 +67,48 @@ def test_decide_and_log_checks_every_question():
     td.cleanup()
 
 
+def test_response_time_is_persisted_with_query_log():
+    td, db, e = setup_engine()
+    e.logger.rdns.resolve_many = lambda addresses: {}
+
+    request = {
+        "server_id": "dns-response-time",
+        "client": {"ip": "127.0.0.1", "port": 53000},
+        "protocol": "Udp",
+        "dns": {
+            "questions": [
+                {"name": "ads.example.com", "type": "A", "class": "IN"},
+            ]
+        },
+    }
+    decision, log_row = e.decide_with_log_row(request, policy_scheme="https")
+    assert decision.block is True
+    log_row["response_time_ms"] = 12.345678
+    e.logger.submit(log_row)
+
+    deadline = time.monotonic() + 2.0
+    row = None
+    while time.monotonic() < deadline:
+        with db.connect() as con:
+            row = con.execute(
+                """
+                SELECT response_time_ms
+                FROM query_log
+                WHERE server_id='dns-response-time'
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is not None:
+            break
+        time.sleep(0.02)
+
+    assert row is not None
+    assert abs(float(row["response_time_ms"]) - 12.345678) < 0.000001
+    e.close()
+    td.cleanup()
+
+
 def test_decide_and_log_persists_policy_request_scheme():
     td, db, e = setup_engine()
     e.logger.rdns.resolve_many = lambda addresses: {}
