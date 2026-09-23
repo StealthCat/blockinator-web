@@ -650,9 +650,26 @@ async def global_toggle(request: Request):
 
 @app.get("/lists", response_class=HTMLResponse)
 def lists_page(request: Request):
+    return _managed_lists_page(request, "block")
+
+
+@app.get("/whitelists", response_class=HTMLResponse)
+def whitelists_page(request: Request):
+    return _managed_lists_page(request, "whitelist")
+
+
+def _managed_lists_page(request: Request, list_type: str):
     s = require_session(request)
+    is_whitelist = list_type == "whitelist"
+    base_path = "/whitelists" if is_whitelist else "/lists"
+    active_key = "whitelists" if is_whitelist else "lists"
+    singular_label = "whitelist" if is_whitelist else "block list"
+    plural_label = "whitelists" if is_whitelist else "block lists"
     with db.connect() as con:
-        rows = con.execute("SELECT * FROM blocklists ORDER BY name COLLATE NOCASE").fetchall()
+        rows = con.execute(
+            "SELECT * FROM blocklists WHERE list_type=? ORDER BY name COLLATE NOCASE",
+            (list_type,),
+        ).fetchall()
         scopes = con.execute("SELECT * FROM scopes ORDER BY kind,name COLLATE NOCASE").fetchall()
         membership_rows = con.execute(
             "SELECT blocklist_id,scope_id FROM scope_blocklists"
@@ -768,7 +785,7 @@ def lists_page(request: Request):
             'Save & refresh URL</button>'
         )
         manual_manage_link = (
-            f'<a class="small-button domain-manage-link" href="/lists/{int(r["id"])}/domains">'
+            f'<a class="small-button domain-manage-link" href="{base_path}/{int(r["id"])}/domains">'
             'Manage domains</a>'
             if r["source_type"] == "manual"
             else ""
@@ -841,19 +858,20 @@ def lists_page(request: Request):
         </article>'''
 
     if not cards:
-        cards = '<div class="empty-card">No block lists yet. Import one to start building policy.</div>'
+        cards = f'<div class="empty-card">No {plural_label} yet. Import one to start building policy.</div>'
 
     new_schedule_fields = schedule_fields_html(default_timezone=system_default_timezone())
     body = f'''<div class="split-grid blocklist-layout">
       <section class="panel">
-        <div class="panel-head"><div><div class="panel-kicker">Policy sources</div><h3>Managed block lists</h3><p>Edit each list and assign it to networks or exact endpoints without leaving this page.</p></div><span class="result-count">{len(rows)} lists</span></div>
+        <div class="panel-head"><div><div class="panel-kicker">Policy sources</div><h3>Managed {plural_label}</h3><p>Edit each {singular_label} and assign it to networks, exact endpoints, or reverse-DNS hostnames without leaving this page.</p></div><span class="result-count">{len(rows)} lists</span></div>
         <div class="blocklist-list">{cards}</div>
       </section>
       <section class="panel action-panel" id="add-list">
-        <div class="panel-kicker">New source</div><h3>Add block list</h3>
+        <div class="panel-kicker">New source</div><h3>Add {singular_label}</h3>
         <p class="panel-help">Import from a URL, upload a file, or paste rules directly. URL sources refresh automatically on their own per-list interval.</p>
         <form method="post" action="/admin/lists" enctype="multipart/form-data" class="form-grid">
           <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+          <input type="hidden" name="list_type" value="{list_type}">
           <label>Name<input name="name" required></label>
           <label>Format<select name="format"><option>auto</option><option>hosts</option><option>adblock</option><option>domains</option></select></label>
           <label class="full">Source URL (optional)<input name="source_url" placeholder="https://example.com/list.txt"></label>
@@ -873,7 +891,13 @@ def lists_page(request: Request):
         </form>
       </section>
     </div>'''
-    return page(request, "Block Lists", "lists", body, s)
+    return page(
+        request,
+        "Whitelists" if is_whitelist else "Block Lists",
+        active_key,
+        body,
+        s,
+    )
 
 
 
