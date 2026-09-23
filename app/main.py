@@ -122,6 +122,15 @@ def querying_server_html(server_id: str | None) -> str:
     )
 
 
+def decision_match_text(row) -> str:
+    matched_list = str(row["matched_list"] or "").strip()
+    if matched_list:
+        if str(row["matched_list_type"] or "") == "whitelist":
+            return f"Whitelist: {matched_list}"
+        return matched_list
+    return str(row["reason"] or "") if row["blocked"] else ""
+
+
 DAY_LABELS = [
     (0, "Mon"),
     (1, "Tue"),
@@ -593,6 +602,22 @@ def dashboard(request: Request):
                  JOIN blocklists b ON b.id=m.blocklist_id
                  WHERE m.domain_id=d.id AND b.enabled=1
                )) entries,
+              (SELECT COUNT(*)
+               FROM domains d
+               WHERE EXISTS (
+                 SELECT 1
+                 FROM blocklist_domain_memberships m
+                 JOIN blocklists b ON b.id=m.blocklist_id
+                 WHERE m.domain_id=d.id AND b.enabled=1 AND b.list_type='block'
+               )) block_entries,
+              (SELECT COUNT(*)
+               FROM domains d
+               WHERE EXISTS (
+                 SELECT 1
+                 FROM blocklist_domain_memberships m
+                 JOIN blocklists b ON b.id=m.blocklist_id
+                 WHERE m.domain_id=d.id AND b.enabled=1 AND b.list_type='whitelist'
+               )) whitelist_entries,
               (SELECT COUNT(*) FROM scopes WHERE kind='network') networks,
               (SELECT COUNT(*) FROM scopes WHERE kind='client') clients,
               (SELECT COUNT(*) FROM scopes WHERE kind='hostname') hostnames,
@@ -603,7 +628,7 @@ def dashboard(request: Request):
             """
             SELECT
               ts,server_id,client_ip,client_name,qname,blocked,reason,
-              matched_scope,matched_list,policy_scheme
+              matched_scope,matched_list,matched_list_type,policy_scheme
             FROM query_log
             ORDER BY id DESC
             LIMIT 8
@@ -621,7 +646,7 @@ def dashboard(request: Request):
         f'<td>{esc(r["matched_scope"] or "—")}</td>'
         f'<td><span class="pill {"red" if r["blocked"] else "green"}">'
         f'{"Blocked" if r["blocked"] else "Allowed"}</span></td>'
-        f'<td>{esc((r["matched_list"] or r["reason"] or "") if r["blocked"] else "")}</td></tr>'
+        f'<td>{esc(decision_match_text(r))}</td></tr>'
         for r in recent
     ) or '<tr><td colspan="8" class="empty">No DNS decisions recorded yet.</td></tr>'
     body = f'''
@@ -629,7 +654,7 @@ def dashboard(request: Request):
     <div class="stat-grid">
       <article class="stat"><span>Queries</span><strong>{totals["queries"]:,}</strong><small>Recorded decisions</small></article>
       <article class="stat"><span>Blocked</span><strong>{totals["blocked"]:,}</strong><small>Rejected requests</small></article>
-      <article class="stat"><span>Block entries</span><strong>{totals["entries"]:,}</strong><small>Across enabled lists</small></article>
+      <article class="stat"><span>Policy domains</span><strong>{totals["entries"]:,}</strong><small>{totals["block_entries"]:,} block · {totals["whitelist_entries"]:,} whitelist</small></article>
       <article class="stat"><span>Policy targets</span><strong>{totals["clients"] + totals["networks"] + totals["hostnames"]:,}</strong><small>{totals["networks"]} networks · {totals["clients"]} endpoints · {totals["hostnames"]} hostnames</small></article>
     </div>
     <section class="panel status-panel"><div><span class="big-dot {"green" if global_on else "amber"}"></span><div><h3>Global blocking is {"active" if global_on else "paused"}</h3><p>{"Policy decisions are enforced." if global_on else "All requests are currently allowed."}</p></div></div>
@@ -2053,7 +2078,7 @@ def queries_page(
         f'<td>{esc(r["matched_scope"] or "—")}</td>'
         f'<td><span class="pill {"red" if r["blocked"] else "green"}">'
         f'{"Blocked" if r["blocked"] else "Allowed"}</span></td>'
-        f'<td>{esc((r["matched_list"] or r["reason"]) if r["blocked"] else "")}</td></tr>'
+        f'<td>{esc(decision_match_text(r))}</td></tr>'
         for r in rows
     ) or '<tr><td colspan="9" class="empty">No matching queries.</td></tr>'
 
@@ -2096,7 +2121,7 @@ def queries_page(
         <input name="client" value="{esc(client)}" placeholder="Client IP or hostname…">
         <select name="server">{server_options}</select>
         <select name="target">{target_options}</select>
-        <input name="blocklist" value="{esc(blocklist)}" list="query-blocklists" placeholder="Block list contains…">
+        <input name="blocklist" value="{esc(blocklist)}" list="query-blocklists" placeholder="List name contains…">
         <datalist id="query-blocklists">{blocklist_options}</datalist>
         <select name="decision">
           <option value="">All decisions</option>
@@ -2259,7 +2284,7 @@ def settings_page(request: Request):
 
             <div class="form-section full">
               <div class="form-section-head">
-                <div><b>Global block-list reach</b><p>Control whether lists marked Global also apply to clients that do not match an active policy target.</p></div>
+                <div><b>Global list reach</b><p>Control whether lists marked Global also apply to clients that do not match an active policy target.</p></div>
                 <span>{"All clients" if global_blocklist_scope_mode == "all_clients" else "Matched targets only"}</span>
               </div>
               <label class="full">Apply global block lists to
