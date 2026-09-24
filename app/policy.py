@@ -11,6 +11,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .db import Database
+from .ptr_resolver import PtrResolutionManager
 from .rdns import ReverseDnsResolver
 
 
@@ -234,18 +235,10 @@ class Decision:
 
 
 class QueryLogger:
-    """Single-writer asynchronous logger with decoupled reverse-DNS resolution."""
+    """Single-writer asynchronous query logger kept off the decision path."""
 
-    def __init__(
-        self,
-        db: Database,
-        identity_callback: Callable[[dict[str, str]], None] | None = None,
-        rdns: ReverseDnsResolver | None = None,
-    ) -> None:
+    def __init__(self, db: Database) -> None:
         self.db = db
-        self.identity_callback = identity_callback
-        self.rdns = rdns or ReverseDnsResolver()
-        self._owns_rdns = rdns is None
 
         settings = self.db.get_settings(
             {
@@ -259,13 +252,7 @@ class QueryLogger:
         self.capture_request_json = settings["log_request_json"] == "1"
         self._last_prune = monotonic_time.monotonic()
         self._rows_since_prune = 0
-        self._last_legacy_scan = 0.0
-
         self.q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=10000)
-        self.rdns_q: queue.Queue[str] = queue.Queue(maxsize=4096)
-        self.identity_q: queue.Queue[dict[str, str]] = queue.Queue()
-        self._rdns_pending: set[str] = set()
-        self._rdns_pending_lock = threading.Lock()
         self.stop_event = threading.Event()
 
         self.thread = threading.Thread(
@@ -273,13 +260,7 @@ class QueryLogger:
             name="query-log-writer",
             daemon=True,
         )
-        self.resolver_thread = threading.Thread(
-            target=self._resolve_loop,
-            name="query-log-rdns",
-            daemon=True,
-        )
         self.thread.start()
-        self.resolver_thread.start()
 
     @property
     def queue_depth(self) -> int:
@@ -306,9 +287,6 @@ class QueryLogger:
     def close(self) -> None:
         self.stop_event.set()
         self.thread.join(timeout=2.0)
-        self.resolver_thread.join(timeout=2.0)
-        if self._owns_rdns:
-            self.rdns.close()
 
     def prune_now(self, now_utc: datetime | None = None) -> tuple[int, int]:
         with self.db.connect() as con:
@@ -328,69 +306,6 @@ class QueryLogger:
         self._last_prune = monotonic_time.monotonic()
         self._rows_since_prune = 0
         return result
-
-    def queue_rdns(self, addresses) -> None:
-        self._queue_rdns({str(address or "").strip() for address in addresses})
-
-    def _queue_rdns(self, addresses: set[str]) -> None:
-        for address in addresses:
-            if not address:
-                continue
-            with self._rdns_pending_lock:
-                if address in self._rdns_pending:
-                    continue
-                self._rdns_pending.add(address)
-            try:
-                self.rdns_q.put_nowait(address)
-            except queue.Full:
-                with self._rdns_pending_lock:
-                    self._rdns_pending.discard(address)
-
-    def _resolve_loop(self) -> None:
-        while not self.stop_event.is_set():
-            addresses: list[str] = []
-            try:
-                addresses.append(self.rdns_q.get(timeout=0.5))
-            except queue.Empty:
-                continue
-            while len(addresses) < 128:
-                try:
-                    addresses.append(self.rdns_q.get_nowait())
-                except queue.Empty:
-                    break
-
-            unique = list(dict.fromkeys(addresses))
-            try:
-                resolved = self.rdns.resolve_many(unique)
-                identities = {
-                    address: normalized
-                    for address, hostname in resolved.items()
-                    if (normalized := normalize_hostname(hostname)) is not None
-                }
-                if identities:
-                    self.identity_q.put(identities)
-            finally:
-                with self._rdns_pending_lock:
-                    for address in unique:
-                        self._rdns_pending.discard(address)
-
-    def _queue_legacy_backfill(self, con) -> None:
-        now = monotonic_time.monotonic()
-        if now - self._last_legacy_scan < 60.0:
-            return
-        self._last_legacy_scan = now
-        rows = con.execute(
-            """
-            SELECT client_ip, MAX(id) AS latest_id
-            FROM query_log
-            WHERE client_name IS NULL OR client_name=''
-            GROUP BY client_ip
-            ORDER BY latest_id DESC
-            LIMIT 256
-            """
-        ).fetchall()
-        if rows:
-            self._queue_rdns({str(row["client_ip"]) for row in rows})
 
     def _should_prune(self, inserted_rows: int) -> bool:
         self._rows_since_prune += inserted_rows
