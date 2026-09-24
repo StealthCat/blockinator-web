@@ -183,6 +183,23 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_client_identities_name
                     ON client_identities(client_name);
 
+                CREATE TABLE IF NOT EXISTS client_ptr_status (
+                    client_ip TEXT PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    client_name TEXT,
+                    first_seen_at INTEGER NOT NULL,
+                    last_seen_at INTEGER NOT NULL,
+                    last_attempt_at INTEGER,
+                    last_success_at INTEGER,
+                    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_client_ptr_status_due
+                    ON client_ptr_status(next_attempt_at, status);
+                CREATE INDEX IF NOT EXISTS idx_client_ptr_status_state
+                    ON client_ptr_status(status, last_seen_at DESC);
+
                 CREATE TABLE IF NOT EXISTS admin_users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
