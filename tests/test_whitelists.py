@@ -7,6 +7,7 @@ import time
 from app.blocklists import parse_blocklist
 from app.db import Database
 from app.policy import PolicyEngine
+from app.rdns import ReverseDnsResult
 from app.refresher import BlocklistRefresher
 
 
@@ -226,7 +227,7 @@ def test_whitelist_match_is_persisted_in_query_log():
         _add_list(con, "allow", "whitelist", "safe.example.com")
 
     engine = PolicyEngine(db)
-    engine.logger.rdns.resolve_many = lambda addresses: {}
+    engine.ptr_resolver.rdns.lookup = lambda address: ReverseDnsResult("no_ptr")
     request = {
         "server_id": "dns-1",
         "client": {"ip": "192.168.1.20", "port": 53000},
