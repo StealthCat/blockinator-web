@@ -5,10 +5,18 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
+from dataclasses import dataclass
 
 import dns.exception
 import dns.resolver
 import dns.reversename
+
+
+@dataclass(frozen=True, slots=True)
+class ReverseDnsResult:
+    status: str
+    hostname: str | None = None
+    error: str | None = None
 
 
 class ReverseDnsResolver:
@@ -82,6 +90,36 @@ class ReverseDnsResolver:
     def close(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
+    def lookup(self, address: str) -> ReverseDnsResult:
+        """Perform one uncached PTR lookup and distinguish absence from failure."""
+        address = str(address).strip()
+        try:
+            canonical = str(ipaddress.ip_address(address))
+        except ValueError:
+            return ReverseDnsResult("retry", error="invalid IP address")
+
+        try:
+            reverse_name = dns.reversename.from_address(canonical)
+            answer = self._resolver().resolve(
+                reverse_name,
+                "PTR",
+                lifetime=self.lookup_timeout,
+                raise_on_no_answer=False,
+            )
+            if answer.rrset and len(answer):
+                hostname = str(answer[0]).rstrip(".") or None
+                if hostname:
+                    return ReverseDnsResult("resolved", hostname=hostname)
+            return ReverseDnsResult("no_ptr")
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            return ReverseDnsResult("no_ptr")
+        except (dns.exception.DNSException, OSError, ValueError) as exc:
+            detail = str(exc).strip() or exc.__class__.__name__
+            return ReverseDnsResult(
+                "retry",
+                error=f"{exc.__class__.__name__}: {detail}"[:500],
+            )
+
     def resolve(self, address: str) -> str | None:
         address = str(address).strip()
         try:
@@ -93,20 +131,8 @@ class ReverseDnsResolver:
         if hit:
             return hostname
 
-        hostname = None
-        try:
-            reverse_name = dns.reversename.from_address(canonical)
-            answer = self._resolver().resolve(
-                reverse_name,
-                "PTR",
-                lifetime=self.lookup_timeout,
-                raise_on_no_answer=False,
-            )
-            if answer.rrset and len(answer):
-                hostname = str(answer[0]).rstrip(".") or None
-        except (dns.exception.DNSException, OSError, ValueError):
-            hostname = None
-
+        result = self.lookup(canonical)
+        hostname = result.hostname if result.status == "resolved" else None
         self._cache_put(canonical, hostname)
         return hostname
 
