@@ -7,10 +7,11 @@ import threading
 import time as monotonic_time
 from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta, timezone
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .db import Database
+from .ptr_resolver import PtrResolutionManager
 from .rdns import ReverseDnsResolver
 
 
@@ -234,18 +235,10 @@ class Decision:
 
 
 class QueryLogger:
-    """Single-writer asynchronous logger with decoupled reverse-DNS resolution."""
+    """Single-writer asynchronous query logger kept off the decision path."""
 
-    def __init__(
-        self,
-        db: Database,
-        identity_callback: Callable[[dict[str, str]], None] | None = None,
-        rdns: ReverseDnsResolver | None = None,
-    ) -> None:
+    def __init__(self, db: Database) -> None:
         self.db = db
-        self.identity_callback = identity_callback
-        self.rdns = rdns or ReverseDnsResolver()
-        self._owns_rdns = rdns is None
 
         settings = self.db.get_settings(
             {
@@ -259,13 +252,7 @@ class QueryLogger:
         self.capture_request_json = settings["log_request_json"] == "1"
         self._last_prune = monotonic_time.monotonic()
         self._rows_since_prune = 0
-        self._last_legacy_scan = 0.0
-
         self.q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=10000)
-        self.rdns_q: queue.Queue[str] = queue.Queue(maxsize=4096)
-        self.identity_q: queue.Queue[dict[str, str]] = queue.Queue()
-        self._rdns_pending: set[str] = set()
-        self._rdns_pending_lock = threading.Lock()
         self.stop_event = threading.Event()
 
         self.thread = threading.Thread(
@@ -273,13 +260,7 @@ class QueryLogger:
             name="query-log-writer",
             daemon=True,
         )
-        self.resolver_thread = threading.Thread(
-            target=self._resolve_loop,
-            name="query-log-rdns",
-            daemon=True,
-        )
         self.thread.start()
-        self.resolver_thread.start()
 
     @property
     def queue_depth(self) -> int:
@@ -306,9 +287,6 @@ class QueryLogger:
     def close(self) -> None:
         self.stop_event.set()
         self.thread.join(timeout=2.0)
-        self.resolver_thread.join(timeout=2.0)
-        if self._owns_rdns:
-            self.rdns.close()
 
     def prune_now(self, now_utc: datetime | None = None) -> tuple[int, int]:
         with self.db.connect() as con:
@@ -328,69 +306,6 @@ class QueryLogger:
         self._last_prune = monotonic_time.monotonic()
         self._rows_since_prune = 0
         return result
-
-    def queue_rdns(self, addresses) -> None:
-        self._queue_rdns({str(address or "").strip() for address in addresses})
-
-    def _queue_rdns(self, addresses: set[str]) -> None:
-        for address in addresses:
-            if not address:
-                continue
-            with self._rdns_pending_lock:
-                if address in self._rdns_pending:
-                    continue
-                self._rdns_pending.add(address)
-            try:
-                self.rdns_q.put_nowait(address)
-            except queue.Full:
-                with self._rdns_pending_lock:
-                    self._rdns_pending.discard(address)
-
-    def _resolve_loop(self) -> None:
-        while not self.stop_event.is_set():
-            addresses: list[str] = []
-            try:
-                addresses.append(self.rdns_q.get(timeout=0.5))
-            except queue.Empty:
-                continue
-            while len(addresses) < 128:
-                try:
-                    addresses.append(self.rdns_q.get_nowait())
-                except queue.Empty:
-                    break
-
-            unique = list(dict.fromkeys(addresses))
-            try:
-                resolved = self.rdns.resolve_many(unique)
-                identities = {
-                    address: normalized
-                    for address, hostname in resolved.items()
-                    if (normalized := normalize_hostname(hostname)) is not None
-                }
-                if identities:
-                    self.identity_q.put(identities)
-            finally:
-                with self._rdns_pending_lock:
-                    for address in unique:
-                        self._rdns_pending.discard(address)
-
-    def _queue_legacy_backfill(self, con) -> None:
-        now = monotonic_time.monotonic()
-        if now - self._last_legacy_scan < 60.0:
-            return
-        self._last_legacy_scan = now
-        rows = con.execute(
-            """
-            SELECT client_ip, MAX(id) AS latest_id
-            FROM query_log
-            WHERE client_name IS NULL OR client_name=''
-            GROUP BY client_ip
-            ORDER BY latest_id DESC
-            LIMIT 256
-            """
-        ).fetchall()
-        if rows:
-            self._queue_rdns({str(row["client_ip"]) for row in rows})
 
     def _should_prune(self, inserted_rows: int) -> bool:
         self._rows_since_prune += inserted_rows
@@ -416,7 +331,6 @@ class QueryLogger:
     def _run_connected(self, con) -> None:
         while not self.stop_event.is_set():
             batch: list[dict[str, Any]] = []
-            identities: dict[str, str] = {}
 
             try:
                 batch.append(self.q.get(timeout=0.25))
@@ -427,91 +341,53 @@ class QueryLogger:
                     batch.append(self.q.get_nowait())
                 except queue.Empty:
                     break
-            while True:
-                try:
-                    identities.update(self.identity_q.get_nowait())
-                except queue.Empty:
-                    break
 
-            self._queue_legacy_backfill(con)
-
-            if not batch and not identities:
+            if not batch:
                 continue
 
-            missing_addresses: set[str] = set()
             inserted_rows = len(batch)
             try:
                 con.execute("BEGIN")
-                if batch:
-                    con.executemany(
-                        """
-                        INSERT INTO query_log(
-                          ts,server_id,client_ip,client_name,client_port,protocol,policy_scheme,
-                          qname,qtype,qclass,blocked,reason,matched_scope,matched_list,
-                          matched_list_type,response_time_ms,request_json
-                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                        """,
-                        [
+                con.executemany(
+                    """
+                    INSERT INTO query_log(
+                      ts,server_id,client_ip,client_name,client_port,protocol,policy_scheme,
+                      qname,qtype,qclass,blocked,reason,matched_scope,matched_list,
+                      matched_list_type,response_time_ms,request_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        (
+                            r["ts"],
+                            r.get("server_id"),
+                            r["client_ip"],
+                            r.get("client_name"),
+                            r.get("client_port"),
+                            r.get("protocol"),
+                            r.get("policy_scheme"),
+                            r.get("qname"),
+                            r.get("qtype"),
+                            r.get("qclass"),
+                            1 if r["blocked"] else 0,
+                            r.get("reason"),
+                            r.get("matched_scope"),
+                            r.get("matched_list"),
+                            r.get("matched_list_type"),
+                            r.get("response_time_ms"),
                             (
-                                r["ts"],
-                                r.get("server_id"),
-                                r["client_ip"],
-                                r.get("client_name"),
-                                r.get("client_port"),
-                                r.get("protocol"),
-                                r.get("policy_scheme"),
-                                r.get("qname"),
-                                r.get("qtype"),
-                                r.get("qclass"),
-                                1 if r["blocked"] else 0,
-                                r.get("reason"),
-                                r.get("matched_scope"),
-                                r.get("matched_list"),
-                                r.get("matched_list_type"),
-                                r.get("response_time_ms"),
-                                (
-                                    json.dumps(
-                                        r.get("request_obj"),
-                                        separators=(",", ":"),
-                                        ensure_ascii=False,
-                                    )
-                                    if self.capture_request_json
-                                    and r.get("request_obj") is not None
-                                    else None
-                                ),
-                            )
-                            for r in batch
-                        ],
-                    )
-                    missing_addresses = {
-                        str(r.get("client_ip") or "")
-                        for r in batch
-                        if not r.get("client_name")
-                    }
-
-                if identities:
-                    for client_ip, client_name in identities.items():
-                        con.execute(
-                            """
-                            UPDATE query_log
-                            SET client_name=?
-                            WHERE client_ip=? AND (client_name IS NULL OR client_name='')
-                            """,
-                            (client_name, client_ip),
+                                json.dumps(
+                                    r.get("request_obj"),
+                                    separators=(",", ":"),
+                                    ensure_ascii=False,
+                                )
+                                if self.capture_request_json
+                                and r.get("request_obj") is not None
+                                else None
+                            ),
                         )
-                    con.executemany(
-                        """
-                        INSERT INTO client_identities(client_ip,client_name,updated_at)
-                        VALUES(?,?,CURRENT_TIMESTAMP)
-                        ON CONFLICT(client_ip) DO UPDATE SET
-                            client_name=excluded.client_name,
-                            updated_at=CURRENT_TIMESTAMP
-                        """,
-                        [
-                            (client_ip, client_name)
-                            for client_ip, client_name in identities.items()
-                        ],
-                    )
+                        for r in batch
+                    ],
+                )
 
                 if self._should_prune(inserted_rows):
                     _prune_query_logs(
@@ -527,11 +403,6 @@ class QueryLogger:
                 if con.in_transaction:
                     con.execute("ROLLBACK")
                 raise
-
-            if identities and self.identity_callback is not None:
-                self.identity_callback(identities)
-            if missing_addresses:
-                self._queue_rdns(missing_addresses)
 
 
 class PolicyEngine:
@@ -567,10 +438,17 @@ class PolicyEngine:
             unmatched_scope_action="allow",
             global_blocklist_scope_mode="all_clients",
         )
-        self.logger = QueryLogger(db, self._remember_client_identities, self.rdns)
+        self.logger = QueryLogger(db)
+        self.ptr_resolver = PtrResolutionManager(
+            db,
+            self.rdns,
+            self._remember_client_identities,
+        )
         self.reload()
+        self.ptr_resolver.start()
 
     def close(self) -> None:
+        self.ptr_resolver.close()
         self.logger.close()
         if self._owns_rdns:
             self.rdns.close()
@@ -579,14 +457,24 @@ class PolicyEngine:
     def snapshot(self) -> PolicySnapshot:
         return self._snapshot
 
-    def _remember_client_identities(self, identities: dict[str, str]) -> None:
+    def _remember_client_identities(
+        self,
+        identities: dict[str, str | None],
+    ) -> None:
         if not identities:
             return
         with self._write_lock:
             current = self._snapshot
             merged = dict(current.client_identities)
-            merged.update(identities)
+            for address, hostname in identities.items():
+                if hostname:
+                    merged[address] = hostname
+                else:
+                    merged.pop(address, None)
             self._snapshot = replace(current, client_identities=merged)
+
+    def ptr_status(self) -> dict[str, object]:
+        return self.ptr_resolver.status_snapshot()
 
     @staticmethod
     def _scope_tuple_map_add(
@@ -861,7 +749,6 @@ class PolicyEngine:
             self._snapshot = new_snapshot
             self._active_list_cache = (None, -1, 0)
 
-        self.logger.queue_rdns(new_snapshot.client_scopes.keys())
 
     @staticmethod
     def _policy_settings_from_rows(rows) -> dict[str, str]:
@@ -1236,9 +1123,6 @@ class PolicyEngine:
                     hostname_scope_count=hostname_scope_count,
                     network_scope_count=network_scope_count,
                 )
-                updated = self._snapshot
-
-            self.logger.queue_rdns(updated.client_scopes.keys())
             return
 
         # A simultaneous list rebuild changed list-bit assignments twice while
@@ -1542,6 +1426,9 @@ class PolicyEngine:
         dns = request_obj.get("dns") or {}
         questions = dns.get("questions") or []
         client_ip = str(client.get("ip", ""))
+        # Observation is an in-memory, deduplicated operation only. PTR DNS and
+        # database work run on the dedicated resolver manager after the request.
+        self.ptr_resolver.observe(client_ip)
 
         decision: Decision | None = None
         matched_question: dict[str, Any] = questions[0] if questions else {}

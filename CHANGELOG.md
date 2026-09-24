@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.19.0 — Durable parallel PTR resolver
+
+- Replaced query-logger-coupled reverse-DNS discovery with a dedicated PTR resolution manager that runs entirely beside the DNS decision pipeline.
+- Every policy request now performs only a fast in-memory client-IP observation; PTR DNS lookups and persistence never block the decision response.
+- Added durable `client_ptr_status` tracking on SQLite and MySQL with pending, resolved, authoritative no-PTR, and transient-retry states.
+- Added exponential retry/backoff for temporary resolver failures while preserving the last known successful hostname through transient outages.
+- Added periodic refresh of resolved PTR names and authoritative no-PTR results so DHCP/reverse-zone changes are learned automatically.
+- Added startup and periodic reconciliation against retained Query Log history so unresolved clients recover across restarts or missed in-memory work.
+- Resolved identities continue to populate `client_identities`, backfill missing Query Log hostnames, and update hostname-policy snapshots without rebuilding list-domain indexes.
+- Authoritative PTR removal now removes stale current identities so hostname policy does not continue matching a name that no longer exists.
+- Added Runtime status for tracked/resolved/no-PTR/pending/retrying clients, queued observations, in-flight work, worker count, and resolver source.
+- Added configurable resolver worker and refresh settings plus Docker Compose/.env examples.
+- Added regression coverage for durable schema creation, nonblocking observation, successful resolution/backfill, retries, and stale-identity removal.
+- Updated the application version to 1.19.0.
+
 ## 1.18.5 — Global light/dark appearance
 
 - Restored the redesigned Block List and Whitelist editors to Blockinator's native dark control-plane palette by default.

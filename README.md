@@ -259,9 +259,20 @@ The **System Settings → Default timezone** controls Query Log display and is t
 
 ## Reverse DNS
 
-PTR lookup is kept off the DNS decision request path.
+PTR lookup is kept completely off the DNS decision request path.
 
-The asynchronous logging/identity pipeline learns client PTR names and stores them in the configured database. Learned identities are then available to the in-memory policy engine and administrative UI without forcing page renders to wait on DNS.
+Every policy request performs only a fast, in-memory observation of the client IP. A dedicated durable PTR resolver runs in parallel with policy evaluation and persists one state for every observed client:
+
+- **pending** — discovered but not yet resolved;
+- **resolved** — a valid PTR hostname is known;
+- **no_ptr** — the resolver authoritatively reports no PTR record; or
+- **retry** — a timeout, SERVFAIL, unavailable resolver, or other transient failure will be retried.
+
+Transient failures use exponential backoff. Resolved names are periodically refreshed so DHCP/PTR changes are learned, and authoritative no-PTR results are rechecked so newly created PTR records eventually appear.
+
+PTR state is stored in `client_ptr_status`. Successful names are also stored in `client_identities`, backfilled into Query Log rows that did not yet have a hostname, and propagated into the immutable policy snapshot without rebuilding block-list domain indexes.
+
+Startup and periodic reconciliation scan retained Query Log history for client IPs that are not yet represented in the durable PTR state table. This makes resolution recoverable even after restarts and avoids relying on a single in-memory queue.
 
 PTR identities are used for:
 
@@ -270,6 +281,8 @@ PTR identities are used for:
 - Query Log client labels;
 - Endpoint selectors; and
 - Query Log client searching.
+
+The first request from a previously unknown client never waits for PTR. Hostname policy can begin applying as soon as the background resolver learns the name.
 
 A wildcard such as:
 
@@ -284,6 +297,17 @@ For internal reverse zones:
 ```env
 RDNS_NAMESERVERS=192.168.1.2,192.168.1.3
 ```
+
+Resolver controls include:
+
+```env
+RDNS_RESOLVER_WORKERS=8
+RDNS_RESOLVED_REFRESH_SECONDS=86400
+RDNS_NO_PTR_REFRESH_SECONDS=21600
+RDNS_RECONCILE_SECONDS=1
+```
+
+**System Settings → Runtime** shows PTR resolver status, tracked/resolved/no-PTR/retry counts, queue depth, in-flight work, worker count, and the active resolver source.
 
 Hostname policy is only as trustworthy as the PTR data supplied by the configured resolver/reverse zones.
 
@@ -674,6 +698,11 @@ Shows application, storage, proxy, and TLS/runtime information.
 | `RDNS_PAGE_BUDGET_SECONDS` | PTR resolver UI budget compatibility setting | `1.25` |
 | `RDNS_CACHE_TTL_SECONDS` | Positive PTR cache lifetime | `300` |
 | `RDNS_NEGATIVE_TTL_SECONDS` | Negative PTR cache lifetime | `60` |
+| `RDNS_WORKERS` | Concurrent cache/UI PTR workers | `12` |
+| `RDNS_RESOLVER_WORKERS` | Durable parallel PTR-resolution workers | `8` |
+| `RDNS_RESOLVED_REFRESH_SECONDS` | Refresh interval for resolved PTR names | `86400` |
+| `RDNS_NO_PTR_REFRESH_SECONDS` | Recheck interval for authoritative no-PTR results | `21600` |
+| `RDNS_RECONCILE_SECONDS` | Durable PTR scheduler/reconciliation interval | `1` |
 | `TLS_RECONCILE_SECONDS` | Caddy/TLS reconciliation interval | `30` |
 
 The persisted System Settings timezone becomes authoritative after initialization; changing `TZ` later does not rewrite existing schedule timezones.

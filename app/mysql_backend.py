@@ -417,6 +417,22 @@ class MySQLBackend:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """,
             """
+            CREATE TABLE IF NOT EXISTS client_ptr_status (
+                client_ip VARCHAR(45) NOT NULL PRIMARY KEY,
+                status VARCHAR(16) NOT NULL DEFAULT 'pending',
+                client_name VARCHAR(253) NULL,
+                first_seen_at BIGINT NOT NULL,
+                last_seen_at BIGINT NOT NULL,
+                last_attempt_at BIGINT NULL,
+                last_success_at BIGINT NULL,
+                next_attempt_at BIGINT NOT NULL DEFAULT 0,
+                attempt_count INT NOT NULL DEFAULT 0,
+                last_error TEXT NULL,
+                KEY idx_client_ptr_status_due (next_attempt_at,status),
+                KEY idx_client_ptr_status_state (status,last_seen_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """,
+            """
             CREATE TABLE IF NOT EXISTS admin_users (
                 id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
                 username VARCHAR(191) NOT NULL UNIQUE,
