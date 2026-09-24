@@ -7,7 +7,7 @@ import threading
 import time as monotonic_time
 from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta, timezone
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .db import Database
