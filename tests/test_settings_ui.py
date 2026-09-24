@@ -63,3 +63,16 @@ def test_system_settings_exposes_application_theme():
     assert 'data-theme="{ui_theme}"' in source
     assert '[data-theme="light"]' in css
     assert '[data-theme="dark"] .managed-list-edit-page' in css
+
+def test_runtime_settings_show_durable_ptr_resolver_status():
+    source = Path("app/main.py").read_text(encoding="utf-8")
+
+    assert "ptr_status = engine.ptr_status()" in source
+    assert "<h3>PTR resolver</h3>" in source
+    assert "Tracked clients" in source
+    assert "No PTR" in source
+    assert "Retrying" in source
+    assert "Queued observations" in source
+    assert "In flight" in source
+    assert 'esc(ptr_status["resolver"])' in source
+
