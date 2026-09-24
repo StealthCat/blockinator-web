@@ -10,6 +10,7 @@ from app.auth import AuthManager, hash_password
 from app.db import Database
 from app.mysql_backend import MySQLConnection
 from app.policy import PolicyEngine
+from app.rdns import ReverseDnsResult
 from app.refresher import BlocklistRefresher
 from app.statistics import build_statistics_snapshot
 
@@ -34,6 +35,7 @@ def _clear_database(db: Database) -> None:
         for table in (
             "admin_sessions",
             "api_keys",
+            "client_ptr_status",
             "client_identities",
             "query_log",
             "scope_blocklists",
@@ -119,9 +121,10 @@ def test_mysql_query_logger_upsert_and_retention():
     )
 
     engine = PolicyEngine(db)
-    engine.logger.rdns.resolve_many = lambda addresses: {
-        str(address): "client.home.arpa" for address in addresses
-    }
+    engine.ptr_resolver.rdns.lookup = lambda address: ReverseDnsResult(
+        "resolved",
+        hostname="client.home.arpa",
+    )
 
     for qname in ("one.example.com", "two.example.com"):
         engine.decide_and_log(
