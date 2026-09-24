@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.19.1 — Offline database migration utility
+
+- Added `tools/migrate_database.py` for complete offline SQLite ↔ MySQL Blockinator migrations.
+- The tool requires an explicit offline confirmation before destructive writes and supports a source-only dry run.
+- Destination schemas are initialized with the current Blockinator schema, cleared, and repopulated in foreign-key-safe dependency order while preserving IDs and relationships.
+- Migrations include settings, block/whitelist data, normalized domain memberships, policy targets, query history, learned PTR identities and durable PTR state, administrator accounts/sessions, and API keys.
+- Added cross-backend timestamp normalization for MySQL DATETIME columns.
+- Added post-copy sequence/auto-increment repair, foreign-key validation, row-count verification, and optional SHA-256 content verification for every Blockinator table.
+- Added MySQL TLS/connection CLI options and non-interactive migration support.
+- Added SQLite regression coverage and a real SQLite → MySQL CI migration test.
+- Documented that filesystem TLS/Caddy state remains outside the database and must be retained/copied separately when moving hosts.
+- Updated the application version to 1.19.1.
+
 ## 1.19.0 — Durable parallel PTR resolver
 
 - Replaced query-logger-coupled reverse-DNS discovery with a dedicated PTR resolution manager that runs entirely beside the DNS decision pipeline.

@@ -463,6 +463,54 @@ MYSQL_POOL_RECYCLE_SECONDS=300
 
 Optional MySQL TLS is supported through `MYSQL_SSL_*` settings.
 
+### Offline database migration
+
+Blockinator includes `tools/migrate_database.py` to move the complete database-resident dataset between SQLite and MySQL in either direction.
+
+**Blockinator must be stopped for the entire migration.** The tool requires `--confirm-offline` before it will write anything. The destination database is initialized with the current Blockinator schema, cleared, populated in foreign-key-safe order, then verified with row counts and SHA-256 table-content digests.
+
+SQLite → MySQL:
+
+```bash
+docker compose down
+
+export MYSQL_HOST=mysql.example.internal
+export MYSQL_DATABASE=blockinator
+export MYSQL_USER=blockinator
+export MYSQL_PASSWORD='replace-with-password'
+
+python tools/migrate_database.py \
+  --source sqlite \
+  --destination mysql \
+  --sqlite-path ./data/policy.db \
+  --confirm-offline
+```
+
+MySQL → SQLite:
+
+```bash
+docker compose down
+
+export MYSQL_HOST=mysql.example.internal
+export MYSQL_DATABASE=blockinator
+export MYSQL_USER=blockinator
+export MYSQL_PASSWORD='replace-with-password'
+
+python tools/migrate_database.py \
+  --source mysql \
+  --destination sqlite \
+  --sqlite-path ./data/policy.db \
+  --confirm-offline
+```
+
+Use `--dry-run` to validate the source and show table counts without modifying the destination. Use `--yes` for non-interactive operation and `--skip-content-verification` when row-count verification alone is desired.
+
+The migration preserves Blockinator database data including settings, block lists, whitelists, normalized domains and memberships, policy targets, Query Log history, PTR resolution state, learned client identities, administrator accounts/sessions, and API keys.
+
+Filesystem state under `./data/tls/` and `./data/caddy/` is not stored in either database and is therefore not copied by the database migration tool. Keep or copy those directories separately when moving Blockinator to another host.
+
+After a successful migration, set `DATABASE_BACKEND` to the destination type before restarting Blockinator.
+
 ## Appearance
 
 **System Settings → Appearance** provides application-wide **Dark** and **Light** themes.
@@ -729,7 +777,7 @@ Remote MySQL       Configuration, credentials, policy data, and query history
 
 Back up both the remote MySQL database and local `./data`.
 
-Blockinator does not automatically synchronize or migrate records between database backends.
+Blockinator does not automatically synchronize database backends while running. Use `tools/migrate_database.py` while Blockinator is offline to perform a verified one-time migration.
 
 ## Repository layout
 

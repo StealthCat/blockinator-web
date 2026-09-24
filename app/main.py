@@ -28,7 +28,7 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.19.0"
+APP_VERSION = "1.19.1"
 
 
 class PolicyResponseTimingMiddleware:
