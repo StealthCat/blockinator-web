@@ -331,7 +331,6 @@ class QueryLogger:
     def _run_connected(self, con) -> None:
         while not self.stop_event.is_set():
             batch: list[dict[str, Any]] = []
-            identities: dict[str, str] = {}
 
             try:
                 batch.append(self.q.get(timeout=0.25))
@@ -342,91 +341,53 @@ class QueryLogger:
                     batch.append(self.q.get_nowait())
                 except queue.Empty:
                     break
-            while True:
-                try:
-                    identities.update(self.identity_q.get_nowait())
-                except queue.Empty:
-                    break
 
-            self._queue_legacy_backfill(con)
-
-            if not batch and not identities:
+            if not batch:
                 continue
 
-            missing_addresses: set[str] = set()
             inserted_rows = len(batch)
             try:
                 con.execute("BEGIN")
-                if batch:
-                    con.executemany(
-                        """
-                        INSERT INTO query_log(
-                          ts,server_id,client_ip,client_name,client_port,protocol,policy_scheme,
-                          qname,qtype,qclass,blocked,reason,matched_scope,matched_list,
-                          matched_list_type,response_time_ms,request_json
-                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                        """,
-                        [
+                con.executemany(
+                    """
+                    INSERT INTO query_log(
+                      ts,server_id,client_ip,client_name,client_port,protocol,policy_scheme,
+                      qname,qtype,qclass,blocked,reason,matched_scope,matched_list,
+                      matched_list_type,response_time_ms,request_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        (
+                            r["ts"],
+                            r.get("server_id"),
+                            r["client_ip"],
+                            r.get("client_name"),
+                            r.get("client_port"),
+                            r.get("protocol"),
+                            r.get("policy_scheme"),
+                            r.get("qname"),
+                            r.get("qtype"),
+                            r.get("qclass"),
+                            1 if r["blocked"] else 0,
+                            r.get("reason"),
+                            r.get("matched_scope"),
+                            r.get("matched_list"),
+                            r.get("matched_list_type"),
+                            r.get("response_time_ms"),
                             (
-                                r["ts"],
-                                r.get("server_id"),
-                                r["client_ip"],
-                                r.get("client_name"),
-                                r.get("client_port"),
-                                r.get("protocol"),
-                                r.get("policy_scheme"),
-                                r.get("qname"),
-                                r.get("qtype"),
-                                r.get("qclass"),
-                                1 if r["blocked"] else 0,
-                                r.get("reason"),
-                                r.get("matched_scope"),
-                                r.get("matched_list"),
-                                r.get("matched_list_type"),
-                                r.get("response_time_ms"),
-                                (
-                                    json.dumps(
-                                        r.get("request_obj"),
-                                        separators=(",", ":"),
-                                        ensure_ascii=False,
-                                    )
-                                    if self.capture_request_json
-                                    and r.get("request_obj") is not None
-                                    else None
-                                ),
-                            )
-                            for r in batch
-                        ],
-                    )
-                    missing_addresses = {
-                        str(r.get("client_ip") or "")
-                        for r in batch
-                        if not r.get("client_name")
-                    }
-
-                if identities:
-                    for client_ip, client_name in identities.items():
-                        con.execute(
-                            """
-                            UPDATE query_log
-                            SET client_name=?
-                            WHERE client_ip=? AND (client_name IS NULL OR client_name='')
-                            """,
-                            (client_name, client_ip),
+                                json.dumps(
+                                    r.get("request_obj"),
+                                    separators=(",", ":"),
+                                    ensure_ascii=False,
+                                )
+                                if self.capture_request_json
+                                and r.get("request_obj") is not None
+                                else None
+                            ),
                         )
-                    con.executemany(
-                        """
-                        INSERT INTO client_identities(client_ip,client_name,updated_at)
-                        VALUES(?,?,CURRENT_TIMESTAMP)
-                        ON CONFLICT(client_ip) DO UPDATE SET
-                            client_name=excluded.client_name,
-                            updated_at=CURRENT_TIMESTAMP
-                        """,
-                        [
-                            (client_ip, client_name)
-                            for client_ip, client_name in identities.items()
-                        ],
-                    )
+                        for r in batch
+                    ],
+                )
 
                 if self._should_prune(inserted_rows):
                     _prune_query_logs(
@@ -442,11 +403,6 @@ class QueryLogger:
                 if con.in_transaction:
                     con.execute("ROLLBACK")
                 raise
-
-            if identities and self.identity_callback is not None:
-                self.identity_callback(identities)
-            if missing_addresses:
-                self._queue_rdns(missing_addresses)
 
 
 class PolicyEngine:
@@ -482,10 +438,17 @@ class PolicyEngine:
             unmatched_scope_action="allow",
             global_blocklist_scope_mode="all_clients",
         )
-        self.logger = QueryLogger(db, self._remember_client_identities, self.rdns)
+        self.logger = QueryLogger(db)
+        self.ptr_resolver = PtrResolutionManager(
+            db,
+            self.rdns,
+            self._remember_client_identities,
+        )
         self.reload()
+        self.ptr_resolver.start()
 
     def close(self) -> None:
+        self.ptr_resolver.close()
         self.logger.close()
         if self._owns_rdns:
             self.rdns.close()
@@ -494,14 +457,24 @@ class PolicyEngine:
     def snapshot(self) -> PolicySnapshot:
         return self._snapshot
 
-    def _remember_client_identities(self, identities: dict[str, str]) -> None:
+    def _remember_client_identities(
+        self,
+        identities: dict[str, str | None],
+    ) -> None:
         if not identities:
             return
         with self._write_lock:
             current = self._snapshot
             merged = dict(current.client_identities)
-            merged.update(identities)
+            for address, hostname in identities.items():
+                if hostname:
+                    merged[address] = hostname
+                else:
+                    merged.pop(address, None)
             self._snapshot = replace(current, client_identities=merged)
+
+    def ptr_status(self) -> dict[str, object]:
+        return self.ptr_resolver.status_snapshot()
 
     @staticmethod
     def _scope_tuple_map_add(
