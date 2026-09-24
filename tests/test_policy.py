@@ -5,6 +5,7 @@ import time
 
 from app.db import Database
 from app.policy import PolicyEngine, _prune_query_logs
+from app.rdns import ReverseDnsResult
 
 
 def setup_engine():
@@ -69,7 +70,7 @@ def test_decide_and_log_checks_every_question():
 
 def test_response_time_is_persisted_with_query_log():
     td, db, e = setup_engine()
-    e.logger.rdns.resolve_many = lambda addresses: {}
+    e.ptr_resolver.rdns.lookup = lambda address: ReverseDnsResult("no_ptr")
 
     request = {
         "server_id": "dns-response-time",
@@ -111,7 +112,7 @@ def test_response_time_is_persisted_with_query_log():
 
 def test_decide_and_log_persists_policy_request_scheme():
     td, db, e = setup_engine()
-    e.logger.rdns.resolve_many = lambda addresses: {}
+    e.ptr_resolver.rdns.lookup = lambda address: ReverseDnsResult("no_ptr")
 
     request = {
         "server_id": "dns-1",
