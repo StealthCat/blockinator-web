@@ -104,9 +104,9 @@ class PtrResolutionManager:
         self._thread: threading.Thread | None = None
         self._last_backfill = 0.0
         self._last_error = ""
-        self._backfill_interval = 60.0
+        self._backfill_interval = 10.0
         self._observe_dedupe_seconds = 30.0
-        self._batch_size = 128
+        self._batch_size = 512
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -304,11 +304,7 @@ class PtrResolutionManager:
                 """
                 SELECT candidates.client_ip
                 FROM (
-                    SELECT client_ip FROM query_log
-                    UNION
-                    SELECT target AS client_ip
-                    FROM scopes
-                    WHERE kind='client'
+                    SELECT DISTINCT client_ip FROM query_log
                 ) AS candidates
                 WHERE NOT EXISTS(
                     SELECT 1
