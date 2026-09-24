@@ -749,7 +749,6 @@ class PolicyEngine:
             self._snapshot = new_snapshot
             self._active_list_cache = (None, -1, 0)
 
-        self.logger.queue_rdns(new_snapshot.client_scopes.keys())
 
     @staticmethod
     def _policy_settings_from_rows(rows) -> dict[str, str]:
@@ -1124,9 +1123,6 @@ class PolicyEngine:
                     hostname_scope_count=hostname_scope_count,
                     network_scope_count=network_scope_count,
                 )
-                updated = self._snapshot
-
-            self.logger.queue_rdns(updated.client_scopes.keys())
             return
 
         # A simultaneous list rebuild changed list-bit assignments twice while
@@ -1430,6 +1426,9 @@ class PolicyEngine:
         dns = request_obj.get("dns") or {}
         questions = dns.get("questions") or []
         client_ip = str(client.get("ip", ""))
+        # Observation is an in-memory, deduplicated operation only. PTR DNS and
+        # database work run on the dedicated resolver manager after the request.
+        self.ptr_resolver.observe(client_ip)
 
         decision: Decision | None = None
         matched_question: dict[str, Any] = questions[0] if questions else {}
