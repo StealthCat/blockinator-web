@@ -28,7 +28,7 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.18.5"
+APP_VERSION = "1.19.0"
 
 
 class PolicyResponseTimingMiddleware:
@@ -2722,6 +2722,7 @@ def settings_page(request: Request):
     log_request_json = engine.logger.capture_request_json
     default_timezone = system_default_timezone()
     ui_theme = application_theme()
+    ptr_status = engine.ptr_status()
     tls_status = tls_manager.status()
     tls_settings = tls_status.settings
     https_port = os.getenv("HTTPS_PORT", "8443")
@@ -3088,6 +3089,24 @@ def settings_page(request: Request):
             <div><span>HTTP behavior</span><b>{esc(http_behavior_label)}</b></div>
             <div><span>Last TLS apply</span><b class="mono">{esc(tls_status.last_applied or "Never")}</b></div>
           </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-kicker">Reverse DNS</div><h3>PTR resolver</h3>
+          <p class="panel-help">PTR work runs in parallel with policy decisions. Every observed client is persisted, retried after transient failures, and periodically refreshed without delaying DNS decisions.</p>
+          <div class="info-grid">
+            <div><span>Status</span><b>{"Running" if ptr_status["running"] else "Stopped"}</b></div>
+            <div><span>Tracked clients</span><b>{int(ptr_status["total"]):,}</b></div>
+            <div><span>Resolved</span><b>{int(ptr_status["resolved"]):,}</b></div>
+            <div><span>No PTR</span><b>{int(ptr_status["no_ptr"]):,}</b></div>
+            <div><span>Pending</span><b>{int(ptr_status["pending"]):,}</b></div>
+            <div><span>Retrying</span><b>{int(ptr_status["retry"]):,}</b></div>
+            <div><span>Queued observations</span><b>{int(ptr_status["queued"]):,}</b></div>
+            <div><span>In flight</span><b>{int(ptr_status["inflight"]):,}</b></div>
+            <div><span>Workers</span><b>{int(ptr_status["workers"]):,}</b></div>
+            <div><span>Resolver</span><b class="mono">{esc(ptr_status["resolver"])}</b></div>
+          </div>
+          {f'<div class="list-warning"><b>PTR resolver error:</b> {esc(ptr_status["last_error"])}</div>' if ptr_status["last_error"] else ""}
         </section>
       </section>
     </div>'''
