@@ -6,7 +6,7 @@
 
 **Blockinator** is a self-hosted DNS policy engine and management console designed to sit beside DNS servers such as Technitium DNS Server.
 
-It accepts authenticated DNS query metadata, resolves the applicable client policy, evaluates whitelists and block lists, and returns an allow/block decision. The web console provides policy targeting, list management, schedules, live statistics, query history, authentication, database selection, and managed HTTPS.
+It accepts authenticated DNS query metadata, applies configurable pre-policy record-type bypasses, resolves the applicable client policy, evaluates whitelists and block lists, and returns an allow/block decision. The web console provides policy targeting, list management, schedules, live statistics, query history, authentication, SQLite/MySQL-backed persistence, and managed HTTPS.
 
 Blockinator runs with Docker Compose and supports either:
 
@@ -24,13 +24,14 @@ Blockinator runs with Docker Compose and supports either:
 - Hosts-file, domain-list, and common DNS-oriented Adblock parsing.
 - Per-list and per-target recurring schedules with IANA timezones.
 - Configurable behavior for clients that do not match a policy target.
-- Asynchronous query logging and reverse-DNS identity learning.
+- Configurable DNS record-type bypasses that skip policy evaluation, PTR work, and logging.
+- Asynchronous query logging and durable background reverse-DNS identity learning.
 - Distinct **Allowed**, **Blocked**, and **Whitelisted** decisions in the Dashboard and Query Log.
-- Query-log filtering by client, server, policy target, list, and decision.
-- End-to-end policy response-time logging.
-- Live Statistics chart for queries, blocks, and average response time.
+- Query-log filtering by domain, client, server, policy target, list, and decision.
+- End-to-end policy response-time logging for evaluated requests.
+- Live Statistics charts for queries, blocks, and average response time.
 - Dark and light application themes.
-- SQLite or remote MySQL persistence.
+- SQLite or remote MySQL persistence, with an offline verified migration utility.
 - Managed HTTPS through Caddy with uploaded certificates or ACME.
 - API-key authentication for resolvers and database-backed administrator sessions.
 - Lock-free policy reads through immutable in-memory snapshots.
@@ -70,7 +71,7 @@ MYSQL_PASSWORD=replace-with-a-long-random-password
 
 Blockinator creates and upgrades its own tables. The MySQL database and user must already exist, and that user needs the privileges required to create/alter Blockinator tables, indexes, views, and foreign keys.
 
-Changing `DATABASE_BACKEND` selects a different store at the next startup. It does **not** migrate data between SQLite and MySQL.
+Changing `DATABASE_BACKEND` selects a different store at the next startup. It does **not** migrate data automatically. To preserve an existing installation while switching backends, stop Blockinator and use `tools/migrate_database.py` as described under **Offline database migration**.
 
 ### 2. Start Blockinator
 
@@ -102,13 +103,16 @@ Bootstrap administrator credentials and the bootstrap API key are only used when
 
 ### Target precedence
 
-Client targets are resolved in this order:
+Policy handling proceeds in this order:
 
-1. Global pause.
-2. Exact client-IP Endpoint.
-3. Matching reverse-DNS hostname.
-4. Most-specific matching Network.
-5. Unmatched-client fallback.
+1. Ignored DNS record-type bypass.
+2. Global pause.
+3. Exact client-IP Endpoint.
+4. Matching reverse-DNS hostname.
+5. Most-specific matching Network.
+6. Unmatched-client fallback.
+
+The record-type bypass occurs before PTR observation, policy-target matching, list evaluation, and Query Log creation. If any question in the request uses an ignored type, Blockinator immediately returns an allow decision with reason `ignored_record_type`.
 
 A paused matching target permits the query instead of continuing to a lower-priority target.
 
@@ -158,6 +162,24 @@ Under **System Settings → DNS & logs**, two controls define unmatched-client b
 - **Deny** — block it with `no_scope_default_deny`.
 
 This supports both open-by-default and closed-by-default policy models.
+
+### Ignored DNS record types
+
+**System Settings → Ignored records** controls which DNS question types Blockinator should leave entirely to the upstream DNS server.
+
+Current selectable types are:
+
+`A`, `AAAA`, `ANY`, `CAA`, `CERT`, `CNAME`, `DNAME`, `DNSKEY`, `DS`, `HINFO`, `HTTPS`, `IXFR`, `LOC`, `MX`, `NAPTR`, `NS`, `NSEC`, `NSEC3`, `PTR`, `RRSIG`, `SOA`, `SRV`, `SSHFP`, `SVCB`, `TLSA`, `TXT`, `URI`, and `AXFR`.
+
+If a policy request contains any selected type, Blockinator:
+
+- returns `block: false` with reason `ignored_record_type`;
+- skips PTR observation and background PTR scheduling for that request;
+- skips policy-target, whitelist, and block-list evaluation;
+- does not create a Query Log row; and
+- does not add a response-time sample to Statistics.
+
+This is a request-level bypass: if a multi-question request contains one ignored type, the entire policy request is bypassed.
 
 ## Block lists and whitelists
 
@@ -261,7 +283,7 @@ The **System Settings → Default timezone** controls Query Log display and is t
 
 PTR lookup is kept completely off the DNS decision request path.
 
-Every policy request performs only a fast, in-memory observation of the client IP. A dedicated durable PTR resolver runs in parallel with policy evaluation and persists one state for every observed client:
+Every non-ignored policy request performs only a fast, in-memory observation of the client IP. A dedicated durable PTR resolver runs in parallel with policy evaluation and persists one state for every observed client:
 
 - **pending** — discovered but not yet resolved;
 - **resolved** — a valid PTR hostname is known;
@@ -282,7 +304,7 @@ PTR identities are used for:
 - Endpoint selectors; and
 - Query Log client searching.
 
-The first request from a previously unknown client never waits for PTR. Hostname policy can begin applying as soon as the background resolver learns the name.
+The first evaluated request from a previously unknown client never waits for PTR. Hostname policy can begin applying as soon as the background resolver learns the name.
 
 A wildcard such as:
 
@@ -313,7 +335,7 @@ Hostname policy is only as trustworthy as the PTR data supplied by the configure
 
 ## Dashboard and Query Log
 
-DNS decisions are written through a bounded asynchronous logger so normal database logging does not block the policy request path.
+Evaluated DNS decisions are written through a bounded asynchronous logger so normal database logging does not block the policy request path. Requests bypassed by **Ignored records** are deliberately not logged.
 
 The Dashboard shows recent activity. The full Query Log records:
 
@@ -395,11 +417,15 @@ Available windows:
 
 The page refreshes every five seconds without a full browser reload. Longer windows automatically use larger buckets.
 
-Statistics are derived from retained Query Log data, so retention pruning also limits statistics history.
+Statistics are derived from retained Query Log data, so retention pruning limits statistics history and ignored record-type requests are intentionally excluded.
 
 ## Performance architecture
 
 Blockinator keeps the policy request path intentionally small.
+
+### Record-type short circuit
+
+Ignored record types are checked against the in-memory policy snapshot before client PTR observation, target resolution, list matching, or log-row construction. This makes the bypass both a policy control and a low-overhead way to remove unwanted DNS question classes from Blockinator processing.
 
 ### Immutable policy snapshots
 
@@ -438,6 +464,7 @@ Domain suffix masks are calculated once per query and reused for whitelist and b
 - SQLite uses WAL mode and one serialized writer.
 - API-key `last_used_at` updates happen asynchronously.
 - PTR learning/backfill runs outside UI and policy request paths.
+- Ignored record-type requests never enter the logger or PTR queues.
 
 ## Database backends
 
@@ -693,17 +720,18 @@ If any question uses a record type selected under **System Settings → Ignored 
 
 Controls include:
 
-- NXDOMAIN or REFUSED blocked responses;
-- global pause/resume;
+- blocked response mode: NXDOMAIN, REFUSED, NODATA, or `0.0.0.0 / ::`;
 - Global list reach;
 - unmatched-client Allow/Deny fallback;
 - query-log age/row retention;
 - optional raw request JSON retention; and
 - default timezone.
 
+Global protection pause/resume is available from the Dashboard rather than this settings tab.
+
 ### Ignored records
 
-Provides checkboxes for common DNS record types such as A, AAAA, HTTPS, SVCB, PTR, TXT, DNSSEC records, and zone-transfer types. A selected type bypasses Blockinator policy processing entirely for that policy request. The DNS server receives an immediate allow result, while Blockinator performs no PTR observation, block/whitelist evaluation, Query Log write, or response-time logging for the ignored request.
+Provides checkboxes for common address, service-binding, mail, reverse-DNS, DNSSEC, text, certificate, and zone-transfer record types. A selected type bypasses Blockinator policy processing for the entire policy request. The DNS server receives an immediate allow result, while Blockinator performs no PTR observation, target/list evaluation, Query Log write, or response-time logging for that request.
 
 ### Appearance
 
@@ -715,7 +743,7 @@ Controls TLS mode, hostname/certificate identity, uploaded certificate/key, ACME
 
 ### Runtime
 
-Shows application, storage, proxy, and TLS/runtime information.
+Shows application/storage information, the active ignored-record summary, proxy/TLS status, and detailed background PTR resolver health.
 
 ## Environment variables
 
@@ -833,6 +861,7 @@ CI covers:
 - schedules and policy precedence;
 - concurrent lock-free policy reads;
 - Query Log and reverse-DNS behavior;
+- ignored record-type short-circuit behavior;
 - settings and UI regression checks;
 - Caddy/TLS configuration;
 - Docker image/Compose validation;
