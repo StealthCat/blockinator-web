@@ -28,7 +28,38 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.19.1"
+APP_VERSION = "1.19.2"
+
+DNS_RECORD_TYPE_OPTIONS = (
+    ("A", "IPv4 host addresses"),
+    ("AAAA", "IPv6 host addresses"),
+    ("ANY", "All available record types"),
+    ("CAA", "Certificate authority authorization"),
+    ("CERT", "Certificates stored in DNS"),
+    ("CNAME", "Canonical-name aliases"),
+    ("DNAME", "Subtree aliases"),
+    ("DNSKEY", "DNSSEC zone signing keys"),
+    ("DS", "DNSSEC delegation signer records"),
+    ("HINFO", "Host information"),
+    ("HTTPS", "HTTPS service bindings"),
+    ("IXFR", "Incremental zone transfers"),
+    ("LOC", "Geographic location records"),
+    ("MX", "Mail exchangers"),
+    ("NAPTR", "Naming authority pointer records"),
+    ("NS", "Authoritative name servers"),
+    ("NSEC", "DNSSEC authenticated denial records"),
+    ("NSEC3", "Hashed DNSSEC denial records"),
+    ("PTR", "Reverse-DNS pointers"),
+    ("RRSIG", "DNSSEC signatures"),
+    ("SOA", "Start of authority"),
+    ("SRV", "Service location records"),
+    ("SSHFP", "SSH host key fingerprints"),
+    ("SVCB", "Service bindings"),
+    ("TLSA", "TLS certificate associations"),
+    ("TXT", "Text records"),
+    ("URI", "Uniform resource identifier records"),
+    ("AXFR", "Full zone transfers"),
+)
 
 
 class PolicyResponseTimingMiddleware:
@@ -2717,6 +2748,19 @@ def settings_page(request: Request):
     mode = snapshot.response_mode
     unmatched_scope_action = snapshot.unmatched_scope_action
     global_blocklist_scope_mode = snapshot.global_blocklist_scope_mode
+    ignored_record_types = snapshot.ignored_record_types
+    ignored_record_types_label = ", ".join(
+        record_type
+        for record_type, _description in DNS_RECORD_TYPE_OPTIONS
+        if record_type in ignored_record_types
+    ) or "None"
+    record_type_options_html = "".join(
+        f"""<label class="record-type-option">
+          <input type="checkbox" name="ignored_record_types" value="{esc(record_type)}" {"checked" if record_type in ignored_record_types else ""}>
+          <span><b>{esc(record_type)}</b><small>{esc(description)}</small></span>
+        </label>"""
+        for record_type, description in DNS_RECORD_TYPE_OPTIONS
+    )
     retention = str(engine.logger.max_rows)
     retention_days = str(engine.logger.max_age_days)
     log_request_json = engine.logger.capture_request_json
@@ -2764,6 +2808,10 @@ def settings_page(request: Request):
         <button type="button" class="settings-tab-button" role="tab" data-settings-tab="general" aria-controls="settings-general">
           <span class="settings-tab-icon">⚙</span>
           <span><b>DNS & logs</b><small>Responses, retention, timezone</small></span>
+        </button>
+        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="record-types" aria-controls="settings-record-types">
+          <span class="settings-tab-icon">≋</span>
+          <span><b>Ignored records</b><small>Bypass selected DNS types</small></span>
         </button>
         <button type="button" class="settings-tab-button" role="tab" data-settings-tab="tls" aria-controls="settings-tls">
           <span class="settings-tab-icon">◆</span>
@@ -2866,6 +2914,31 @@ def settings_page(request: Request):
             </div>
 
             <button class="primary-button full">Save DNS & log settings</button>
+          </form>
+        </section>
+      </section>
+
+      <section id="settings-record-types" class="settings-tab-panel" role="tabpanel" data-settings-panel="record-types" hidden>
+        <section class="panel action-panel record-type-settings-panel">
+          <div class="panel-kicker">Policy bypass</div>
+          <h3>Ignored DNS record types</h3>
+          <p class="panel-help">Selected record types bypass policy evaluation immediately. Blockinator returns an allow decision without PTR observation, block/whitelist processing, response-time logging, or a Query Log entry.</p>
+          <form method="post" action="/admin/settings/ignored-record-types" class="record-type-settings-form">
+            <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+            <div class="form-section">
+              <div class="form-section-head">
+                <div><b>Record types to ignore</b><p>Check every DNS question type that Blockinator should leave entirely to the upstream DNS server.</p></div>
+                <span>{esc(ignored_record_types_label)}</span>
+              </div>
+              <div class="record-type-grid">
+                {record_type_options_html}
+              </div>
+            </div>
+            <div class="record-type-note">
+              <b>Short-circuit behavior</b>
+              <span>If a request contains any selected record type, the whole policy request is bypassed and is not written to the Query Log.</span>
+            </div>
+            <button class="primary-button" type="submit">Save ignored record types</button>
           </form>
         </section>
       </section>
@@ -3083,6 +3156,7 @@ def settings_page(request: Request):
             <div><span>Interface theme</span><b>{esc(ui_theme.title())}</b></div>
             <div><span>Unmatched target action</span><b>{esc(unmatched_scope_action.title())}</b></div>
             <div><span>Global list reach</span><b>{"All clients" if global_blocklist_scope_mode == "all_clients" else "Matched targets only"}</b></div>
+            <div><span>Ignored record types</span><b>{esc(ignored_record_types_label)}</b></div>
             <div><span>TLS mode</span><b>{esc(tls_mode_label)}</b></div>
             <div><span>Caddy</span><b>{"Reachable" if tls_status.caddy_reachable else "Unavailable"}</b></div>
             <div><span>HTTPS port</span><b class="mono">{esc(https_port)}</b></div>
@@ -3127,6 +3201,32 @@ async def save_appearance_settings(request: Request):
         "/settings#appearance",
         notice=f"Appearance changed to {ui_theme.title()}",
     )
+
+
+@app.post("/admin/settings/ignored-record-types")
+async def save_ignored_record_types(request: Request):
+    _, form = await require_post_session(request)
+    allowed = {record_type for record_type, _description in DNS_RECORD_TYPE_OPTIONS}
+    selected = {
+        str(value).strip().upper()
+        for value in form.getlist("ignored_record_types")
+        if str(value).strip().upper() in allowed
+    }
+    persisted = ",".join(
+        record_type
+        for record_type, _description in DNS_RECORD_TYPE_OPTIONS
+        if record_type in selected
+    )
+    db.set_setting("ignored_record_types", persisted)
+    engine.reload_settings()
+
+    count = len(selected)
+    notice = (
+        "Ignored record types cleared"
+        if count == 0
+        else f"Saved {count} ignored DNS record type{'s' if count != 1 else ''}"
+    )
+    return redirect("/settings#record-types", notice=notice)
 
 
 @app.post("/admin/settings")
