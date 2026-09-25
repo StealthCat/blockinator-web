@@ -112,3 +112,68 @@ def test_request_json_capture_defaults_off_and_can_be_enabled():
     finally:
         engine.close()
         temp_dir.cleanup()
+
+
+
+def test_ignored_record_type_short_circuits_without_log_row():
+    temp_dir, db, engine = _engine()
+    ignored_request = {
+        "client": {"ip": "192.0.2.10"},
+        "dns": {
+            "questions": [
+                {"name": "service.example.com", "type": "https", "class": "IN"}
+            ]
+        },
+    }
+    normal_request = {
+        "client": {"ip": "192.0.2.10"},
+        "dns": {
+            "questions": [
+                {"name": "service.example.com", "type": "A", "class": "IN"}
+            ]
+        },
+    }
+    try:
+        db.set_setting("ignored_record_types", "AAAA,HTTPS")
+        engine.reload_settings()
+
+        assert engine.snapshot.ignored_record_types == frozenset({"AAAA", "HTTPS"})
+        assert engine.should_ignore_record_type("https") is True
+        assert engine.should_ignore_record_type("A") is False
+
+        ignored_decision, ignored_row = engine.decide_with_log_row(ignored_request)
+        assert ignored_decision.block is False
+        assert ignored_decision.reason == "ignored_record_type"
+        assert ignored_row is None
+
+        normal_decision, normal_row = engine.decide_with_log_row(normal_request)
+        assert normal_decision.reason != "ignored_record_type"
+        assert normal_row is not None
+        assert normal_row["qtype"] == "A"
+    finally:
+        engine.close()
+        temp_dir.cleanup()
+
+
+def test_any_ignored_question_short_circuits_multi_question_request():
+    temp_dir, db, engine = _engine()
+    request = {
+        "client": {"ip": "192.0.2.10"},
+        "dns": {
+            "questions": [
+                {"name": "example.com", "type": "A", "class": "IN"},
+                {"name": "example.com", "type": "TXT", "class": "IN"},
+            ]
+        },
+    }
+    try:
+        db.set_setting("ignored_record_types", "TXT")
+        engine.reload_settings()
+
+        decision, row = engine.decide_with_log_row(request)
+        assert decision.block is False
+        assert decision.reason == "ignored_record_type"
+        assert row is None
+    finally:
+        engine.close()
+        temp_dir.cleanup()
