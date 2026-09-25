@@ -4204,3 +4204,133 @@ html[data-theme="light"]{color-scheme:light}
   box-shadow:none;
 }
 [data-theme="light"] .pill.gray{color:#7b8a9c}
+
+
+/* =========================================================
+   Blockinator 1.19.2 — ignored DNS record types
+   ========================================================= */
+.settings-tabs{
+  grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+}
+.record-type-settings-panel{
+  max-width:1180px;
+}
+.record-type-settings-form{
+  display:grid;
+  gap:16px;
+  margin-top:16px;
+}
+.record-type-settings-form .form-section{
+  display:grid;
+  gap:13px;
+  padding:14px;
+  border:1px solid var(--border-soft);
+  border-radius:12px;
+  background:rgba(7,20,30,.42);
+}
+.record-type-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+  gap:9px;
+}
+.record-type-option{
+  position:relative;
+  display:flex!important;
+  align-items:flex-start;
+  gap:10px!important;
+  min-width:0;
+  padding:11px 12px;
+  border:1px solid rgba(87,145,175,.15);
+  border-radius:10px;
+  color:var(--text);
+  background:rgba(10,28,40,.66);
+  cursor:pointer;
+  transition:border-color .15s ease,background .15s ease,box-shadow .15s ease,transform .15s ease;
+}
+.record-type-option:hover{
+  transform:translateY(-1px);
+  border-color:rgba(51,210,231,.30);
+  background:rgba(14,37,51,.82);
+}
+.record-type-option:has(input:checked){
+  border-color:rgba(51,210,231,.38);
+  background:rgba(30,105,126,.15);
+  box-shadow:inset 0 0 0 1px rgba(51,210,231,.04);
+}
+.record-type-option input{
+  width:auto!important;
+  min-width:16px;
+  height:16px;
+  margin:1px 0 0;
+  accent-color:var(--accent);
+}
+.record-type-option span{
+  display:grid;
+  gap:3px;
+  min-width:0;
+}
+.record-type-option b{
+  color:var(--text-strong);
+  font-size:11px;
+  letter-spacing:.04em;
+}
+.record-type-option small{
+  color:var(--text-muted);
+  font-size:9.5px;
+  font-weight:500;
+  line-height:1.35;
+}
+.record-type-note{
+  display:flex;
+  align-items:flex-start;
+  gap:12px;
+  padding:11px 13px;
+  border:1px solid rgba(246,189,90,.20);
+  border-radius:10px;
+  background:rgba(246,189,90,.055);
+}
+.record-type-note b{
+  flex:0 0 auto;
+  color:#e8c67c;
+  font-size:10px;
+}
+.record-type-note span{
+  color:#8da5b5;
+  font-size:10px;
+  line-height:1.45;
+}
+[data-theme="light"] .record-type-settings-form .form-section{
+  border-color:#dfe6ee;
+  background:#f9fbfd;
+}
+[data-theme="light"] .record-type-option{
+  border-color:#dfe6ee;
+  color:#33455c;
+  background:#fff;
+}
+[data-theme="light"] .record-type-option:hover{
+  border-color:#c6d9ef;
+  background:#f5f9fe;
+}
+[data-theme="light"] .record-type-option:has(input:checked){
+  border-color:rgba(47,120,232,.28);
+  background:#edf5ff;
+  box-shadow:inset 0 0 0 1px rgba(47,120,232,.03);
+}
+[data-theme="light"] .record-type-option b{color:#2d4058}
+[data-theme="light"] .record-type-option small{color:#7a8a9d}
+[data-theme="light"] .record-type-note{
+  border-color:rgba(185,125,24,.20);
+  background:rgba(185,125,24,.055);
+}
+[data-theme="light"] .record-type-note b{color:#8a641f}
+[data-theme="light"] .record-type-note span{color:#71839a}
+@media(max-width:760px){
+  .record-type-grid{
+    grid-template-columns:1fr;
+  }
+  .record-type-note{
+    flex-direction:column;
+    gap:5px;
+  }
+}
