@@ -46,6 +46,15 @@ def normalize_hostname_pattern(value: str | None) -> str | None:
     return f"*.{hostname}" if wildcard else hostname
 
 
+def parse_ignored_record_types(value: Any) -> frozenset[str]:
+    """Normalize the persisted comma-separated DNS record-type ignore list."""
+    return frozenset(
+        item.strip().upper()
+        for item in str(value or "").split(",")
+        if item.strip()
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CompiledSchedule:
     enabled: bool
@@ -215,6 +224,7 @@ class PolicySnapshot:
     response_mode: str
     unmatched_scope_action: str
     global_blocklist_scope_mode: str
+    ignored_record_types: frozenset[str]
     unique_domain_count: int = 0
     block_domain_count: int = 0
     whitelist_domain_count: int = 0
@@ -437,6 +447,7 @@ class PolicyEngine:
             response_mode="nxdomain",
             unmatched_scope_action="allow",
             global_blocklist_scope_mode="all_clients",
+            ignored_record_types=frozenset(),
         )
         self.logger = QueryLogger(db)
         self.ptr_resolver = PtrResolutionManager(
@@ -729,6 +740,9 @@ class PolicyEngine:
                 in {"all_clients", "matched_scopes"}
                 else "all_clients"
             ),
+            ignored_record_types=parse_ignored_record_types(
+                settings.get("ignored_record_types", "")
+            ),
             unique_domain_count=unique_domain_count,
             block_domain_count=block_domain_count,
             whitelist_domain_count=whitelist_domain_count,
@@ -765,7 +779,8 @@ class PolicyEngine:
                         'global_blocking',
                         'block_response',
                         'unmatched_scope_action',
-                        'global_blocklist_scope_mode'
+                        'global_blocklist_scope_mode',
+                        'ignored_record_types'
                     )
                     """
                 )
@@ -792,6 +807,9 @@ class PolicyEngine:
                 ),
                 unmatched_scope_action=unmatched,
                 global_blocklist_scope_mode=global_mode,
+                ignored_record_types=parse_ignored_record_types(
+                    settings.get("ignored_record_types", "")
+                ),
             )
 
     @staticmethod
@@ -1254,6 +1272,10 @@ class PolicyEngine:
     def known_client_name(self, client_ip: str) -> str | None:
         return self._snapshot.client_identities.get(str(client_ip))
 
+    def should_ignore_record_type(self, qtype: Any) -> bool:
+        normalized = str(qtype or "").strip().upper()
+        return bool(normalized) and normalized in self._snapshot.ignored_record_types
+
     def decide(
         self,
         client_ip: str,
@@ -1416,16 +1438,30 @@ class PolicyEngine:
         self,
         request_obj: dict[str, Any],
         policy_scheme: str | None = None,
-    ) -> tuple[Decision, dict[str, Any]]:
-        """Evaluate a policy request and build its asynchronous log record.
+    ) -> tuple[Decision, dict[str, Any] | None]:
+        """Evaluate a policy request and optionally build its asynchronous log row.
 
-        The API endpoint uses this form so response timing can be attached after
-        the final ASGI response body has actually been sent.
+        Requests containing an ignored DNS record type are short-circuited before
+        PTR observation, scope/list evaluation, or query-log creation.
         """
         client = request_obj.get("client") or {}
         dns = request_obj.get("dns") or {}
         questions = dns.get("questions") or []
         client_ip = str(client.get("ip", ""))
+
+        if any(
+            self.should_ignore_record_type(question.get("type"))
+            for question in questions
+        ):
+            return (
+                Decision(
+                    False,
+                    "ignored_record_type",
+                    response_mode=self._snapshot.response_mode,
+                ),
+                None,
+            )
+
         # Observation is an in-memory, deduplicated operation only. PTR DNS and
         # database work run on the dedicated resolver manager after the request.
         self.ptr_resolver.observe(client_ip)
@@ -1485,5 +1521,6 @@ class PolicyEngine:
             request_obj,
             policy_scheme=policy_scheme,
         )
-        self.logger.submit(log_row)
+        if log_row is not None:
+            self.logger.submit(log_row)
         return decision
