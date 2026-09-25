@@ -558,6 +558,7 @@ class MySQLBackend:
                 "block_response": "nxdomain",
                 "unmatched_scope_action": "allow",
                 "global_blocklist_scope_mode": "all_clients",
+                "ignored_record_types": "",
                 "ui_theme": "dark",
                 "max_query_logs": "25000",
                 "max_query_log_age_days": "0",
