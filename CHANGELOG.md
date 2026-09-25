@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.19.2 — Ignored DNS record types
+
+- Added a dedicated **System Settings → Ignored records** tab with checkboxes for common DNS record types.
+- Selected record types now short-circuit the policy path before PTR observation, scope/list evaluation, and query-log creation.
+- Ignored policy requests return an immediate allow decision so the DNS server can continue without waiting for an HTTP timeout.
+- Ignored requests are not written to Query Log and do not contribute response-time samples.
+- Added SQLite/MySQL defaults and regression coverage for ignored record-type settings.
+- Updated the application version to 1.19.2.
+
 ## 1.19.1 — Offline database migration utility
 
 - Added `tools/migrate_database.py` for complete offline SQLite ↔ MySQL Blockinator migrations.
