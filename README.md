@@ -685,6 +685,8 @@ Example blocked response:
 
 When multiple DNS questions are supplied, Blockinator evaluates them in order and returns the first blocking decision. If none block, the first allow decision is returned.
 
+If any question uses a record type selected under **System Settings → Ignored records**, Blockinator short-circuits the request before PTR observation or policy evaluation. It returns an immediate allow decision with reason `ignored_record_type`; the request is not added to Query Log and does not contribute a response-time sample.
+
 ## System Settings
 
 ### DNS & logs
@@ -698,6 +700,10 @@ Controls include:
 - query-log age/row retention;
 - optional raw request JSON retention; and
 - default timezone.
+
+### Ignored records
+
+Provides checkboxes for common DNS record types such as A, AAAA, HTTPS, SVCB, PTR, TXT, DNSSEC records, and zone-transfer types. A selected type bypasses Blockinator policy processing entirely for that policy request. The DNS server receives an immediate allow result, while Blockinator performs no PTR observation, block/whitelist evaluation, Query Log write, or response-time logging for the ignored request.
 
 ### Appearance
 
