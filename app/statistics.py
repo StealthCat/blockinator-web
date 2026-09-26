@@ -159,3 +159,26 @@ def build_statistics_snapshot(
         },
         "points": points,
     }
+
+
+class StatisticsCache:
+    """Short-lived shared snapshots; serialize cache misses across viewers."""
+    def __init__(self, db, ttl=5.0):
+        import threading
+        self.db = db
+        self.ttl = ttl
+        self.lock = threading.Lock()
+        self.entries = {}
+
+    def snapshot(self, minutes=60, timezone_name="UTC"):
+        import time
+        key = (normalize_statistics_window(minutes), timezone_name)
+        with self.lock:
+            now = time.monotonic()
+            cached = self.entries.get(key)
+            if cached and now < cached[0]:
+                return cached[1]
+            result = build_statistics_snapshot(self.db, minutes=key[0], timezone_name=timezone_name)
+            self.entries = {k: v for k, v in self.entries.items() if v[0] > now}
+            self.entries[key] = (time.monotonic() + self.ttl, result)
+            return result

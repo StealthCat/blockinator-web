@@ -279,7 +279,7 @@
       }
       controller = new AbortController();
       var timeout = window.setTimeout(function () { controller.abort(); }, 15000);
-      fetch(window.location.href, { credentials: "same-origin", cache: "no-store", signal: controller.signal,
+      fetch("/queries/rows" + window.location.search, { credentials: "same-origin", cache: "no-store", signal: controller.signal,
         headers: { "Accept": "text/html" } }).then(function (response) {
         if (response.redirected && new URL(response.url).pathname === "/login") {
           stopped = true;
@@ -289,7 +289,7 @@
         return response.text();
       }).then(function (html) {
         var incoming = new DOMParser().parseFromString(html, "text/html");
-        var next = incoming.querySelector("[data-query-log-refresh] .query-table tbody");
+        var next = incoming.querySelector(".query-table tbody");
         if (!next) throw new Error("refresh");
         // A user may have started editing after this request began.
         if (interacting() || document.hidden || stopped) return;
@@ -537,6 +537,8 @@
 
     var timer = null;
     var loading = false;
+    var controller = null;
+    var requestVersion = 0;
     var lastPayload = null;
     var windowMinutes = parseInt(root.getAttribute("data-window") || "60", 10);
 
@@ -564,26 +566,34 @@
     function load() {
       if (loading || document.hidden) return;
       loading = true;
+      var version = ++requestVersion;
+      controller = new AbortController();
+      var currentController = controller;
+      var timeout = window.setTimeout(function () { currentController.abort(); }, 15000);
 
       fetch("/api/v1/statistics?minutes=" + encodeURIComponent(windowMinutes), {
         method: "GET",
         credentials: "same-origin",
+        signal: controller.signal,
         headers: { "Accept": "application/json" }
       }).then(function (response) {
         if (!response.ok) throw new Error("Statistics request failed");
         return response.json();
       }).then(function (payload) {
+        if (version !== requestVersion) return;
         lastPayload = payload;
         updateTotals(payload);
         renderStatisticsChart(root, payload);
       }).catch(function () {
+        if (version !== requestVersion) return;
         var updated = root.querySelector("[data-statistics-updated]");
         if (updated) {
           updated.textContent = "Live data temporarily unavailable";
           updated.classList.add("error");
         }
       }).finally(function () {
-        loading = false;
+        window.clearTimeout(timeout);
+        if (version === requestVersion) loading = false;
       });
     }
 
@@ -594,6 +604,9 @@
         root.querySelectorAll("[data-statistics-window]").forEach(function (candidate) {
           candidate.classList.toggle("active", candidate === button);
         });
+        if (controller) controller.abort();
+        requestVersion += 1;
+        loading = false;
         load();
       });
     });
@@ -615,9 +628,18 @@
     load();
     timer = window.setInterval(load, 5000);
     window.addEventListener("pagehide", function () {
+      if (controller) controller.abort();
+      requestVersion += 1;
+      loading = false;
       if (timer !== null) window.clearInterval(timer);
+      timer = null;
       if (resizeObserver) resizeObserver.disconnect();
-    }, { once: true });
+    });
+    window.addEventListener("pageshow", function () {
+      if (timer === null) timer = window.setInterval(load, 5000);
+      if (resizeObserver) resizeObserver.observe(root.querySelector("[data-statistics-chart]"));
+      load();
+    });
   }
 
   window.addEventListener("hashchange", openHashDetails);

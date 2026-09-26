@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Iterable
+from .safe_fetch import open_source
 
 MAX_BYTES = int(os.getenv("MAX_BLOCKLIST_BYTES", str(100 * 1024 * 1024)))
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.I)
@@ -140,6 +141,8 @@ def _iter_response_lines(resp, hasher) -> Iterable[str]:
             )
         hasher.update(chunk)
         buffered += decoder.decode(chunk)
+        if len(buffered) > 1024 * 1024 and "\n" not in buffered:
+            raise ValueError("Block list line exceeds 1 MiB")
         while True:
             newline = buffered.find("\n")
             if newline < 0:
@@ -168,7 +171,7 @@ def fetch_parse_url_conditional(
 
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with open_source(req, timeout=30) as resp:
             length = resp.headers.get("Content-Length")
             if length and int(length) > MAX_BYTES:
                 raise ValueError(
@@ -210,7 +213,7 @@ def fetch_url_conditional(
 
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with open_source(req, timeout=30) as resp:
             length = resp.headers.get("Content-Length")
             if length and int(length) > MAX_BYTES:
                 raise ValueError(
