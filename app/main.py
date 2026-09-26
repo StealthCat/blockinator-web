@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from .ui import icon, query_details_html
 from .auth import AuthManager, SESSION_COOKIE, SESSION_TTL_SECONDS
 from .blocklists import fetch_url, normalize_domain, parse_blocklist
 from .db import Database
@@ -506,10 +507,15 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
     ]
 
     def render_nav(items):
-        return "".join(
-            f'<a class="nav-link {"active" if key == active else ""}" href="{href}"><span class="nav-icon">{icon}</span><span>{label}</span></a>'
-            for href, key, label, icon in items
-        )
+        links = []
+        for href, key, label, _glyph in items:
+            current = ' aria-current="page"' if key == active else ""
+            css = "nav-link active" if key == active else "nav-link"
+            links.append(
+                f'<a class="{css}" href="{href}"{current}><span class="nav-icon">'
+                f'{icon(key)}</span><span>{label}</span></a>'
+            )
+        return "".join(links)
 
     flash = ""
     if notice:
@@ -524,7 +530,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
     status_detail = "DNS policy is being enforced" if global_on else "Requests are currently allowed"
     action_href, action_label, action_icon = page_actions.get(active, (None, None, None))
     header_action = (
-        f'<a class="primary-button header-primary" href="{action_href}"><span>{"+" if action_icon == "plus" else "↗" if action_icon == "arrow" else "↻"}</span>{esc(action_label)}</a>'
+        f'<a class="primary-button header-primary" href="{action_href}"><span>{icon(action_icon)}</span>{esc(action_label)}</a>'
         if action_href and action_label else ""
     )
     user_initial = esc(session.username[:1].upper()) if session else "A"
@@ -534,7 +540,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
         logout = f"""
         <form method="post" action="/logout" class="logout-form">
           <input type="hidden" name="csrf_token" value="{esc(session.csrf_token)}">
-          <button class="icon-button" type="submit" title="Sign out" aria-label="Sign out">↪</button>
+          <button class="icon-button" type="submit" title="Sign out" aria-label="Sign out">{icon("logout")}</button>
         </form>"""
 
     return HTMLResponse(f"""<!doctype html>
@@ -543,13 +549,14 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="{theme_color}">
 <title>{esc(title)} · Blockinator</title>
-<link rel="icon" href="/static/blockinator-mark.webp">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/blockinator-mark.svg">
+<link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/interface.css">
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 <div class="app-shell">
-  <aside class="sidebar">
-    <a class="brand" href="/"><span class="brand-mark"><img src="/static/blockinator-mark.webp" alt=""></span><div><b>Blockinator</b><small>DNS Policy Control</small></div></a>
+  <aside class="sidebar" id="app-navigation">
+    <a class="brand" href="/"><span class="brand-mark"><img src="/static/blockinator-mark.svg" alt=""></span><div><b>Blockinator</b><small>DNS Policy Control</small></div></a>
     <div class="nav-section-label">Policy</div>
     <nav>{render_nav(nav)}</nav>
     <div class="nav-section-label nav-section-spacer">Administration</div>
@@ -558,8 +565,9 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
       <div class="sidebar-status"><span class="status-dot"></span><div><b>Service online</b><small>Blockinator v{APP_VERSION}</small></div></div>
     </div>
   </aside>
-  <main class="main">
+  <main class="main" id="main-content" tabindex="-1">
     <header class="workspace-header">
+      <button class="navigation-toggle ghost-button" type="button" aria-controls="app-navigation" aria-expanded="false" data-navigation-toggle>{icon("menu")}<span>Menu</span></button>
       <div class="header-copy">
         <div class="breadcrumb"><span>Blockinator</span><i>›</i><b>{esc(title)}</b></div>
         <h1>{esc(title)}</h1>
@@ -567,7 +575,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
       </div>
       <div class="header-tools">
         <a class="protection-chip {"active" if global_on else "paused"}" href="/">
-          <span class="protection-icon">◆</span>
+          <span class="protection-icon">{icon("shield")}</span>
           <span><small>{esc(status_label)}</small><b>{esc(status_detail)}</b></span>
         </a>
         {header_action}
@@ -665,9 +673,9 @@ def login_page(request: Request):
     ui_theme = application_theme()
     theme_color = "#f4f7fb" if ui_theme == "light" else "#071018"
     return HTMLResponse(f"""<!doctype html><html data-theme="{ui_theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="{theme_color}"><title>Sign in · Blockinator</title><link rel="icon" href="/static/blockinator-mark.webp"><link rel="stylesheet" href="/static/style.css"></head>
-<body class="login-body"><section class="login-visual"><div class="login-shade"></div><div class="login-copy"><img src="/static/blockinator-mark.webp" alt=""><p>DNS POLICY CONTROL</p><h1>Bad traffic<br>stops here.</h1><span>Block · Filter · Protect</span></div></section>
-<section class="login-panel"><form method="post" action="/login" class="login-card"><div class="mini-brand"><img src="/static/blockinator-mark.webp" alt=""><b>Blockinator</b></div><h2>Welcome back</h2><p>Sign in to manage DNS policy, endpoints, block lists and access keys.</p>
+<meta name="theme-color" content="{theme_color}"><title>Sign in · Blockinator</title><link rel="icon" href="/static/blockinator-mark.svg"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/interface.css"></head>
+<body class="login-body"><section class="login-visual"><div class="login-shade"></div><div class="login-copy"><img src="/static/blockinator-mark.svg" alt=""><p>DNS POLICY CONTROL</p><h1>Bad traffic<br>stops here.</h1><span>Block · Filter · Protect</span></div></section>
+<section class="login-panel"><form method="post" action="/login" class="login-card"><div class="mini-brand"><img src="/static/blockinator-mark.svg" alt=""><b>Blockinator</b></div><h2>Welcome back</h2><p>Sign in to manage DNS policy, endpoints, block lists and access keys.</p>
 {"<div class='flash bad'>" + esc(error) + "</div>" if error else ""}
 <label>Username<input name="username" autocomplete="username" required autofocus></label>
 <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
@@ -714,7 +722,7 @@ def dashboard(request: Request):
         recent = con.execute(
             """
             SELECT
-              ts,server_id,client_ip,client_name,qname,blocked,reason,
+              id,ts,server_id,client_ip,client_name,qname,qtype,protocol,client_port,blocked,reason,
               matched_scope,matched_list,matched_list_type,policy_scheme,
               response_time_ms
             FROM query_log
@@ -736,19 +744,16 @@ def dashboard(request: Request):
     recent_client_names = log_client_names(recent)
     display_timezone = system_default_timezone()
     rows = "".join(
-        f'<tr><td title="Stored in UTC">{esc(format_timestamp_for_timezone(r["ts"], display_timezone))}</td>'
-        f'<td>{querying_server_html(r["server_id"])}</td>'
+        f'<tr><td class="query-domain"><b>{esc(r["qname"])}</b><small>{esc(r["qtype"])}</small></td>'
         f'<td>{client_identity_html(r["client_ip"], recent_client_names)}</td>'
-        f'<td>{esc(r["qname"])}</td>'
-        f'<td>{esc((r["policy_scheme"] or "").upper() or "—")}</td>'
-        f'<td>{esc(response_time_text(r["response_time_ms"]))}</td>'
-        f'<td>{esc(r["matched_scope"] or "—")}</td>'
-        f'<td>{decision_pill_html(r)}</td>'
-        f'<td>{esc(decision_match_text(r))}</td></tr>'
+        f'<td>{decision_pill_html(r)}<small class="query-match">{esc(decision_match_text(r))}</small></td>'
+        f'<td class="query-response">{esc(response_time_text(r["response_time_ms"]))}</td>'
+        f'<td>{esc(format_timestamp_for_timezone(r["ts"], display_timezone))}'
+        f'{query_details_html(r, format_timestamp_for_timezone(r["ts"], display_timezone))}</td></tr>'
         for r in recent
-    ) or '<tr><td colspan="9" class="empty">No DNS decisions recorded yet.</td></tr>'
+    ) or '<tr><td colspan="5" class="empty">No DNS decisions recorded yet.</td></tr>'
     body = f'''
-    <section class="hero-card"><img src="/static/blockinator-hero.webp" alt="Blockinator"><div class="hero-overlay"><p>BLOCK · FILTER · PROTECT</p><h2>Your network. Your policy.</h2><span>Centralized DNS policy control with client-aware filtering.</span></div></section>
+    <section class="hero-card"><img src="/static/blockinator-network.svg" alt="" width="1200" height="560" fetchpriority="high"><div class="hero-overlay"><p>BLOCK · FILTER · PROTECT</p><h2>Your network. Your policy.</h2><span>Centralized DNS policy control with client-aware filtering.</span></div></section>
     <div class="stat-grid">
       <article class="stat"><span>Queries</span><strong>{totals["queries"]:,}</strong><small>Recorded decisions</small></article>
       <article class="stat"><span>Blocked</span><strong>{totals["blocked"]:,}</strong><small>Rejected requests</small></article>
@@ -759,7 +764,7 @@ def dashboard(request: Request):
       <form method="post" action="/admin/global-toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="{"danger-button" if global_on else "primary-button"}">{"Pause blocking" if global_on else "Resume blocking"}</button></form>
     </section>
     <section class="panel"><div class="panel-head"><div><h3>Recent DNS activity</h3><p>Latest policy decisions from connected resolvers · times shown in {esc(display_timezone)}.</p></div><a class="text-link" href="/queries">View all →</a></div>
-      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Policy API</th><th>Response time</th><th>Policy target</th><th>Decision</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table></div>
+      <div class="table-wrap"><table class="query-table"><thead><tr><th>Domain / type</th><th>Client</th><th>Decision / reason</th><th>Response time</th><th>Time / details</th></tr></thead><tbody>{rows}</tbody></table></div>
     </section>'''
     return page(request, "Dashboard", "dashboard", body, s)
 
@@ -2603,18 +2608,15 @@ def queries_page(
     query_client_names = log_client_names(rows)
     display_timezone = system_default_timezone()
     trs = "".join(
-        f'<tr><td title="Stored in UTC">{esc(format_timestamp_for_timezone(r["ts"], display_timezone))}</td>'
-        f'<td>{querying_server_html(r["server_id"])}</td>'
+        f'<tr data-query-row="{int(r["id"])}"><td class="query-domain"><b>{esc(r["qname"])}</b>'
+        f'<small>{esc(r["qtype"])}</small></td>'
         f'<td>{client_identity_html(r["client_ip"], query_client_names)}</td>'
-        f'<td>{esc(r["qname"])}</td>'
-        f'<td>{esc(r["qtype"])}</td>'
-        f'<td>{esc((r["policy_scheme"] or "").upper() or "—")}</td>'
-        f'<td>{esc(response_time_text(r["response_time_ms"]))}</td>'
-        f'<td>{esc(r["matched_scope"] or "—")}</td>'
-        f'<td>{decision_pill_html(r)}</td>'
-        f'<td>{esc(decision_match_text(r))}</td></tr>'
+        f'<td>{decision_pill_html(r)}<small class="query-match">{esc(decision_match_text(r))}</small></td>'
+        f'<td class="query-response">{esc(response_time_text(r["response_time_ms"]))}</td>'
+        f'<td>{esc(format_timestamp_for_timezone(r["ts"], display_timezone))}'
+        f'{query_details_html(r, format_timestamp_for_timezone(r["ts"], display_timezone))}</td></tr>'
         for r in rows
-    ) or '<tr><td colspan="10" class="empty">No matching queries.</td></tr>'
+    ) or '<tr><td colspan="5" class="empty">No matching queries. Try a different domain or clear your filters.</td></tr>'
 
     server_options = '<option value="">All servers</option>' + "".join(
         f'<option value="{esc(row["server_id"])}"'
@@ -2648,30 +2650,31 @@ def queries_page(
       <div class="panel-head query-head">
         <div><div class="panel-kicker">DNS activity</div><h3>Decision history</h3>
         <p>Showing {len(rows)} most recent matching requests, including the DNS server, policy API scheme, and matched policy target · times shown in {esc(display_timezone)}.</p></div>
-        <span class="result-count">{len(rows)} results</span>
+        <div class="query-toolbar"><label class="density-control">Density<select data-table-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><span class="result-count">{len(rows)} results</span></div>
       </div>
       <form class="filter-bar query-filter-bar" method="get">
-        <input name="q" value="{esc(q)}" placeholder="Domain contains…">
-        <input name="client" value="{esc(client)}" placeholder="Client IP or hostname…">
-        <select name="server">{server_options}</select>
-        <select name="target">{target_options}</select>
-        <input name="blocklist" value="{esc(blocklist)}" list="query-blocklists" placeholder="List name contains…">
+        <label>Domain<input name="q" value="{esc(q)}" placeholder="Domain contains…"></label>
+        <label>Client IP or hostname<input name="client" value="{esc(client)}" placeholder="Client IP or hostname…"></label>
+        <label>DNS server<select name="server">{server_options}</select></label>
+        <label>Policy target<select name="target">{target_options}</select></label>
+        <label>List name<input name="blocklist" value="{esc(blocklist)}" list="query-blocklists" placeholder="List name contains…"></label>
         <datalist id="query-blocklists">{blocklist_options}</datalist>
-        <select name="decision">
+        <label>Decision<select name="decision">
           <option value="">All decisions</option>
           <option value="blocked" {"selected" if decision=="blocked" else ""}>Blocked</option>
           <option value="whitelisted" {"selected" if decision=="whitelisted" else ""}>Whitelisted</option>
           <option value="allowed" {"selected" if decision=="allowed" else ""}>Allowed</option>
-        </select>
-        <select name="limit">
+        </select></label>
+        <label>Result limit<select name="limit">
           <option value="{limit}">{limit}</option>
           <option>50</option><option>100</option><option>250</option><option>500</option>
-        </select>
-        <select name="refresh" title="Query log auto refresh interval">{refresh_options}</select>
+        </select></label>
+        <label>Auto refresh<select name="refresh" title="Query log auto refresh interval">{refresh_options}</select></label>
         <button class="primary-button">Filter</button>
       </form>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Type</th><th>Policy API</th><th>Response time</th><th>Policy target</th><th>Decision</th><th>Match</th></tr></thead>
+      <p class="query-refresh-status" data-query-refresh-status role="status" aria-live="polite"></p>
+      <div class="table-wrap"><table class="query-table">
+        <thead><tr><th>Domain / type</th><th>Client</th><th>Decision / match</th><th>Response time</th><th>Time / details</th></tr></thead>
         <tbody>{trs}</tbody>
       </table></div>
     </section>'''
@@ -2809,29 +2812,29 @@ def settings_page(request: Request):
 
     body = f'''<div class="settings-page" data-settings-tabs>
       <nav class="settings-tabs" role="tablist" aria-label="System Settings sections">
-        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="general" aria-controls="settings-general">
-          <span class="settings-tab-icon">⚙</span>
+        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="general" id="settings-tab-general" aria-controls="settings-general">
+          <span class="settings-tab-icon">{icon("settings")}</span>
           <span><b>DNS & logs</b><small>Responses, retention, timezone</small></span>
         </button>
-        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="record-types" aria-controls="settings-record-types">
-          <span class="settings-tab-icon">≋</span>
+        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="record-types" id="settings-tab-record-types" aria-controls="settings-record-types">
+          <span class="settings-tab-icon">{icon("lists")}</span>
           <span><b>Ignored records</b><small>Bypass selected DNS types</small></span>
         </button>
-        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="tls" aria-controls="settings-tls">
-          <span class="settings-tab-icon">◆</span>
+        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="tls" id="settings-tab-tls" aria-controls="settings-tls">
+          <span class="settings-tab-icon">{icon("shield")}</span>
           <span><b>HTTPS & TLS</b><small>Certificates and ACME</small></span>
         </button>
-        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="appearance" aria-controls="settings-appearance">
-          <span class="settings-tab-icon">◐</span>
+        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="appearance" id="settings-tab-appearance" aria-controls="settings-appearance">
+          <span class="settings-tab-icon">{icon("appearance")}</span>
           <span><b>Appearance</b><small>Light or dark interface</small></span>
         </button>
-        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="runtime" aria-controls="settings-runtime">
-          <span class="settings-tab-icon">◈</span>
+        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="runtime" id="settings-tab-runtime" aria-controls="settings-runtime">
+          <span class="settings-tab-icon">{icon("server")}</span>
           <span><b>Runtime</b><small>Service and storage status</small></span>
         </button>
       </nav>
 
-      <section id="settings-general" class="settings-tab-panel" role="tabpanel" data-settings-panel="general">
+      <section id="settings-general" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-general" data-settings-panel="general">
         <section class="panel action-panel">
           <div class="panel-kicker">DNS behavior</div>
           <h3>Blocked response & logging</h3>
@@ -2916,7 +2919,7 @@ def settings_page(request: Request):
         </section>
       </section>
 
-      <section id="settings-record-types" class="settings-tab-panel" role="tabpanel" data-settings-panel="record-types" hidden>
+      <section id="settings-record-types" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-record-types" data-settings-panel="record-types" hidden>
         <section class="panel action-panel record-type-settings-panel">
           <div class="panel-kicker">Policy bypass</div>
           <h3>Ignored DNS record types</h3>
@@ -2941,7 +2944,7 @@ def settings_page(request: Request):
         </section>
       </section>
 
-      <section id="settings-tls" class="settings-tab-panel" role="tabpanel" data-settings-panel="tls" hidden>
+      <section id="settings-tls" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-tls" data-settings-panel="tls" hidden>
         <section class="panel action-panel tls-settings-panel">
           <div class="panel-kicker">Transport security</div>
           <h3>HTTPS & certificates</h3>
@@ -3095,7 +3098,7 @@ def settings_page(request: Request):
         </section>
       </section>
 
-      <section id="settings-appearance" class="settings-tab-panel" role="tabpanel" data-settings-panel="appearance" hidden>
+      <section id="settings-appearance" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-appearance" data-settings-panel="appearance" hidden>
         <section class="panel action-panel appearance-settings-panel">
           <div class="panel-kicker">Interface</div>
           <h3>Appearance</h3>
@@ -3139,7 +3142,7 @@ def settings_page(request: Request):
         </section>
       </section>
 
-      <section id="settings-runtime" class="settings-tab-panel" role="tabpanel" data-settings-panel="runtime" hidden>
+      <section id="settings-runtime" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-runtime" data-settings-panel="runtime" hidden>
         <section class="panel">
           <div class="panel-kicker">Service details</div><h3>Runtime</h3>
           <p class="panel-help">Current application, proxy, and storage information for this Blockinator instance.</p>
