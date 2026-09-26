@@ -1,0 +1,23 @@
+[Unit]
+Description=Blockinator restricted update service
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/blockinator-update/service.py
+Environment=XDG_CACHE_HOME=/var/lib/blockinator-update/cache
+EnvironmentFile=-/etc/blockinator-update/github.env
+Restart=on-failure
+RestartSec=10
+User=root
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/etc/blockinator-update /var/lib/blockinator-update /var/lib/blockinator-update-runtime
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

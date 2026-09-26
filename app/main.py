@@ -30,7 +30,9 @@ from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.19.2"
+from .version import APP_VERSION, BUILD_SHA, BUILD_CHANNEL, SCHEMA_VERSION
+from .updates import UpdateMaintenanceMiddleware, updater_request, probe_authorized
+from .updates_ui import render_updates
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),
@@ -123,6 +125,7 @@ rdns = ReverseDnsResolver()
 engine = PolicyEngine(db, rdns=rdns)
 app.add_middleware(PolicyResponseTimingMiddleware, engine=engine)
 app.add_middleware(BodyLimitMiddleware, upload_limit=MAX_BYTES)
+app.add_middleware(UpdateMaintenanceMiddleware)
 refresher = BlocklistRefresher(db, engine)
 tls_manager = TlsManager(db)
 
@@ -685,6 +688,45 @@ def runtime_status(request: Request):
                          "logger": engine.logger.status(),
                          "refresher": refresher.status(),
                          "ptr": engine.ptr_status()}, headers={"Cache-Control": "no-store"})
+
+@app.get("/api/v1/update-probe")
+def update_probe(request: Request):
+    if not probe_authorized(request.scope):
+        raise HTTPException(403, "Probe unavailable")
+    with db.connect() as con:
+        assert con.execute("SELECT COUNT(*) AS c FROM admin_users").fetchone()["c"] > 0
+        assert con.execute("SELECT COUNT(*) AS c FROM api_keys WHERE enabled=1").fetchone()["c"] > 0
+        assert int(db.get_setting("schema_version", "0")) == SCHEMA_VERSION
+    return {"sha": BUILD_SHA, "channel": BUILD_CHANNEL, "database": "ok"}
+
+
+@app.get("/api/v1/updates/status")
+def update_status(request: Request):
+    require_session(request)
+    try:
+        return JSONResponse(updater_request(), headers={"Cache-Control": "no-store"})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/admin/updates")
+@admin_action(require_session)
+def update_action(request: Request):
+    _, form = require_post_session(request)
+    action = str(form.get("action", ""))
+    if action not in {"configure", "check", "install", "rollback", "postpone", "recover"}:
+        raise HTTPException(400, "Invalid update action")
+    try:
+        values = {key: str(form.get(key, "")) for key in ("channel", "mode", "hour", "timezone", "digest")}
+        updater_request(action, values)
+        if "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"accepted": True}, status_code=202)
+        return redirect("/settings#updates", notice="Update request accepted; status will refresh below")
+    except ValueError as exc:
+        if "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return redirect("/settings#updates", error=str(exc))
+
 
 @app.get("/api/v1/ping")
 def ping(x_api_key: str | None = Header(default=None)):
@@ -2908,6 +2950,9 @@ def settings_page(request: Request):
           <span class="settings-tab-icon">{icon("appearance")}</span>
           <span><b>Appearance</b><small>Light or dark interface</small></span>
         </button>
+        <button type="button" class="settings-tab-button" role="tab" data-settings-tab="updates" id="settings-tab-updates" aria-controls="settings-updates">
+          <span class="settings-tab-icon">{icon("server")}</span><span><b>Updates</b><small>Release and preview channels</small></span>
+        </button>
         <button type="button" class="settings-tab-button" role="tab" data-settings-tab="runtime" id="settings-tab-runtime" aria-controls="settings-runtime">
           <span class="settings-tab-icon">{icon("server")}</span>
           <span><b>Runtime</b><small>Service and storage status</small></span>
@@ -3221,6 +3266,8 @@ def settings_page(request: Request):
           </form>
         </section>
       </section>
+
+      {render_updates(s.csrf_token)}
 
       <section id="settings-runtime" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-runtime" data-settings-panel="runtime" hidden>
         <section class="panel">

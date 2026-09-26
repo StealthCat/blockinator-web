@@ -325,3 +325,29 @@ def test_login_rate_limit_is_bounded():
     for _ in range(10): limiter.check("peer")
     with pytest.raises(HTTPException) as error: limiter.check("peer")
     assert error.value.status_code == 429
+
+
+def test_update_controls_require_session_and_csrf(web, browser, monkeypatch):
+    calls = []
+    monkeypatch.setattr(web, "updater_request", lambda action="status", values=None: calls.append(action) or {"phase": "idle"})
+    client, session = browser
+    assert TestClient(web.app, follow_redirects=False).get("/api/v1/updates/status").status_code == 303
+    assert client.post("/admin/updates", data={"action": "install"}).status_code == 403
+    assert client.post("/admin/updates", data={"action": "shell", "csrf_token": session.csrf_token}).status_code == 400
+    assert calls == []
+    assert client.post("/admin/updates", data={"action": "check", "csrf_token": session.csrf_token}).status_code == 303
+    assert calls == ["check"]
+
+
+def test_update_maintenance_blocks_policy_but_allows_authorized_probe(web, tmp_path, monkeypatch):
+    from app import updates
+    monkeypatch.setattr(updates, "RUNTIME", tmp_path)
+    (tmp_path / "maintenance").write_text("updating")
+    (tmp_path / "probe-token").write_text("test-probe-secret")
+    client = TestClient(web.app)
+    assert client.post("/api/v1/decision", json=payload(), headers={"X-API-Key": "review-policy-key-long-enough"}).status_code == 503
+    assert client.get("/readyz").status_code == 200
+    assert client.get("/api/v1/update-probe", headers={"X-Blockinator-Probe": "test-probe-secret"}).status_code == 200
+    assert client.get("/api/v1/update-probe", headers={"X-Blockinator-Probe": "wrong"}).status_code == 503
+    (tmp_path / "maintenance").unlink()
+    assert client.get("/api/v1/update-probe").status_code == 403

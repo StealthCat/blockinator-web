@@ -642,6 +642,56 @@
     });
   }
 
+  function initializeUpdateStatus() {
+    var panel = document.querySelector("[data-update-controls]");
+    if (!panel) return;
+    var timer = null, controller = null, stopped = false;
+    var phases = ["queued", "verifying", "backing_up", "installing", "validating", "recovering"];
+    var previous = phases.indexOf(panel.querySelector("[data-update-phase]").textContent) >= 0;
+    panel.querySelectorAll("form").forEach(function (form) {
+      var action = form.querySelector('[name="action"]').value;
+      if (["install", "rollback", "recover"].indexOf(action) < 0) return;
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        previous = true;
+        panel.querySelector("[data-update-error]").textContent = "Update requested. Keep this page open; it will reconnect after restart.";
+        fetch(form.getAttribute("action"), { method: "POST", credentials: "same-origin", headers: { "Accept": "application/json" },
+          body: new URLSearchParams(new FormData(form)) }).then(function (response) {
+          if (response.status === 202) return;
+          return response.json().then(function (data) { throw new Error(data.error || data.detail || "Update request failed"); });
+        }).catch(function (error) {
+          panel.querySelector("[data-update-error]").textContent = error.message + ". Checking service status…";
+        });
+      });
+    });
+    function schedule() { if (!stopped) timer = window.setTimeout(poll, 4000); }
+    function poll() {
+      if (document.hidden || window.location.hash !== "#updates") { schedule(); return; }
+      controller = new AbortController();
+      var active = controller;
+      var timeout = window.setTimeout(function () { active.abort(); }, 5000);
+      fetch("/api/v1/updates/status", { credentials: "same-origin", cache: "no-store", signal: active.signal })
+        .then(function (r) { if (!r.ok) throw new Error("status"); return r.json(); })
+        .then(function (status) {
+          panel.querySelector("[data-update-phase]").textContent = status.phase;
+          panel.querySelector("[data-update-error]").textContent = status.error || "";
+          var busy = phases.indexOf(status.phase) >= 0;
+          var changed = (status.candidate ? status.candidate.digest : "") !== panel.getAttribute("data-update-candidate") ||
+            (status.current && status.current.sha !== panel.getAttribute("data-update-current"));
+          var editing = panel.contains(document.activeElement) && document.activeElement.matches("input, select, textarea");
+          if ((previous === true || changed) && !busy && !editing) {
+            window.location.reload();
+            return;
+          }
+          previous = busy;
+        }).catch(function () { panel.querySelector("[data-update-error]").textContent = "Waiting for the update service. This page will reconnect automatically."; })
+        .finally(function () { window.clearTimeout(timeout); controller = null; schedule(); });
+    }
+    schedule();
+    window.addEventListener("pagehide", function () { stopped = true; window.clearTimeout(timer); if (controller) controller.abort(); });
+    window.addEventListener("pageshow", function () { if (stopped) { stopped = false; schedule(); } });
+  }
+
   window.addEventListener("hashchange", openHashDetails);
   openHashDetails();
   initializeGlobalAssignmentControls();
@@ -654,4 +704,5 @@
   initializeTableDensity();
   initializeQueryLogRefresh();
   initializeStatisticsDashboard();
+  initializeUpdateStatus();
 })();
