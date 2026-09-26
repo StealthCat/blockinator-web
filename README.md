@@ -935,24 +935,6 @@ Selected feedback from the r/technitium community:
 
 
 
-## Application updates
-
-**System Settings → Updates** supports stable `release` and opt-in `preview` channels,
-manual installation, scheduled compatible updates, a maintenance timezone/hour,
-24-hour postponement, update history and eligible image rollback. Automatic
-installation is disabled by default.
-
-Install the optional Linux/systemd host updater once to enable these controls.
-It manages only Blockinator, backs up SQLite or MySQL plus TLS files, and validates
-the candidate before reopening policy traffic. It uses a capable `gh` for provenance
-verification, or falls back at installation to Git and trusted repository metadata.
-Git mode does not verify attestations; both modes pin images by digest.
-See [host setup, publishing and recovery instructions](updater/README.md).
-
-Pushing to `fixes` does not publish an update; promote tested code to `preview` or
-`release` to publish that channel. Channel builds must pass CI before discovery
-metadata is released. Caddy and the privileged host helper are upgraded separately.
-
 ## Operational protections and monitoring
 
 - Administrator writes run in a separate four-thread pool with bounded admission. Saturation returns HTTP 503 with `Retry-After`; policy workers remain separate. Sign-in attempts are limited to 10 per peer and 100 globally per minute (HTTP 429). Configure trusted proxy forwarding correctly so peers are identified accurately.

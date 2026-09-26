@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Iterator
 
 from .mysql_backend import MySQLBackend
-from .version import SCHEMA_VERSION
 
 
 class Database:
@@ -68,25 +67,13 @@ class Database:
             con.close()
 
     def initialize(self) -> None:
-        # Refuse to mutate a store created by a newer, incompatible application.
-        try:
-            with self.connect() as con:
-                row = con.execute("SELECT value FROM settings WHERE `key`='schema_version'").fetchone()
-                if row and int(row["value"]) > SCHEMA_VERSION:
-                    raise RuntimeError("Database schema is newer than this application; restore a compatible backup")
-        except Exception as exc:
-            missing_table = (isinstance(exc, sqlite3.OperationalError) and "no such table: settings" in str(exc)) or (getattr(exc, "args", [None])[0] == 1146)
-            if not missing_table:
-                raise
         if self.backend == "mysql":
             assert self._mysql is not None
             bootstrap_timezone = os.getenv("TZ", "UTC").strip() or "UTC"
             with self._init_lock:
                 self._mysql.initialize(bootstrap_timezone)
-            self.set_setting("schema_version", str(SCHEMA_VERSION))
             return
         self._initialize_sqlite()
-        self.set_setting("schema_version", str(SCHEMA_VERSION))
 
     def _initialize_sqlite(self) -> None:
         with self._init_lock, self.connect() as con:

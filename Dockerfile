@@ -6,17 +6,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     WEB_BIND=0.0.0.0 \
     WEB_PORT=8080
 
-ARG APP_VERSION=1.20.0
-ARG BUILD_SHA=development
-ARG BUILD_CHANNEL=development
-ARG SCHEMA_VERSION=1
-ENV BLOCKINATOR_BUILD_SHA=$BUILD_SHA BLOCKINATOR_BUILD_CHANNEL=$BUILD_CHANNEL
-LABEL org.opencontainers.image.version=$APP_VERSION \
-      org.opencontainers.image.revision=$BUILD_SHA \
-      org.opencontainers.image.source="https://github.com/StealthCat/blockinator-web" \
-      io.blockinator.schema=$SCHEMA_VERSION \
-      io.blockinator.updater-protocol="1"
-
 WORKDIR /srv
 COPY requirements.txt /srv/requirements.txt
 RUN pip install --no-cache-dir -r /srv/requirements.txt

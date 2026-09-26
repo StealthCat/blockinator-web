@@ -4,7 +4,6 @@ on:
   push:
     branches: ["main", "acme-tls", "whitelists", "fixes"]
   pull_request:
-  workflow_call:
 
 jobs:
   test:
@@ -23,7 +22,7 @@ jobs:
         run: pip install -r requirements.txt pytest httpx==0.28.1
 
       - name: Compile Python source
-        run: python -m compileall -q app tools updater tests
+        run: python -m compileall -q app tests
 
       - name: Validate Docker Compose
         run: docker compose config >/dev/null
@@ -78,12 +77,6 @@ jobs:
             python /srv/tools/benchmark_policy_latency.py \
             --requests 50 --warmup 10
 
-      - name: Test container update maintenance and backup recovery
-        env:
-          ADMIN_PASSWORD: test-admin-password
-          POLICY_API_KEY: test-policy-api-key-long-enough
-        run: python tools/test_update_container.py
-
       - name: Stop benchmark stack
         if: always()
         run: docker compose down -v
@@ -119,7 +112,7 @@ jobs:
         run: pip install -r requirements.txt pytest httpx==0.28.1
 
       - name: Compile Python source
-        run: python -m compileall -q app tools updater tests
+        run: python -m compileall -q app tests
 
       - name: Run MySQL integration tests
         env:

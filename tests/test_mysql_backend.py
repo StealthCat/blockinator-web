@@ -318,21 +318,3 @@ def test_mysql_statistics_snapshot():
     )
     assert point["queries"] == 2
     assert point["blocks"] == 1
-
-
-def test_mysql_update_backup_restores_schema_and_values(tmp_path, monkeypatch):
-    from tools.update_data import run
-    db = Database()
-    _clear_database(db)
-    db.set_setting("update_restore_test", "before 'quote' \\ slash\nnext line")
-    data = tmp_path / "data"
-    data.mkdir()
-    backup = tmp_path / "backup"
-    run("backup", backup, data)
-    db.set_setting("update_restore_test", "after")
-    with db.connect() as con:
-        con.execute("CREATE TABLE update_new_table (id INT PRIMARY KEY)")
-    run("restore", backup, data)
-    assert db.get_setting("update_restore_test") == "before 'quote' \\ slash\nnext line"
-    with db.connect() as con:
-        assert con.execute("SELECT COUNT(*) AS c FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='update_new_table'").fetchone()["c"] == 0
