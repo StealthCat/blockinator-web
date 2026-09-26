@@ -286,3 +286,78 @@ def test_automatic_updates_do_not_undo_manual_rollback(updater):
     assert updater.state["current"]["sha"] == "a" * 40
     updater.install(updater.candidate, automatic=False)
     assert not updater.state.get("blocked_digest")
+
+
+@pytest.mark.parametrize("gh_state,git_present,expected", [
+    ("current", True, "gh"), ("current", False, "gh"),
+    ("old", True, "git"), ("failed", True, "git"), ("missing", True, "git"),
+    ("missing", False, None), ("old", False, None), ("failed", False, None),
+])
+def test_backend_detection(gh_state, git_present, expected):
+    from updater.service import select_backend
+    def which(name):
+        return "/usr/bin/" + name if (name == "gh" and gh_state != "missing") or (name == "git" and git_present) else None
+    def runner(args):
+        if args[0].endswith("/git"):
+            return "git version 2.43"
+        if gh_state == "failed":
+            raise RuntimeError("gh command failed (exit 1)")
+        if gh_state == "old":
+            return "--source-ref --deny-self-hosted-runners"
+        return "--source-ref --source-digest --signer-workflow --deny-self-hosted-runners"
+    if expected is None:
+        with pytest.raises(RuntimeError, match="Install Git or a current GitHub CLI"):
+            select_backend(runner, which)
+    else:
+        assert select_backend(runner, which) == {"backend": expected, "tool": "/usr/bin/" + expected}
+
+
+def test_git_discovery_and_cached_identity(updater, monkeypatch):
+    updater.config.update(backend="git", tool="/usr/bin/git")
+    monkeypatch.setattr(updater, "git_manifest", lambda channel: release())
+    candidate = Updater.check(updater)
+    updater.verify("oci://" + candidate["image"], "release", candidate["sha"])
+    with pytest.raises(ValueError, match="does not match"):
+        updater.verify("oci://" + candidate["image"], "release", "c" * 40)
+    with pytest.raises(FileNotFoundError):
+        updater.verify("oci://" + candidate["image"], "preview", candidate["sha"])
+    updater.state["high_water"]["release"] = 6
+    with pytest.raises(ValueError, match="replay"):
+        Updater.check(updater)
+    assert not updater.commands
+
+
+def test_git_metadata_fetch_uses_real_git(updater, tmp_path):
+    import subprocess
+    from updater.service import command
+    source = tmp_path / "upstream"
+    source.mkdir()
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(source), *args], text=True).strip()
+    git("init", "-q")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.invalid")
+    git("commit", "--allow-empty", "-qm", "source")
+    sha = git("rev-parse", "HEAD")
+    (source / "manifest.json").write_text(json.dumps(release(sha=sha)))
+    git("add", "manifest.json")
+    git("commit", "-qm", "metadata")
+    git("branch", "updates/release")
+    updater.config.update(backend="git", tool="git")
+    calls = []
+    def run(args, timeout=300):
+        calls.append(args)
+        return command([str(source) if arg == "https://github.com/StealthCat/blockinator-web.git" else arg
+                        for arg in args], timeout=timeout)
+    updater.run = run
+    candidate = Updater.check(updater)
+    assert candidate["sha"] == sha
+    updater.verify("oci://" + candidate["image"], "release", sha)
+    assert any("https://github.com/StealthCat/blockinator-web.git" in args for args in calls)
+    # A manifest with a forged source SHA must never become an approved candidate.
+    (source / "manifest.json").write_text(json.dumps(release()))
+    git("add", "manifest.json")
+    git("commit", "--amend", "--no-edit", "-q")
+    git("branch", "-f", "updates/release")
+    with pytest.raises(ValueError, match="source commit"):
+        Updater.check(updater)

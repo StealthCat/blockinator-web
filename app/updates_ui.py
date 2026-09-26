@@ -27,6 +27,9 @@ def render_updates(csrf):
     history = "".join(f'<tr><td>{esc(row["time"])}</td><td>{esc(row["version"])}</td><td>{esc(row["result"])}</td><td>{esc(row.get("error"))}</td></tr>' for row in reversed(status.get("history") or []))
     note = f'<div class="flash bad">{esc(unavailable)}</div>' if unavailable else ""
     current_image = current.get("image")
+    verification = ("GitHub provenance (gh)" if status.get("backend") == "gh" else
+                    "Trusted GitHub repository metadata (git); attestations are not checked" if status.get("backend") == "git" else
+                    "Host service unavailable" if unavailable else "See host configuration")
     return f'''<section id="settings-updates" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-updates" data-settings-panel="updates" hidden>
       <section class="panel action-panel" data-update-controls data-update-candidate="{esc(candidate["digest"] if candidate else "")}" data-update-current="{esc(current["sha"])}">
         <div class="panel-kicker">Application updates</div><h3>Release channels</h3>
@@ -35,6 +38,7 @@ def render_updates(csrf):
         <div class="info-grid">
           <div><span>Installed</span><b>{esc(current["version"])} · {esc(current.get("channel", BUILD_CHANNEL))} · {esc(current["sha"][:12])}</b></div>
           <div><span>Available</span><b>{esc(latest)}</b></div>
+          <div><span>Verification</span><b>{esc(verification)}</b></div>
           <div><span>Status</span><b data-update-phase>{esc(status.get("phase", "Not installed"))}</b></div>
         </div>
         <p data-update-error role="status">{esc(status.get("error"))}</p>

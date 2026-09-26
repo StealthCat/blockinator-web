@@ -49,6 +49,27 @@ def command(args, timeout=300):
     return result.stdout.strip()
 
 
+def select_backend(runner=command, which=shutil.which):
+    """Choose once at installation; never downgrade after a verification failure."""
+    gh = which("gh")
+    if gh:
+        try:
+            help_text = runner([gh, "attestation", "verify", "--help"])
+            if all(flag in help_text for flag in (
+                    "--source-ref", "--source-digest", "--signer-workflow", "--deny-self-hosted-runners")):
+                return {"backend": "gh", "tool": gh}
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            pass
+    git = which("git")
+    if git:
+        try:
+            runner([git, "--version"])
+            return {"backend": "git", "tool": git}
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            pass
+    raise RuntimeError("Install Git or a current GitHub CLI with attestation verify support, then retry the installer")
+
+
 def validate_manifest(value, channel):
     if channel not in CHANNELS or value.get("channel") != channel:
         raise ValueError("Invalid release channel")
@@ -107,8 +128,8 @@ class Updater:
 
     def status(self):
         with self.state_lock:
-            return copy.deepcopy({k: self.state.get(k) for k in (
-                "phase", "settings", "current", "candidate", "previous", "history", "error", "checked_at", "postponed_until", "blocked_digest")})
+            return {"backend": self.config.get("backend", "gh"), **copy.deepcopy({k: self.state.get(k) for k in (
+                "phase", "settings", "current", "candidate", "previous", "history", "error", "checked_at", "postponed_until", "blocked_digest")})}
 
     def compose(self, *args, timeout=300):
         return self.run(["docker", "compose", "--project-name", self.config["project"],
@@ -121,8 +142,44 @@ class Updater:
             "volumes": [{"type": "bind", "source": str(self.runtime), "target": "/run/blockinator-update", "read_only": True}],
         }}})
 
+    def git(self, *args):
+        return self.run([self.config.get("tool", "git"), "-c", "credential.interactive=false",
+                         "-c", "core.askPass=/bin/false", "-c", "core.hooksPath=/dev/null",
+                         "--git-dir", str(self.root / "metadata.git"), *args], timeout=120)
+
+    def git_manifest(self, channel):
+        if channel not in CHANNELS:
+            raise ValueError("Invalid release channel")
+        if not (self.root / "metadata.git").exists():
+            self.git("init", "--bare")
+        # Fetch only metadata from the fixed upstream; never execute checkout code.
+        self.git("fetch", "--no-tags", "--depth=2", "https://github.com/" + REPOSITORY + ".git",
+                 "+refs/heads/updates/" + channel + ":refs/heads/updates/" + channel)
+        ref = "refs/heads/updates/" + channel
+        size = int(self.git("cat-file", "-s", ref + ":manifest.json"))
+        if size > 16384:
+            raise ValueError("Release metadata is too large")
+        value = validate_manifest(json.loads(self.git("show", ref + ":manifest.json")), channel)
+        # CI makes the metadata commit a direct child of the built source commit.
+        if self.git("rev-parse", ref + "^") != value["sha"]:
+            raise ValueError("Git metadata does not match its source commit")
+        return value
+
     def verify(self, subject, channel, sha=None):
-        args = ["gh", "attestation", "verify", subject, "--repo", REPOSITORY,
+        if channel not in CHANNELS:
+            raise ValueError("Invalid release channel")
+        if self.config.get("backend", "gh") == "git":
+            # These records are written only after fetching/validating fixed-repo
+            # metadata. Retain them so previous-image rollback survives promotion.
+            records = self.root / "verified-git"
+            digest = subject.removeprefix("oci://" + IMAGE + "@")
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                raise ValueError("Invalid Git update image")
+            value = validate_manifest(json.loads((records / (channel + "-" + digest[7:] + ".json")).read_text()), channel)
+            if value["sha"] != sha or value["digest"] != digest:
+                raise ValueError("Image does not match trusted Git metadata")
+            return
+        args = [self.config.get("tool", "gh"), "attestation", "verify", subject, "--repo", REPOSITORY,
                   "--signer-workflow", WORKFLOW, "--source-ref", "refs/heads/" + channel,
                   "--deny-self-hosted-runners"]
         if sha:
@@ -135,15 +192,22 @@ class Updater:
         directory.mkdir(exist_ok=True, mode=0o700)
         manifest = directory / "manifest.json"
         manifest.unlink(missing_ok=True)
-        self.run(["gh", "release", "download", "updates-" + channel, "--repo", REPOSITORY,
-                  "--pattern", "manifest.json", "--dir", str(directory)], timeout=120)
-        if manifest.stat().st_size > 16384:
-            raise ValueError("Release metadata is too large")
-        self.verify(str(manifest), channel)
-        candidate = validate_manifest(json.loads(manifest.read_text()), channel)
+        if self.config.get("backend", "gh") == "git":
+            candidate = self.git_manifest(channel)
+        else:
+            self.run([self.config.get("tool", "gh"), "release", "download", "updates-" + channel, "--repo", REPOSITORY,
+                      "--pattern", "manifest.json", "--dir", str(directory)], timeout=120)
+            if manifest.stat().st_size > 16384:
+                raise ValueError("Release metadata is too large")
+            self.verify(str(manifest), channel)
+            candidate = validate_manifest(json.loads(manifest.read_text()), channel)
         high_water = self.state["high_water"].get(channel, 0)
         if candidate["sequence"] < high_water:
             raise ValueError("Refusing replay of older channel metadata")
+        if self.config.get("backend", "gh") == "git":
+            records = self.root / "verified-git"
+            records.mkdir(mode=0o700, exist_ok=True)
+            atomic_json(records / (channel + "-" + candidate["digest"][7:] + ".json"), candidate)
         candidate["image"] = IMAGE + "@" + candidate["digest"]
         with self.state_lock:
             self.state["high_water"][channel] = candidate["sequence"]

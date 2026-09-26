@@ -24,7 +24,8 @@ create these branches or change repository protection settings.
 under `ghcr.io/stealthcat/blockinator-web`. GitHub provenance attestations cover both
 the image digest and channel manifest. Discovery metadata is published as
 `manifest.json` on the `updates-preview` / `updates-release` GitHub releases only
-after image publication and attestations succeed. Those releases are marked as
+after image publication and attestations succeed. The same manifest is then published
+on `updates/release` or `updates/preview` for Git-only hosts. Those releases are marked as
 channel metadata, not conventional numbered stable releases. Images use commit
 identifiers; installation always uses the immutable digest from the reviewed manifest.
 
@@ -44,20 +45,33 @@ Never change a released migration retroactively.
    docker compose up -d --build
    ```
 
-2. Install a current GitHub CLI (`gh`). Its `attestation verify` command must support
-   `--source-ref`, `--source-digest`, `--signer-workflow`, and
-   `--deny-self-hosted-runners`. Authenticate **as the host service's root account**:
+2. Have either Git or a current GitHub CLI (`gh`) available to root. The installer
+   prefers `gh` only when `attestation verify --help` succeeds and supports all four
+   identity restrictions (`--source-ref`, `--source-digest`, `--signer-workflow`,
+   `--deny-self-hosted-runners`). Missing/older/broken `gh` falls back to Git.
+   If neither works, installation exits with an actionable message before changing
+   the deployment. The chosen absolute executable path and backend are saved in
+   root-only configuration; verification failures never trigger a backend downgrade.
 
-   ```bash
-   sudo gh auth login
-   ```
+   **Trust model:** `gh` verifies GitHub provenance for the manifest and image.
+   Git mode trusts metadata fetched over HTTPS from this fixed repository's
+   `updates/release` or `updates/preview` branch; it does **not** verify Sigstore
+   attestations. CI publishes those refs only after tests, image publication and
+   attestations succeed. Protect these metadata branches against writes except by
+   the publishing workflow (which must be allowed to replace their tips). Each
+   metadata commit is a direct child of the source commit named in the manifest.
+   Both modes enforce manifest validation, replay protection, exact image digests,
+   image labels, schema compatibility and post-install probes. Git mode caches
+   accepted metadata in root-only storage to allow previous-image rollback.
 
-   The GHCR package must be public or the host must have registry read access.
-   For a private package, configure root's Docker registry login with a token that
-   has `read:packages`, following GitHub's registry authentication instructions.
-   A headless host may instead supply `GH_TOKEN` through the root-only
-   `/etc/blockinator-update/github.env` file. Never put these credentials in the
-   application container or a committed configuration file.
+   For `gh`, authenticate as root with `sudo gh auth login`, or supply `GH_TOKEN`
+   through `/etc/blockinator-update/github.env` (root-only, loaded by systemd).
+   Git mode works anonymously for public repositories; private repositories need
+   a noninteractive HTTPS credential helper configured for root. `GH_TOKEN` alone
+   does not configure Git authentication. Never put credentials in remote URLs.
+   The GHCR package must be public or root's Docker registry login must have
+   `read:packages` access. Never put credentials in the application container or
+   committed configuration files.
 
 3. From the checked-out repository, run:
 
@@ -162,7 +176,11 @@ before recreating services. The active image/mount override lives at
 
 To update the host helper itself, wait for an idle/completed state, stop its systemd
 unit, install a reviewed `service.py` into `/usr/local/lib/blockinator-update/`, then
-restart the unit. Preserve the journal, deployment snapshot and backups. Protocol
+restart the unit. Existing configurations retain the `gh` backend by default. To
+switch an existing idle installation to Git, explicitly set `"backend": "git"` and
+`"tool"` to the absolute Git executable path in root-only `config.json`, restart,
+and run **Check now** to populate trusted Git metadata before installing. The Git
+trust model above applies. Preserve the journal, deployment snapshot and backups. Protocol
 changes require a documented host-helper upgrade before publishing dependent images.
 
 ## Verification

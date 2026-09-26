@@ -86,3 +86,16 @@ jobs:
             gh release create "updates-$CHANNEL" --target "$GITHUB_SHA" --title "Blockinator $CHANNEL channel" --notes "Verified Docker update channel. See the manifest for the exact build." --prerelease --latest=false
           fi
           gh release upload "updates-$CHANNEL" manifest.json --clobber
+      - name: Publish Git discovery metadata
+        env:
+          CHANNEL: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ref="refs/heads/updates/$CHANNEL"
+          previous="$(git ls-remote origin "$ref" | cut -f1)"
+          blob="$(git hash-object -w manifest.json)"
+          tree="$(printf '100644 blob %s\tmanifest.json\n' "$blob" | git mktree)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          commit="$(git commit-tree "$tree" -p "$GITHUB_SHA" -m "Publish $CHANNEL update metadata")"
+          git push --force-with-lease="$ref:$previous" origin "$commit:$ref"

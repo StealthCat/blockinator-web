@@ -943,8 +943,10 @@ manual installation, scheduled compatible updates, a maintenance timezone/hour,
 installation is disabled by default.
 
 Install the optional Linux/systemd host updater once to enable these controls.
-It manages only Blockinator, verifies published image provenance, backs up SQLite
-or MySQL plus TLS files, and validates the candidate before reopening policy traffic.
+It manages only Blockinator, backs up SQLite or MySQL plus TLS files, and validates
+the candidate before reopening policy traffic. It uses a capable `gh` for provenance
+verification, or falls back at installation to Git and trusted repository metadata.
+Git mode does not verify attestations; both modes pin images by digest.
 See [host setup, publishing and recovery instructions](updater/README.md).
 
 Pushing to `fixes` does not publish an update; promote tested code to `preview` or

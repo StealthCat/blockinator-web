@@ -8,7 +8,10 @@ import shutil
 import subprocess
 import sys
 
-from service import atomic_json, command, Updater
+if __package__:
+    from .service import atomic_json, command, select_backend, Updater
+else:
+    from service import atomic_json, command, select_backend, Updater
 
 
 def install(compose_file):
@@ -18,9 +21,13 @@ def install(compose_file):
     if (config_dir / "config.json").exists():
         raise SystemExit("Updater is already installed; follow the documented host-service upgrade procedure")
     command(["docker", "compose", "version"])
-    help_text = command(["gh", "attestation", "verify", "--help"])
-    if "--source-ref" not in help_text or "--deny-self-hosted-runners" not in help_text:
-        raise SystemExit("Upgrade GitHub CLI: attestation identity restrictions are required")
+    try:
+        backend = select_backend()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from None
+    print("Update backend: " + backend["backend"] +
+          (" (trusted GitHub repository metadata; no attestation verification)"
+           if backend["backend"] == "git" else " (GitHub provenance verification)"))
     compose_file = str(Path(compose_file).resolve())
     config = json.loads(command(["docker", "compose", "-f", compose_file, "config", "--format", "json"]))
     cid = command(["docker", "compose", "-f", compose_file, "ps", "-q", "blockinator"])
@@ -45,7 +52,7 @@ def install(compose_file):
     atomic_json(config_dir / "deployment.json", config)
     settings = {"deployment": str(config_dir / "deployment.json"), "project": config["name"],
                 "state_dir": "/var/lib/blockinator-update", "runtime_dir": "/var/lib/blockinator-update-runtime",
-                "initial": initial, "minimum_free_bytes": 1073741824}
+                "initial": initial, "minimum_free_bytes": 1073741824, **backend}
     atomic_json(config_dir / "config.json", settings)
     binary = Path("/usr/local/lib/blockinator-update")
     binary.mkdir(parents=True, mode=0o755, exist_ok=True)
