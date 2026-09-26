@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="app/static/blockinator-hero.webp" alt="Blockinator" width="100%">
+  <img src="app/static/blockinator-mark.svg" alt="Blockinator" width="112" height="112">
 </p>
 
 # Blockinator
@@ -14,6 +14,16 @@ Blockinator runs with Docker Compose and supports either:
 - **MySQL 8.x** — remote persistence with connection pooling and optional TLS.
 
 > The companion Technitium integration is maintained separately in the `blockinator-technitium` repository.
+
+## Management interface
+
+The console includes dark and light themes, scalable SVG branding and icons, and responsive navigation. Select the theme under **System Settings → Appearance**.
+
+- **Query Log:** filter by domain, client, DNS server, policy target, list, or decision. Expand **Details** in a row for the full timestamp, DNS server, client IP, record type, policy API scheme, matched policy target, DNS transport, and client port.
+- **Table density:** choose Comfortable or Compact on Query Log. This browser-local preference also applies to other tables.
+- **Auto refresh:** applies when you submit the filter form; updates the table without reloading the page. Updates pause while you inspect an expanded record, focus a control, edit filters, or hide the tab. Submit edited filters to resume; refresh failures leave the previous results visible.
+- **Mobile navigation:** use Menu to open navigation; Escape closes it and returns focus. Navigation remains available when JavaScript is disabled.
+- **Statistics:** vector charts resize their labels and ticks to the available width.
 
 ## What it does
 

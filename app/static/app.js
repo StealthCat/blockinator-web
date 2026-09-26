@@ -158,10 +158,13 @@
           activateSettingsTab(root, button.getAttribute("data-settings-tab"), true);
         });
         button.addEventListener("keydown", function (event) {
-          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+          if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
           var buttons = Array.prototype.slice.call(root.querySelectorAll("[data-settings-tab]"));
           var index = buttons.indexOf(button);
-          var delta = event.key === "ArrowRight" ? 1 : -1;
+          var delta = (event.key === "ArrowRight" || event.key === "ArrowDown") ? 1 : -1;
+          if (event.key === "Home") index = -1, delta = 1;
+          if (event.key === "End") index = 0, delta = -1;
           var next = buttons[(index + delta + buttons.length) % buttons.length];
           next.focus();
           activateSettingsTab(root, next.getAttribute("data-settings-tab"), true);
@@ -206,29 +209,120 @@
     });
   }
 
+  function initializeNavigation() {
+    var toggle = document.querySelector("[data-navigation-toggle]");
+    var sidebar = document.getElementById("app-navigation");
+    if (!toggle || !sidebar) return;
+    document.documentElement.classList.add("js-navigation");
+    function setOpen(open) {
+      sidebar.classList.toggle("is-open", open);
+      toggle.setAttribute("aria-expanded", String(open));
+    }
+    toggle.addEventListener("click", function () {
+      var open = toggle.getAttribute("aria-expanded") !== "true";
+      setOpen(open);
+      if (open) sidebar.querySelector("a").focus();
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && toggle.getAttribute("aria-expanded") === "true") {
+        setOpen(false);
+        toggle.focus();
+      }
+    });
+  }
+
+  function initializeTableDensity() {
+    var control = document.querySelector("select[data-table-density]");
+    var density = "comfortable";
+    try { density = localStorage.getItem("blockinator-table-density") || density; } catch (_) {}
+    if (density !== "compact") density = "comfortable";
+    document.documentElement.setAttribute("data-table-density", density);
+    if (!control) return;
+    control.value = density;
+    control.addEventListener("change", function () {
+      document.documentElement.setAttribute("data-table-density", control.value);
+      try { localStorage.setItem("blockinator-table-density", control.value); } catch (_) {}
+    });
+  }
+
   function initializeQueryLogRefresh() {
     var panel = document.querySelector("[data-query-log-refresh]");
     if (!panel) return;
-
     var seconds = parseInt(panel.getAttribute("data-query-log-refresh") || "0", 10);
-    if (!Number.isFinite(seconds) || seconds <= 0) return;
-
-    var timer = null;
-    function schedule() {
-      if (timer !== null) window.clearTimeout(timer);
-      timer = window.setTimeout(function () {
-        if (document.hidden) {
-          schedule();
-          return;
-        }
-        window.location.reload();
-      }, seconds * 1000);
+    var status = panel.querySelector("[data-query-refresh-status]");
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      if (status) status.textContent = "Auto refresh off";
+      return;
     }
-
-    document.addEventListener("visibilitychange", function () {
-      if (!document.hidden) schedule();
-    });
+    var timer = null;
+    var controller = null;
+    var stopped = false;
+    var dirty = false;
+    var filters = panel.querySelector(".query-filter-bar");
+    // Do not replace data while filters have unsubmitted edits or a row is being inspected.
+    filters.addEventListener("input", function () { dirty = true; });
+    filters.addEventListener("change", function () { dirty = true; });
+    function schedule() {
+      if (stopped) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(refresh, seconds * 1000);
+    }
+    function interacting() {
+      return dirty || panel.querySelector("details[open]") ||
+        (panel.contains(document.activeElement) && document.activeElement !== document.body);
+    }
+    function refresh() {
+      if (document.hidden || interacting()) {
+        if (status) status.textContent = dirty ? "Apply filters to resume live updates" : "Live updates paused while viewing";
+        schedule();
+        return;
+      }
+      controller = new AbortController();
+      var timeout = window.setTimeout(function () { controller.abort(); }, 15000);
+      fetch(window.location.href, { credentials: "same-origin", cache: "no-store", signal: controller.signal,
+        headers: { "Accept": "text/html" } }).then(function (response) {
+        if (response.redirected && new URL(response.url).pathname === "/login") {
+          stopped = true;
+          throw new Error("session");
+        }
+        if (!response.ok) throw new Error("refresh");
+        return response.text();
+      }).then(function (html) {
+        var incoming = new DOMParser().parseFromString(html, "text/html");
+        var next = incoming.querySelector("[data-query-log-refresh] .query-table tbody");
+        if (!next) throw new Error("refresh");
+        // A user may have started editing after this request began.
+        if (interacting() || document.hidden || stopped) return;
+        var wrap = panel.querySelector(".table-wrap");
+        var scrollLeft = wrap.scrollLeft;
+        var x = window.scrollX, y = window.scrollY;
+        panel.querySelector(".query-table tbody").replaceWith(next);
+        wrap.scrollLeft = scrollLeft;
+        window.scrollTo(x, y);
+        var count = incoming.querySelector(".result-count");
+        if (count) panel.querySelector(".result-count").textContent = count.textContent;
+        var description = incoming.querySelector(".query-head p");
+        if (description) panel.querySelector(".query-head p").textContent = description.textContent;
+        if (status) status.textContent = "Updated just now · refreshes every " + seconds + "s";
+      }).catch(function (error) {
+        if (status) status.textContent = error.message === "session"
+          ? "Session expired. Reload to sign in." : "Refresh unavailable. Retrying automatically.";
+      }).finally(function () {
+        window.clearTimeout(timeout);
+        controller = null;
+        schedule();
+      });
+    }
+    if (status) status.textContent = "Refreshes every " + seconds + "s";
     schedule();
+    window.addEventListener("pagehide", function () {
+      stopped = true;
+      window.clearTimeout(timer);
+      if (controller) controller.abort();
+    });
+    window.addEventListener("pageshow", function (event) {
+      if (event.persisted) { stopped = false; schedule(); }
+    });
   }
 
   function statisticsNumber(value) {
@@ -312,11 +406,12 @@
     if (!svg) return;
 
     var points = Array.isArray(payload.points) ? payload.points : [];
-    var left = 56;
-    var right = 76;
+    var left = 62;
+    var right = 68;
     var top = 18;
     var bottom = 42;
-    var fullWidth = 1000;
+    var fullWidth = Math.max(240, Math.round(svg.getBoundingClientRect().width));
+    svg.setAttribute("viewBox", "0 0 " + fullWidth + " 340");
     var fullHeight = 340;
     var width = fullWidth - left - right;
     var height = fullHeight - top - bottom;
@@ -356,7 +451,7 @@
         y: y + 4,
         "text-anchor": "end",
         "class": "statistics-axis-label"
-      }, String(value)));
+      }, Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value)));
       svg.appendChild(statisticsSvgElement("text", {
         x: left + width + 12,
         y: y + 4,
@@ -367,7 +462,7 @@
 
     var labelIndexes = [];
     if (points.length) {
-      var labelCount = Math.min(6, points.length);
+      var labelCount = Math.min(Math.max(2, Math.floor(width / 90)), 6, points.length);
       for (var labelIndex = 0; labelIndex < labelCount; labelIndex += 1) {
         labelIndexes.push(Math.round(labelIndex * (points.length - 1) / Math.max(1, labelCount - 1)));
       }
@@ -442,6 +537,7 @@
 
     var timer = null;
     var loading = false;
+    var lastPayload = null;
     var windowMinutes = parseInt(root.getAttribute("data-window") || "60", 10);
 
     function updateTotals(payload) {
@@ -477,6 +573,7 @@
         if (!response.ok) throw new Error("Statistics request failed");
         return response.json();
       }).then(function (payload) {
+        lastPayload = payload;
         updateTotals(payload);
         renderStatisticsChart(root, payload);
       }).catch(function () {
@@ -505,10 +602,21 @@
       if (!document.hidden) load();
     });
 
+    var resizeObserver = null;
+    if (window.ResizeObserver) {
+      var lastWidth = 0;
+      resizeObserver = new ResizeObserver(function (entries) {
+        var width = Math.round(entries[0].contentRect.width);
+        if (width !== lastWidth && lastPayload) renderStatisticsChart(root, lastPayload);
+        lastWidth = width;
+      });
+      resizeObserver.observe(root.querySelector("[data-statistics-chart]"));
+    }
     load();
     timer = window.setInterval(load, 5000);
     window.addEventListener("pagehide", function () {
       if (timer !== null) window.clearInterval(timer);
+      if (resizeObserver) resizeObserver.disconnect();
     }, { once: true });
   }
 
@@ -520,6 +628,8 @@
   initializeTlsSettings();
   initializeSettingsTabs();
   initializeListEditNavigation();
+  initializeNavigation();
+  initializeTableDensity();
   initializeQueryLogRefresh();
   initializeStatisticsDashboard();
 })();

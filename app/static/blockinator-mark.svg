@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" fill="none">
+<title>Blockinator</title>
+<defs><linearGradient id="edge" x1="35" y1="5" x2="130" y2="153" gradientUnits="userSpaceOnUse"><stop stop-color="#59edeb"/><stop offset=".5" stop-color="#22bddf"/><stop offset="1" stop-color="#3889f4"/></linearGradient></defs>
+<path d="M80 8 145 44v70l-65 38-65-38V44Z" fill="#0b2030" stroke="url(#edge)" stroke-width="6"/>
+<path d="m80 30 42 22v34c0 24-23 42-42 53-13-8-22-15-29-23" stroke="url(#edge)" stroke-width="5" stroke-linejoin="round"/>
+<path d="M80 44v79M80 61H58l-9 12H30m50 10H51m29 21H56l-8-11H26" stroke="url(#edge)" stroke-width="5" stroke-linecap="round"/>
+<g fill="#47dded"><circle cx="27" cy="73" r="5"/><circle cx="48" cy="83" r="5"/><circle cx="23" cy="93" r="5"/><circle cx="53" cy="104" r="5"/></g>
+<path d="m97 74 15 21m0-21L97 95" stroke="#ff6d7f" stroke-width="6" stroke-linecap="round"/>
+</svg>

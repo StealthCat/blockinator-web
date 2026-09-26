@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — Interface polish
+
+- Preserve the navy/cyan identity with scalable local SVG branding, circuit artwork, and consistent navigation icons.
+- Add shared typography and surface tokens, readable table text, quieter cards, and equal dark/light theme coverage.
+- Shorten the dashboard banner and reorganize settings into a responsive section menu.
+- Group query history into five main columns with expandable metadata and browser-local table density.
+- Refresh query rows in place, preserving filters and scroll position and pausing during interaction.
+- Add mobile navigation, visible keyboard focus, a skip link, reduced-motion support, and responsive SVG chart sizing.
+- Keep policy APIs, database schemas, filtering semantics, and authentication behavior unchanged.
+
 ## 1.19.2 — Ignored DNS record types
 
 - Added a dedicated **System Settings → Ignored records** tab with checkboxes for common DNS record types.
