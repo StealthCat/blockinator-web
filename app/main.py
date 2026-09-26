@@ -9,7 +9,7 @@ from datetime import datetime, time as dt_time, timezone
 from time import perf_counter_ns
 from pathlib import Path
 from urllib.parse import quote
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -2765,6 +2765,10 @@ def settings_page(request: Request):
     retention_days = str(engine.logger.max_age_days)
     log_request_json = engine.logger.capture_request_json
     default_timezone = system_default_timezone()
+    timezone_options_html = "".join(
+        f'<option value="{esc(name)}"></option>'
+        for name in sorted(available_timezones() | {default_timezone})
+    )
     ui_theme = application_theme()
     ptr_status = engine.ptr_status()
     tls_status = tls_manager.status()
@@ -2900,16 +2904,10 @@ def settings_page(request: Request):
               </div>
               <label class="full">IANA timezone
                 <input name="default_timezone" value="{esc(default_timezone)}" list="timezone-options" placeholder="America/New_York" required>
-                <small>Examples: UTC, America/New_York, America/Chicago, America/Denver, America/Los_Angeles.</small>
+                <small>Type to search all available IANA time zones, including UTC.</small>
               </label>
               <datalist id="timezone-options">
-                <option value="UTC"></option>
-                <option value="America/New_York"></option>
-                <option value="America/Chicago"></option>
-                <option value="America/Denver"></option>
-                <option value="America/Los_Angeles"></option>
-                <option value="America/Anchorage"></option>
-                <option value="Pacific/Honolulu"></option>
+                {timezone_options_html}
               </datalist>
             </div>
 
