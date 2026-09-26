@@ -12,19 +12,20 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
-from starlette.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field, field_validator
 
 from .ui import icon, query_details_html
 from .auth import AuthManager, SESSION_COOKIE, SESSION_TTL_SECONDS
-from .blocklists import fetch_url, normalize_domain, parse_blocklist
+from .blocklists import MAX_BYTES, fetch_url, normalize_domain, parse_blocklist
+from .safe_fetch import validate_source_url
+from .admin import blocking_action, admin_action, run_admin, BodyLimitMiddleware, login_limiter
 from .db import Database
 from .policy import PolicyEngine, normalize_hostname_pattern
 from .rdns import ReverseDnsResolver
 from .refresher import BlocklistRefresher
-from .statistics import build_statistics_snapshot
+from .statistics import StatisticsCache
 from .timeutil import format_timestamp_for_timezone
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
@@ -105,6 +106,7 @@ app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 db = Database()
+statistics_cache = StatisticsCache(db)
 _runtime_settings = db.get_settings(
     {
         "default_timezone": os.getenv("TZ", "UTC").strip() or "UTC",
@@ -120,6 +122,7 @@ auth = AuthManager(db)
 rdns = ReverseDnsResolver()
 engine = PolicyEngine(db, rdns=rdns)
 app.add_middleware(PolicyResponseTimingMiddleware, engine=engine)
+app.add_middleware(BodyLimitMiddleware, upload_limit=MAX_BYTES)
 refresher = BlocklistRefresher(db, engine)
 tls_manager = TlsManager(db)
 
@@ -140,28 +143,50 @@ def stop_background_workers() -> None:
 
 
 class Question(BaseModel):
-    name: str
-    type: str = "A"
-    class_: str = Field(default="IN", alias="class")
+    name: str = Field(min_length=1, max_length=254)
+    type: str = Field(default="A", pattern=r"^[A-Za-z0-9]{1,16}$")
+    class_: str = Field(default="IN", alias="class", pattern=r"^[A-Za-z0-9]{1,16}$")
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value):
+        if value == ".":
+            return value
+        try:
+            labels = [label.encode("idna").decode("ascii") for label in value.rstrip(".").split(".")]
+        except UnicodeError as exc:
+            raise ValueError("invalid DNS name") from exc
+        if any(not label or len(label) > 63 or any(ord(c) < 33 or ord(c) > 126 for c in label) for label in labels):
+            raise ValueError("invalid DNS label")
+        if len(".".join(labels)) > 253:
+            raise ValueError("DNS name is too long")
+        return ".".join(labels).lower() + ("." if value.endswith(".") else "")
+
     model_config = {"populate_by_name": True}
 
 class DnsInfo(BaseModel):
-    questions: list[Question] = Field(default_factory=list)
+    questions: list[Question] = Field(min_length=1, max_length=16)
     identifier: int | None = None
     is_response: bool | None = None
     opcode: str | None = None
     recursion_desired: bool | None = None
     rcode: str | None = None
     has_edns: bool | None = None
-    wire_base64: str | None = None
+    wire_base64: str | None = Field(default=None, max_length=87380)
 
 class ClientInfo(BaseModel):
-    ip: str
-    port: int | None = None
+    ip: str = Field(max_length=45)
+    port: int | None = Field(default=None, ge=0, le=65535)
+
+    @field_validator("ip")
+    @classmethod
+    def valid_ip(cls, value):
+        return str(ipaddress.ip_address(value))
+
 
 class DecisionRequest(BaseModel):
-    server_id: str | None = None
-    protocol: str | None = None
+    server_id: str | None = Field(default=None, max_length=255)
+    protocol: str | None = Field(default=None, max_length=32)
     client: ClientInfo
     dns: DnsInfo
 
@@ -452,13 +477,23 @@ def require_session(request: Request):
         raise HTTPException(status_code=303, headers={"Location": "/login"})
     return session
 
-async def require_post_session(request: Request):
-    session = require_session(request)
-    form = await request.form()
-    token = str(form.get("csrf_token", ""))
-    if not token or not secrets.compare_digest(token, session.csrf_token):
-        raise HTTPException(status_code=403, detail="invalid CSRF token")
-    return session, form
+def require_post_session(request: Request):
+    return request.state.admin_session, request.state.admin_form
+
+
+def set_session_cookie(response, request, session):
+    response.set_cookie(
+        SESSION_COOKIE, session.token, max_age=SESSION_TTL_SECONDS, httponly=True,
+        secure=(request.url.scheme == "https" or os.getenv("ADMIN_COOKIE_SECURE", "0").lower() in {"1", "true", "yes", "on"}),
+        samesite="strict", path="/",
+    )
+
+
+def read_upload(upload, max_bytes=MAX_BYTES):
+    data = upload.file.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"Upload exceeds the {max_bytes} byte limit")
+    return data
 
 
 def application_theme() -> str:
@@ -623,7 +658,7 @@ def import_list(
             SET entry_count=?,
                 last_updated=CURRENT_TIMESTAMP,
                 last_refresh_attempt=CURRENT_TIMESTAMP,
-                last_error=NULL
+                last_error=NULL,source_hash=NULL,source_etag=NULL,source_last_modified=NULL
             WHERE id=?
             """,
             (len(parsed.domains), list_id),
@@ -636,6 +671,20 @@ def import_list(
 @app.get("/healthz")
 def healthz():
     return {"status": "ok"}
+
+@app.get("/readyz")
+def readyz():
+    ready = engine.generation > 0 and engine.last_reload_error is None
+    return JSONResponse({"status": "ready" if ready else "degraded"}, status_code=200 if ready else 503)
+
+@app.get("/api/v1/runtime")
+def runtime_status(request: Request):
+    require_session(request)
+    return JSONResponse({"policy_generation": engine.generation,
+                         "policy_reload_error": engine.last_reload_error,
+                         "logger": engine.logger.status(),
+                         "refresher": refresher.status(),
+                         "ptr": engine.ptr_status()}, headers={"Cache-Control": "no-store"})
 
 @app.get("/api/v1/ping")
 def ping(x_api_key: str | None = Header(default=None)):
@@ -682,23 +731,22 @@ def login_page(request: Request):
 <button class="primary-button wide" type="submit">Sign in</button><small>Blockinator v{APP_VERSION}</small></form></section></body></html>""")
 
 @app.post("/login")
+@blocking_action
 def login(request: Request, username: str = Form(...), password: str = Form(...)):
-    result = auth.authenticate(username, password)
+    login_limiter.check(request.client.host if request.client else "unknown")
+    result = auth.authenticate(username[:255], password[:4096])
     if not result:
         return redirect("/login", error="Invalid username or password")
     user_id, canonical = result
     s = auth.create_session(user_id, canonical)
     response = RedirectResponse("/", status_code=303)
-    response.set_cookie(
-        SESSION_COOKIE, s.token, max_age=SESSION_TTL_SECONDS, httponly=True,
-        secure=(request.url.scheme == "https" or os.getenv("ADMIN_COOKIE_SECURE", "0").lower() in {"1","true","yes","on"}),
-        samesite="strict", path="/",
-    )
+    set_session_cookie(response, request, s)
     return response
 
 @app.post("/logout")
-async def logout(request: Request):
-    s, _ = await require_post_session(request)
+@admin_action(require_session)
+def logout(request: Request):
+    s, _ = require_post_session(request)
     auth.delete_session(request.cookies.get(SESSION_COOKIE))
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie(SESSION_COOKIE, path="/")
@@ -772,8 +820,7 @@ def dashboard(request: Request):
 def statistics_page(request: Request):
     s = require_session(request)
     display_timezone = system_default_timezone()
-    snapshot = build_statistics_snapshot(
-        db,
+    snapshot = statistics_cache.snapshot(
         minutes=60,
         timezone_name=display_timezone,
     )
@@ -858,16 +905,16 @@ def statistics_api(
     minutes: int = 60,
 ):
     require_session(request)
-    return build_statistics_snapshot(
-        db,
+    return statistics_cache.snapshot(
         minutes=minutes,
         timezone_name=system_default_timezone(),
     )
 
 
 @app.post("/admin/global-toggle")
-async def global_toggle(request: Request):
-    _, _form = await require_post_session(request)
+@admin_action(require_session)
+def global_toggle(request: Request):
+    _, _form = require_post_session(request)
     current = db.get_setting("global_blocking", "1") == "1"
     db.set_setting("global_blocking", "0" if current else "1")
     engine.reload_settings()
@@ -1645,8 +1692,9 @@ def manual_list_domains_page(
 
 
 @app.post("/admin/lists/{list_id}/domains/add")
-async def add_manual_list_domain(list_id: int, request: Request):
-    _, form = await require_post_session(request)
+@admin_action(require_session)
+def add_manual_list_domain(list_id: int, request: Request):
+    _, form = require_post_session(request)
     blocklist, error = _get_manual_blocklist(list_id)
     if error:
         return redirect("/lists", error=error)
@@ -1678,8 +1726,9 @@ async def add_manual_list_domain(list_id: int, request: Request):
 
 
 @app.post("/admin/lists/{list_id}/domains/remove")
-async def remove_manual_list_domain(list_id: int, request: Request):
-    _, form = await require_post_session(request)
+@admin_action(require_session)
+def remove_manual_list_domain(list_id: int, request: Request):
+    _, form = require_post_session(request)
     blocklist, error = _get_manual_blocklist(list_id)
     if error:
         return redirect("/lists", error=error)
@@ -1743,8 +1792,9 @@ def _save_list_scope_assignments(con, list_id: int, scope_ids: list[int]) -> int
 
 
 @app.post("/admin/lists")
-async def add_list(request: Request):
-    _, form = await require_post_session(request)
+@admin_action(require_session)
+def add_list(request: Request):
+    _, form = require_post_session(request)
     list_type = str(form.get("list_type", "block")).strip().lower()
     if list_type not in {"block", "whitelist"}:
         list_type = "block"
@@ -1754,6 +1804,11 @@ async def add_list(request: Request):
     name = str(form.get("name", "")).strip()
     format_name = str(form.get("format", "auto")).strip().lower()
     source_url = str(form.get("source_url", "")).strip()
+    if source_url:
+        try:
+            validate_source_url(source_url)
+        except ValueError as exc:
+            return redirect("/lists", error=str(exc))
     text = str(form.get("text", ""))
     global_list = str(form.get("global_list", "")) == "1"
     try:
@@ -1779,11 +1834,14 @@ async def add_list(request: Request):
     content = text
     file_obj = form.get("file")
     if getattr(file_obj, "filename", None):
-        content = (await file_obj.read()).decode("utf-8", errors="replace")
+        try:
+            content = read_upload(file_obj).decode("utf-8", errors="replace")
+        except ValueError as exc:
+            return redirect(base_path, error=str(exc))
         source_type = "upload"
     elif source_url:
         try:
-            content = await run_in_threadpool(fetch_url, source_url)
+            content = fetch_url(source_url)
         except Exception as e:
             return redirect(base_path, error=f"Could not fetch list URL: {e}")
         source_type = "url"
@@ -1791,8 +1849,14 @@ async def add_list(request: Request):
     if not content.strip():
         return redirect(base_path, error="Provide a URL, upload, or pasted list content")
 
+    if len(content.encode("utf-8")) > MAX_BYTES:
+        return redirect(base_path, error="List content exceeds MAX_BLOCKLIST_BYTES")
+    parsed = parse_blocklist(content, format_name, list_type)
+    if not parsed.domains:
+        return redirect(base_path, error="List content contains no usable domains")
     with db.connect() as con:
         try:
+            con.execute("BEGIN IMMEDIATE")
             cur = con.execute(
                 """
                 INSERT INTO blocklists(
@@ -1808,26 +1872,17 @@ async def add_list(request: Request):
                 ),
             )
             list_id = int(cur.lastrowid)
-        except Exception as e:
-            return redirect(base_path, error=str(e))
-
-    try:
-        count, ignored = await run_in_threadpool(
-            import_list,
-            list_id,
-            content,
-            format_name,
-            False,
-        )
-        with db.connect() as con:
+            db.replace_list_domains(con, list_id, parsed.domains)
+            con.execute("UPDATE blocklists SET entry_count=?,last_updated=CURRENT_TIMESTAMP WHERE id=?", (len(parsed.domains), list_id))
             assigned = _save_list_scope_assignments(con, list_id, scope_ids)
-    except Exception as e:
-        with db.connect() as con:
-            db.delete_blocklist(con, list_id)
-        return redirect(base_path, error=f"Import failed: {e}")
+            con.execute("COMMIT")
+        except Exception as e:
+            if con.in_transaction:
+                con.execute("ROLLBACK")
+            return redirect(base_path, error=f"Import failed: {e}")
+    count, ignored = len(parsed.domains), parsed.ignored
 
-    engine.reload_lists()
-    engine.reload_scopes()
+    engine.reload()
     return redirect(
         f"{base_path}#list-{list_id}",
         notice=f"Imported {count:,} entries, ignored {ignored:,}, assigned to {assigned} scope{'s' if assigned != 1 else ''}",
@@ -1835,8 +1890,9 @@ async def add_list(request: Request):
 
 
 @app.post("/admin/lists/{list_id}/edit")
-async def edit_list(list_id: int, request: Request):
-    _, form = await require_post_session(request)
+@admin_action(require_session)
+def edit_list(list_id: int, request: Request):
+    _, form = require_post_session(request)
 
     with db.connect() as con:
         existing = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
@@ -1848,6 +1904,11 @@ async def edit_list(list_id: int, request: Request):
     name = str(form.get("name", "")).strip()
     format_name = str(form.get("format", "auto")).strip().lower()
     source_url = str(form.get("source_url", "")).strip()
+    if source_url:
+        try:
+            validate_source_url(source_url)
+        except ValueError as exc:
+            return redirect("/lists", error=str(exc))
     enabled = str(form.get("enabled", "")) == "1"
     global_list = str(form.get("global_list", "")) == "1"
     try:
@@ -1882,10 +1943,10 @@ async def edit_list(list_id: int, request: Request):
                     f"{base_path}/{list_id}/edit",
                     error="A source URL is required to refresh this list",
                 )
-            replacement_content = await run_in_threadpool(fetch_url, source_url)
+            replacement_content = fetch_url(source_url)
             source_type = "url"
         elif getattr(replacement_file, "filename", None):
-            replacement_content = (await replacement_file.read()).decode("utf-8", errors="replace")
+            replacement_content = read_upload(replacement_file).decode("utf-8", errors="replace")
             source_type = "upload"
         elif replacement_text.strip():
             replacement_content = replacement_text
@@ -1896,6 +1957,18 @@ async def edit_list(list_id: int, request: Request):
             source_type = "manual"
     except Exception as e:
         return redirect(f"{base_path}/{list_id}/edit", error=f"Could not refresh list: {e}")
+
+    parsed = None
+    if replacement_content is not None:
+        if not replacement_content.strip():
+            return redirect(f"{base_path}/{list_id}/edit", error="Replacement list content is empty")
+        if len(replacement_content.encode("utf-8")) > MAX_BYTES:
+            return redirect(f"{base_path}/{list_id}/edit", error="List content exceeds MAX_BLOCKLIST_BYTES")
+        parsed = parse_blocklist(replacement_content, format_name, str(existing["list_type"]))
+        if not parsed.domains:
+            return redirect(f"{base_path}/{list_id}/edit", error="Replacement contains no usable domains")
+    invalidate_source = (parsed is not None or source_url != (existing["source_url"] or "")
+                         or format_name != existing["format"] or source_type != existing["source_type"])
 
     with db.connect() as con:
         try:
@@ -1925,32 +1998,19 @@ async def edit_list(list_id: int, request: Request):
                 ),
             )
             assigned = _save_list_scope_assignments(con, list_id, scope_ids)
+            if invalidate_source:
+                con.execute("UPDATE blocklists SET source_hash=NULL,source_etag=NULL,source_last_modified=NULL,last_refresh_attempt=NULL WHERE id=?", (list_id,))
+            if parsed is not None:
+                db.replace_list_domains(con, list_id, parsed.domains)
+                con.execute("UPDATE blocklists SET entry_count=?,last_updated=CURRENT_TIMESTAMP,last_error=NULL WHERE id=?", (len(parsed.domains), list_id))
             con.execute("COMMIT")
         except Exception as e:
             con.execute("ROLLBACK")
             return redirect(f"{base_path}/{list_id}/edit", error=f"Could not save list: {e}")
 
-    replaced_notice = ""
-    if replacement_content is not None:
-        if not replacement_content.strip():
-            return redirect(f"{base_path}/{list_id}/edit", error="Replacement list content is empty")
-        try:
-            count, ignored = await run_in_threadpool(
-                import_list,
-                list_id,
-                replacement_content,
-                format_name,
-                False,
-            )
-            replaced_notice = f"; replaced contents with {count:,} entries ({ignored:,} ignored)"
-        except Exception as e:
-            return redirect(
-                f"{base_path}/{list_id}/edit",
-                error=f"Settings were saved, but replacing list contents failed: {e}",
-            )
+    replaced_notice = (f"; replaced contents with {len(parsed.domains):,} entries ({parsed.ignored:,} ignored)" if parsed is not None else "")
 
-    engine.reload_lists()
-    engine.reload_scopes()
+    engine.reload()
     return redirect(
         f"{base_path}/{list_id}/edit",
         notice=f"Saved {name}; {assigned} scoped assignment{'s' if assigned != 1 else ''}{replaced_notice}",
@@ -1958,8 +2018,9 @@ async def edit_list(list_id: int, request: Request):
 
 
 @app.post("/admin/lists/{list_id}/toggle")
-async def toggle_list(list_id: int, request: Request):
-    await require_post_session(request)
+@admin_action(require_session)
+def toggle_list(list_id: int, request: Request):
+    require_post_session(request)
     with db.connect() as con:
         row = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
         if not row:
@@ -1974,8 +2035,9 @@ async def toggle_list(list_id: int, request: Request):
 
 
 @app.post("/admin/lists/{list_id}/delete")
-async def delete_list(list_id: int, request: Request):
-    await require_post_session(request)
+@admin_action(require_session)
+def delete_list(list_id: int, request: Request):
+    require_post_session(request)
     with db.connect() as con:
         row = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
         if not row:
@@ -2366,8 +2428,9 @@ def _normalize_scope_target(kind: str, target: str) -> str:
 
 
 @app.post("/admin/scopes")
-async def add_scope(request: Request):
-    _, form = await require_post_session(request)
+@admin_action(require_session)
+def add_scope(request: Request):
+    _, form = require_post_session(request)
     name = str(form.get("name", "")).strip()
     kind = str(form.get("kind", "")).strip().lower()
     target_raw = str(form.get("target", ""))
@@ -2435,8 +2498,9 @@ async def add_scope(request: Request):
 
 
 @app.post("/admin/scopes/{scope_id}/edit")
-async def edit_scope(scope_id: int, request: Request):
-    _, form = await require_post_session(request)
+@admin_action(require_session)
+def edit_scope(scope_id: int, request: Request):
+    _, form = require_post_session(request)
     name = str(form.get("name", "")).strip()
     kind = str(form.get("kind", "")).strip().lower()
     target_raw = str(form.get("target", ""))
@@ -2508,8 +2572,9 @@ async def edit_scope(scope_id: int, request: Request):
 
 
 @app.post("/admin/scopes/{scope_id}/toggle")
-async def toggle_scope(scope_id: int, request: Request):
-    await require_post_session(request)
+@admin_action(require_session)
+def toggle_scope(scope_id: int, request: Request):
+    require_post_session(request)
     with db.connect() as con:
         con.execute("UPDATE scopes SET state=CASE state WHEN 'active' THEN 'paused' ELSE 'active' END WHERE id=?", (scope_id,))
     engine.reload_scopes()
@@ -2517,13 +2582,15 @@ async def toggle_scope(scope_id: int, request: Request):
 
 
 @app.post("/admin/scopes/{scope_id}/delete")
-async def delete_scope(scope_id: int, request: Request):
-    await require_post_session(request)
+@admin_action(require_session)
+def delete_scope(scope_id: int, request: Request):
+    require_post_session(request)
     with db.connect() as con:
         con.execute("DELETE FROM scopes WHERE id=?", (scope_id,))
     engine.reload_scopes()
     return redirect("/scopes", notice="Scope deleted")
 
+@app.get("/queries/rows", response_class=HTMLResponse)
 @app.get("/queries", response_class=HTMLResponse)
 def queries_page(
     request: Request,
@@ -2580,30 +2647,32 @@ def queries_page(
 
     with db.connect() as con:
         rows = con.execute(sql, args).fetchall()
-        server_rows = con.execute(
-            """
-            SELECT DISTINCT server_id
-            FROM query_log
-            WHERE server_id IS NOT NULL AND TRIM(server_id) <> ''
-            ORDER BY server_id COLLATE NOCASE
-            """
-        ).fetchall()
-        target_rows = con.execute(
-            """
-            SELECT DISTINCT matched_scope
-            FROM query_log
-            WHERE matched_scope IS NOT NULL AND TRIM(matched_scope) <> ''
-            ORDER BY matched_scope COLLATE NOCASE
-            """
-        ).fetchall()
-        blocklist_rows = con.execute(
-            """
-            SELECT DISTINCT matched_list
-            FROM query_log
-            WHERE matched_list IS NOT NULL AND TRIM(matched_list) <> ''
-            ORDER BY matched_list COLLATE NOCASE
-            """
-        ).fetchall()
+        rows_only = request.url.path == "/queries/rows"
+        if not rows_only:
+            server_rows = con.execute(
+                """
+                SELECT DISTINCT server_id
+                FROM query_log
+                WHERE server_id IS NOT NULL AND TRIM(server_id) <> ''
+                ORDER BY server_id COLLATE NOCASE
+                """
+            ).fetchall()
+            target_rows = con.execute(
+                """
+                SELECT DISTINCT matched_scope
+                FROM query_log
+                WHERE matched_scope IS NOT NULL AND TRIM(matched_scope) <> ''
+                ORDER BY matched_scope COLLATE NOCASE
+                """
+            ).fetchall()
+            blocklist_rows = con.execute(
+                """
+                SELECT DISTINCT matched_list
+                FROM query_log
+                WHERE matched_list IS NOT NULL AND TRIM(matched_list) <> ''
+                ORDER BY matched_list COLLATE NOCASE
+                """
+            ).fetchall()
 
     query_client_names = log_client_names(rows)
     display_timezone = system_default_timezone()
@@ -2617,6 +2686,9 @@ def queries_page(
         f'{query_details_html(r, format_timestamp_for_timezone(r["ts"], display_timezone))}</td></tr>'
         for r in rows
     ) or '<tr><td colspan="5" class="empty">No matching queries. Try a different domain or clear your filters.</td></tr>'
+
+    if rows_only:
+        return HTMLResponse(f'<table class="query-table"><tbody>{trs}</tbody></table><span class="result-count">{len(rows):,} results</span><div class="query-head"><p>Showing {len(rows)} most recent matching requests, including the DNS server, policy API scheme, and matched policy target · times shown in {esc(display_timezone)}.</p></div>', headers={"Cache-Control": "no-store"})
 
     server_options = '<option value="">All servers</option>' + "".join(
         f'<option value="{esc(row["server_id"])}"'
@@ -2688,16 +2760,20 @@ def security_page(request: Request):
     for k in keys:
         cards += f'''<article class="key-card"><div><h3>{esc(k["name"])}</h3><p class="mono">{esc(k["key_prefix"])}</p><small>Last used: {esc(k["last_used_at"] or "Never")}</small></div><span class="pill {"green" if k["enabled"] else "gray"}">{"Enabled" if k["enabled"] else "Disabled"}</span>
         <div class="actions"><form method="post" action="/admin/api-keys/{k["id"]}/toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button">{"Disable" if k["enabled"] else "Enable"}</button></form><form method="post" action="/admin/api-keys/{k["id"]}/delete"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button danger">Delete</button></form></div></article>'''
-    reveal = request.query_params.get("reveal")
+    reveal = getattr(request.state, "new_api_key", None)
     reveal_box = f'<div class="secret-box"><b>Copy this API key now</b><code>{esc(reveal)}</code><p>It will not be shown again.</p></div>' if reveal else ""
     body = f'''{reveal_box}<div class="split-grid"><section class="panel action-panel"><div class="panel-kicker">Console access</div><h3>Administrator credentials</h3><p class="panel-help">Update the account used to sign in to this Blockinator console.</p><form method="post" action="/admin/credentials" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><label>Username<input name="username" value="{esc(s.username)}" required></label><label>Current password<input type="password" name="current_password" required></label><label>New password<input type="password" name="new_password"></label><label>Confirm new password<input type="password" name="confirm_password"></label><button class="primary-button">Update credentials</button></form></section>
     <section class="panel action-panel" id="create-key"><div class="panel-kicker">Resolver access</div><h3>Create API key</h3><p class="panel-help">Give each DNS server its own named credential so keys can be rotated or revoked independently.</p><form method="post" action="/admin/api-keys" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><label class="full">Key name<input name="name" placeholder="Primary Technitium" required></label><button class="primary-button">Generate key</button></form></section></div>
     <section class="panel"><div class="panel-head"><div><h3>API keys</h3><p>Multiple resolvers can authenticate independently. Secrets are stored only as hashes.</p></div></div><div class="card-grid">{cards or '<div class="empty-card">No API keys.</div>'}</div></section>'''
-    return page(request, "Access & Security", "security", body, s)
+    response = page(request, "Access & Security", "security", body, s)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 @app.post("/admin/credentials")
-async def update_credentials(request: Request):
-    s, form = await require_post_session(request)
+@admin_action(require_session)
+def update_credentials(request: Request):
+    s, form = require_post_session(request)
     username = str(form.get("username","")).strip()
     current = str(form.get("current_password",""))
     new = str(form.get("new_password",""))
@@ -2710,21 +2786,24 @@ async def update_credentials(request: Request):
         return redirect("/security", error=str(e))
     ns = auth.create_session(s.user_id, canonical)
     response = redirect("/security", notice="Administrator credentials updated")
-    response.set_cookie(SESSION_COOKIE, ns.token, max_age=SESSION_TTL_SECONDS, httponly=True, samesite="strict", path="/")
+    set_session_cookie(response, request, ns)
     return response
 
 @app.post("/admin/api-keys")
-async def create_key(request: Request):
-    _, form = await require_post_session(request)
+@admin_action(require_session)
+def create_key(request: Request):
+    _, form = require_post_session(request)
     try:
         _id, raw = auth.create_api_key(str(form.get("name","")).strip())
-        return redirect("/security", notice="API key created") if not raw else redirect("/security?reveal=" + quote(raw), notice="API key created")
+        request.state.new_api_key = raw
+        return security_page(request)
     except ValueError as e:
         return redirect("/security", error=str(e))
 
 @app.post("/admin/api-keys/{key_id}/toggle")
-async def toggle_key(key_id: int, request: Request):
-    await require_post_session(request)
+@admin_action(require_session)
+def toggle_key(key_id: int, request: Request):
+    require_post_session(request)
     with db.connect() as con:
         row = con.execute("SELECT enabled FROM api_keys WHERE id=?", (key_id,)).fetchone()
     if not row:
@@ -2736,8 +2815,9 @@ async def toggle_key(key_id: int, request: Request):
     return redirect("/security", notice="API key state updated")
 
 @app.post("/admin/api-keys/{key_id}/delete")
-async def delete_key(key_id: int, request: Request):
-    await require_post_session(request)
+@admin_action(require_session)
+def delete_key(key_id: int, request: Request):
+    require_post_session(request)
     try:
         auth.delete_api_key(key_id)
     except ValueError as e:
@@ -2937,7 +3017,7 @@ def settings_page(request: Request):
             </div>
             <div class="record-type-note">
               <b>Short-circuit behavior</b>
-              <span>If a request contains any selected record type, the whole policy request is bypassed and is not written to the Query Log.</span>
+              <span>Selected record types are skipped. Other questions are still evaluated; only requests containing entirely ignored types bypass the Query Log.</span>
             </div>
             <button class="primary-button" type="submit">Save ignored record types</button>
           </form>
@@ -3151,6 +3231,15 @@ def settings_page(request: Request):
             <div><span>Database</span><b class="mono">{esc(db.backend_summary())}</b></div>
             <div><span>Decision API</span><b class="mono">/api/v1/decision</b></div>
             <div><span>Service</span><b>Blockinator</b></div>
+            <div><span>Policy generation</span><b>{engine.generation}</b></div>
+            <div><span>Policy reload</span><b>{esc(engine.last_reload_error or "Healthy")}</b></div>
+            <div><span>Query logger</span><b>{"Running" if engine.logger.thread.is_alive() else "Stopped"}</b></div>
+            <div><span>Log queue</span><b>{engine.logger.queue_depth:,}</b></div>
+            <div><span>Dropped log rows</span><b>{engine.logger.dropped_rows:,}</b></div>
+            <div><span>Uncertain log writes</span><b>{engine.logger.uncertain_rows:,}</b></div>
+            <div><span>Logger error</span><b>{esc(engine.logger.last_error or "None")}</b></div>
+            <div><span>List refresher</span><b>{"Running" if refresher.status()["running"] else "Stopped"}</b></div>
+            <div><span>Refresh error</span><b>{esc(refresher.last_error or "None")}</b></div>
             <div><span>Log age limit</span><b>{age_summary}</b></div>
             <div><span>Log row limit</span><b>{int(retention):,}</b></div>
             <div><span>Default timezone</span><b class="mono">{esc(default_timezone)}</b></div>
@@ -3188,8 +3277,9 @@ def settings_page(request: Request):
     return page(request, "System Settings", "settings", body, s)
 
 @app.post("/admin/settings/appearance")
-async def save_appearance_settings(request: Request):
-    _, form = await require_post_session(request)
+@admin_action(require_session)
+def save_appearance_settings(request: Request):
+    _, form = require_post_session(request)
     ui_theme = str(form.get("ui_theme", "dark")).strip().lower()
     if ui_theme not in {"dark", "light"}:
         return redirect(
@@ -3205,8 +3295,9 @@ async def save_appearance_settings(request: Request):
 
 
 @app.post("/admin/settings/ignored-record-types")
-async def save_ignored_record_types(request: Request):
-    _, form = await require_post_session(request)
+@admin_action(require_session)
+def save_ignored_record_types(request: Request):
+    _, form = require_post_session(request)
     allowed = {record_type for record_type, _description in DNS_RECORD_TYPE_OPTIONS}
     selected = {
         str(value).strip().upper()
@@ -3231,8 +3322,9 @@ async def save_ignored_record_types(request: Request):
 
 
 @app.post("/admin/settings")
-async def save_settings(request: Request):
-    _, form = await require_post_session(request)
+@admin_action(require_session)
+def save_settings(request: Request):
+    _, form = require_post_session(request)
     mode = str(form.get("block_response","nxdomain"))
     if mode not in {"nxdomain","refused","nodata","zero"}:
         mode = "nxdomain"
@@ -3296,11 +3388,11 @@ async def save_settings(request: Request):
     return redirect("/settings#general", notice=notice)
 
 
-async def _optional_upload_bytes(form, field_name: str, max_bytes: int = 1024 * 1024) -> bytes | None:
+def _optional_upload_bytes(form, field_name: str, max_bytes: int = 1024 * 1024) -> bytes | None:
     upload = form.get(field_name)
     if not getattr(upload, "filename", None):
         return None
-    data = await upload.read(max_bytes + 1)
+    data = read_upload(upload, max_bytes)
     if len(data) > max_bytes:
         raise ValueError(f"{field_name} exceeds the 1 MiB upload limit")
     if not data.strip():
@@ -3309,9 +3401,10 @@ async def _optional_upload_bytes(form, field_name: str, max_bytes: int = 1024 * 
 
 
 @app.post("/admin/settings/tls")
-async def save_tls_settings(request: Request):
-    _, form = await require_post_session(request)
-    current_tls_settings = await run_in_threadpool(tls_manager.load_settings)
+@admin_action(require_session)
+def save_tls_settings(request: Request):
+    _, form = require_post_session(request)
+    current_tls_settings = tls_manager.load_settings()
     requested_http_redirect = str(form.get("tls_http_redirect", "")) == "1"
     try:
         validate_http_redirect_change(
@@ -3333,14 +3426,12 @@ async def save_tls_settings(request: Request):
         http_redirect=requested_http_redirect,
     )
     try:
-        certificate_pem = await _optional_upload_bytes(form, "tls_certificate")
-        private_key_pem = await _optional_upload_bytes(form, "tls_private_key")
-        ca_root_pem = await _optional_upload_bytes(form, "tls_acme_ca_root")
+        certificate_pem = _optional_upload_bytes(form, "tls_certificate")
+        private_key_pem = _optional_upload_bytes(form, "tls_private_key")
+        ca_root_pem = _optional_upload_bytes(form, "tls_acme_ca_root")
         eab_hmac_raw = str(form.get("tls_acme_eab_hmac", ""))
         eab_hmac = eab_hmac_raw if eab_hmac_raw.strip() else None
-        await run_in_threadpool(
-            tls_manager.configure,
-            settings,
+        tls_manager.configure(settings,
             certificate_pem=certificate_pem,
             private_key_pem=private_key_pem,
             ca_root_pem=ca_root_pem,

@@ -71,7 +71,7 @@ def test_list_editor_uses_theme_aware_palette():
 
 def test_manual_domain_add_returns_to_unfiltered_full_list():
     source = Path("app/main.py").read_text(encoding="utf-8")
-    start = source.index("async def add_manual_list_domain")
+    start = source.index("def add_manual_list_domain")
     end = source.index('@app.post("/admin/lists/{list_id}/domains/remove")', start)
     handler = source[start:end]
 

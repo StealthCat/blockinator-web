@@ -58,9 +58,11 @@ Before first startup, replace at least:
 
 ```env
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=replace-with-a-long-random-password
-POLICY_API_KEY=change-this-long-random-api-key
+ADMIN_PASSWORD=<unique-password-at-least-12-characters>
+POLICY_API_KEY=<unique-random-key-at-least-24-characters>
 ```
+
+Generate each secret with `openssl rand -hex 32`. A fresh database refuses missing or known example credentials. Existing database credentials continue to take precedence.
 
 SQLite is the default:
 
@@ -122,7 +124,7 @@ Policy handling proceeds in this order:
 5. Most-specific matching Network.
 6. Unmatched-client fallback.
 
-The record-type bypass occurs before PTR observation, policy-target matching, list evaluation, and Query Log creation. If any question in the request uses an ignored type, Blockinator immediately returns an allow decision with reason `ignored_record_type`.
+The record-type bypass occurs before PTR observation, policy-target matching, list evaluation, and Query Log creation. If all questions use ignored types, Blockinator immediately returns an allow decision with reason `ignored_record_type`; otherwise non-ignored questions are evaluated normally.
 
 A paused matching target permits the query instead of continuing to a lower-priority target.
 
@@ -189,7 +191,7 @@ If a policy request contains any selected type, Blockinator:
 - does not create a Query Log row; and
 - does not add a response-time sample to Statistics.
 
-This is a request-level bypass: if a multi-question request contains one ignored type, the entire policy request is bypassed.
+Ignored types bypass only their own question; a mixed request still evaluates its other questions.
 
 ## Block lists and whitelists
 
@@ -720,9 +722,11 @@ Example blocked response:
 }
 ```
 
+The API validates client IP addresses, port ranges, DNS label/name lengths and accepts 1–16 questions per request. Policy request bodies are limited to 256 KiB and `wire_base64` to 87,380 characters. Invalid payloads return HTTP 422; oversized bodies return HTTP 413.
+
 When multiple DNS questions are supplied, Blockinator evaluates them in order and returns the first blocking decision. If none block, the first allow decision is returned.
 
-If any question uses a record type selected under **System Settings → Ignored records**, Blockinator short-circuits the request before PTR observation or policy evaluation. It returns an immediate allow decision with reason `ignored_record_type`; the request is not added to Query Log and does not contribute a response-time sample.
+Questions using types selected under **System Settings → Ignored records** are skipped individually; other questions still receive normal policy evaluation. Only when all questions are ignored does Blockinator short-circuit before PTR observation or policy evaluation. It returns an immediate allow decision with reason `ignored_record_type`; the request is not added to Query Log and does not contribute a response-time sample.
 
 ## System Settings
 
@@ -760,8 +764,8 @@ Shows application/storage information, the active ignored-record summary, proxy/
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `ADMIN_USERNAME` | Bootstrap administrator username | `admin` |
-| `ADMIN_PASSWORD` | Bootstrap administrator password | change-me value |
-| `POLICY_API_KEY` | Bootstrap API key | change-me value |
+| `ADMIN_PASSWORD` | Bootstrap administrator password | required on first startup |
+| `POLICY_API_KEY` | Bootstrap API key | required on first startup |
 | `DATABASE_BACKEND` | `sqlite` or `mysql` | `sqlite` |
 | `MYSQL_HOST` | MySQL hostname/address | blank |
 | `MYSQL_PORT` | MySQL TCP port | `3306` |
@@ -929,3 +933,16 @@ Selected feedback from the r/technitium community:
 > “it deserves to be called slop. I’d argue that “slop” is too kind”  
 > — Anonymous
 
+
+
+## Operational protections and monitoring
+
+- Administrator writes run in a separate four-thread pool with bounded admission. Saturation returns HTTP 503 with `Retry-After`; policy workers remain separate. Sign-in attempts are limited to 10 per peer and 100 globally per minute (HTTP 429). Configure trusted proxy forwarding correctly so peers are identified accurately.
+- Session cookies preserve HTTPS/`ADMIN_COOKIE_SECURE` settings after credential changes. New API keys appear only in the creating POST response with `Cache-Control: no-store` and no-referrer protection; copy them before leaving the page.
+- List downloads accept only HTTP(S). Every connection, including redirects, validates resolved addresses and connects to those exact addresses. Private/local destinations require explicit `BLOCKLIST_PRIVATE_HOSTS` entries (comma-separated exact hostnames or CIDRs). Example: `feeds.internal,10.20.0.0/16`. Environment HTTP proxies are intentionally ignored for these downloads. Uploads and pasted lists obey `MAX_BLOCKLIST_BYTES` too.
+- Policy rebuild writers are serialized; decisions continue using the current snapshot. List creation/replacement commits metadata, assignments and membership together. Changing source URL/format clears conditional-download validators so the next refresh reparses the source.
+- Query logging stays asynchronous. Confirmed pre-commit failures receive up to three write attempts. Ambiguous commits are counted as uncertain and never replayed, preventing duplicates. Shutdown allows up to five seconds to drain; logging is best-effort and cannot guarantee delivery during process termination or prolonged database outages.
+- `/healthz` reports process liveness. `/readyz` reports policy readiness and returns 503 following a failed reload. The authenticated `/api/v1/runtime` endpoint and **System Settings → Runtime** expose policy generation, logger queue/drop/failure metrics, and background worker state. Monitoring should alert on worker stoppage, errors, drops and uncertain writes separately from policy readiness.
+- Statistics snapshots are shared for five seconds per window/timezone. Query Log refresh requests only authenticated row fragments, avoiding repeated filter-option scans. Statistics refreshes time out after 15 seconds and resume after browser back/forward restoration.
+
+Run regression tests with `pip install -r requirements.txt pytest httpx==0.28.1` followed by `python -m pytest -q`.

@@ -137,17 +137,21 @@ class AuthManager:
         """
         with self.db.connect() as con:
             user_count = int(con.execute("SELECT COUNT(*) c FROM admin_users").fetchone()["c"])
+            key_count = int(con.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"])
+            password = os.getenv("ADMIN_PASSWORD", "")
+            raw = os.getenv("POLICY_API_KEY", "")
+            if user_count == 0 and (len(password) < 12 or password in {"change-this-admin-password", "replace-with-a-long-random-password"}):
+                raise ValueError("Set a unique ADMIN_PASSWORD of at least 12 characters before first startup")
+            if key_count == 0 and (len(raw) < 24 or raw == "change-this-long-random-api-key"):
+                raise ValueError("Set a unique POLICY_API_KEY of at least 24 characters before first startup")
             if user_count == 0:
                 username = os.getenv("ADMIN_USERNAME", "admin").strip() or "admin"
-                password = os.getenv("ADMIN_PASSWORD", "change-this-admin-password")
                 con.execute(
                     "INSERT INTO admin_users(username,password_hash) VALUES(?,?)",
                     (username, hash_password(password)),
                 )
 
-            key_count = int(con.execute("SELECT COUNT(*) c FROM api_keys").fetchone()["c"])
             if key_count == 0:
-                raw = os.getenv("POLICY_API_KEY", "change-this-long-random-api-key")
                 con.execute(
                     "INSERT INTO api_keys(name,key_hash,key_prefix) VALUES(?,?,?)",
                     ("Primary", hash_api_key(raw), key_prefix(raw)),
@@ -185,7 +189,7 @@ class AuthManager:
         with self.db.connect() as con:
             row = con.execute(
                 """
-                SELECT s.token_hash,s.user_id,s.csrf_token,s.expires_at,u.username
+                SELECT s.token_hash,s.user_id,s.csrf_token,s.expires_at,s.last_seen_at,u.username
                 FROM admin_sessions s JOIN admin_users u ON u.id=s.user_id
                 WHERE s.token_hash=?
                 """,
@@ -197,9 +201,7 @@ class AuthManager:
                 con.execute("DELETE FROM admin_sessions WHERE token_hash=?", (token_hash,))
                 return None
             # Touch at most once per minute to reduce writes.
-            last = con.execute(
-                "SELECT last_seen_at FROM admin_sessions WHERE token_hash=?", (token_hash,)
-            ).fetchone()["last_seen_at"]
+            last = row["last_seen_at"]
             if now - int(last) >= 60:
                 con.execute("UPDATE admin_sessions SET last_seen_at=? WHERE token_hash=?", (now, token_hash))
         return AdminSession(

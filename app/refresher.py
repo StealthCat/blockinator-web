@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import threading
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Protocol
@@ -53,6 +54,12 @@ class BlocklistRefresher:
         self._thread: threading.Thread | None = None
         self._run_lock = threading.Lock()
         self._write_lock = threading.Lock()
+        self.last_cycle_at = None
+        self.last_error = None
+
+    def status(self):
+        return {"running": bool(self._thread and self._thread.is_alive()),
+                "last_cycle_at": self.last_cycle_at, "last_error": self.last_error}
 
     def _reload_policy_lists(self) -> None:
         reload_lists = getattr(self.engine, "reload_lists", None)
@@ -84,10 +91,12 @@ class BlocklistRefresher:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                self.refresh_due_once()
-            except Exception:
+                results = self.refresh_due_once()
+                self.last_cycle_at = datetime.now(timezone.utc).isoformat()
+                self.last_error = "One or more sources failed" if any(r.error for r in results) else None
+            except Exception as exc:
                 # A refresh worker failure must never affect DNS serving.
-                pass
+                self.last_error = type(exc).__name__
             self._stop.wait(self.poll_seconds)
 
     def due_list_ids(self) -> list[int]:

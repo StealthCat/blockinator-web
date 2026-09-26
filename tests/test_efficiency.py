@@ -155,13 +155,13 @@ def test_ignored_record_type_short_circuits_without_log_row():
         temp_dir.cleanup()
 
 
-def test_any_ignored_question_short_circuits_multi_question_request():
+def test_ignored_question_cannot_bypass_other_blocked_questions():
     temp_dir, db, engine = _engine()
     request = {
         "client": {"ip": "192.0.2.10"},
         "dns": {
             "questions": [
-                {"name": "example.com", "type": "A", "class": "IN"},
+                {"name": "ads.example.com", "type": "A", "class": "IN"},
                 {"name": "example.com", "type": "TXT", "class": "IN"},
             ]
         },
@@ -171,9 +171,10 @@ def test_any_ignored_question_short_circuits_multi_question_request():
         engine.reload_settings()
 
         decision, row = engine.decide_with_log_row(request)
-        assert decision.block is False
-        assert decision.reason == "ignored_record_type"
-        assert row is None
+        assert decision.block is True
+        assert decision.reason == "blocklist_match"
+        assert row is not None
+        assert row["qtype"] == "A"
     finally:
         engine.close()
         temp_dir.cleanup()

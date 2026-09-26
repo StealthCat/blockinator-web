@@ -264,6 +264,14 @@ class QueryLogger:
         self._rows_since_prune = 0
         self.q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=10000)
         self.stop_event = threading.Event()
+        self._shutdown_deadline = float("inf")
+        self._pending = []
+        self._batch_attempts = 0
+        self.dropped_rows = 0
+        self.write_failures = 0
+        self.uncertain_rows = 0
+        self.last_error = None
+        self._metrics_lock = threading.Lock()
 
         self.thread = threading.Thread(
             target=self._run,
@@ -288,15 +296,30 @@ class QueryLogger:
             self.capture_request_json = bool(capture_request_json)
 
     def submit(self, row: dict[str, Any]) -> None:
-        try:
-            self.q.put_nowait(row)
-        except queue.Full:
-            # DNS decisions must never wait for logging.
-            pass
+        with self._metrics_lock:
+            if self.stop_event.is_set():
+                self.dropped_rows += 1
+                return
+            try:
+                self.q.put_nowait(row)
+            except queue.Full:
+                self.dropped_rows += 1
+
+    def status(self):
+        with self._metrics_lock:
+            return {"running": self.thread.is_alive(), "queue_depth": self.queue_depth,
+                    "pending_rows": len(self._pending), "dropped_rows": self.dropped_rows,
+                    "write_failures": self.write_failures, "uncertain_rows": self.uncertain_rows,
+                    "last_error": self.last_error}
+
+    def _keep_running(self):
+        return (not self.stop_event.is_set() or
+                ((not self.q.empty() or self._pending) and monotonic_time.monotonic() < self._shutdown_deadline))
 
     def close(self) -> None:
+        self._shutdown_deadline = monotonic_time.monotonic() + 5.0
         self.stop_event.set()
-        self.thread.join(timeout=2.0)
+        self.thread.join(timeout=5.0)
 
     def prune_now(self, now_utc: datetime | None = None) -> tuple[int, int]:
         with self.db.connect() as con:
@@ -329,23 +352,31 @@ class QueryLogger:
         # Keep the logger's database connection on its dedicated writer thread.
         # This avoids a SQLite connection setup (and, for MySQL, a network
         # handshake) for every query batch.
-        while not self.stop_event.is_set():
+        while self._keep_running():
             try:
                 with self.db.connect() as con:
                     self._run_connected(con)
-            except Exception:
-                # Reconnect after transient database failures without affecting
-                # the DNS decision path.
-                self.stop_event.wait(0.1)
+            except Exception as exc:
+                with self._metrics_lock:
+                    self.write_failures += 1
+                    self.last_error = type(exc).__name__
+                # Bound retry rate, including during shutdown draining.
+                threading.Event().wait(0.1)
+        with self._metrics_lock:
+            self.dropped_rows += len(self._pending) + self.q.qsize()
+            self._pending = []
+            while not self.q.empty():
+                self.q.get_nowait()
 
     def _run_connected(self, con) -> None:
-        while not self.stop_event.is_set():
-            batch: list[dict[str, Any]] = []
-
-            try:
-                batch.append(self.q.get(timeout=0.25))
-            except queue.Empty:
-                pass
+        while self._keep_running():
+            batch = self._pending
+            if not batch:
+                self._batch_attempts = 0
+                try:
+                    batch.append(self.q.get(timeout=0.25))
+                except queue.Empty:
+                    pass
             while len(batch) < 250:
                 try:
                     batch.append(self.q.get_nowait())
@@ -355,7 +386,9 @@ class QueryLogger:
             if not batch:
                 continue
 
+            self._pending = batch
             inserted_rows = len(batch)
+            commit_started = False
             try:
                 con.execute("BEGIN")
                 con.executemany(
@@ -408,11 +441,52 @@ class QueryLogger:
                     self._last_prune = monotonic_time.monotonic()
                     self._rows_since_prune = 0
 
+                commit_started = True
                 con.execute("COMMIT")
+                self._pending = []
+                self._batch_attempts = 0
+                self.last_error = None
             except Exception:
-                if con.in_transaction:
-                    con.execute("ROLLBACK")
+                rollback_confirmed = False
+                try:
+                    if con.in_transaction:
+                        con.execute("ROLLBACK")
+                    rollback_confirmed = True
+                except Exception:
+                    pass
+                self._batch_attempts += 1
+                # Retry only a confirmed pre-commit rollback. An ambiguous commit
+                # is never replayed, which prevents duplicate log rows.
+                if commit_started or not rollback_confirmed or self._batch_attempts >= 3:
+                    with self._metrics_lock:
+                        if commit_started:
+                            self.uncertain_rows += len(batch)
+                        else:
+                            self.dropped_rows += len(batch)
+                    self._pending = []
                 raise
+
+
+def serialized_reload(method):
+    from functools import wraps
+
+    @wraps(method)
+    def rebuild(self, *args, **kwargs):
+        with self._reload_lock:
+            try:
+                result = method(self, *args, **kwargs)
+            except Exception as exc:
+                self._reload_errors[method.__name__] = type(exc).__name__
+                self.last_reload_error = ", ".join(f"{name}: {error}" for name, error in self._reload_errors.items())
+                raise
+            self.generation += 1
+            if method.__name__ == "reload":
+                self._reload_errors.clear()
+            else:
+                self._reload_errors.pop(method.__name__, None)
+            self.last_reload_error = ", ".join(f"{name}: {error}" for name, error in self._reload_errors.items()) or None
+            return result
+    return rebuild
 
 
 class PolicyEngine:
@@ -423,6 +497,10 @@ class PolicyEngine:
     ) -> None:
         self.db = db
         self._write_lock = threading.RLock()
+        self._reload_lock = threading.RLock()
+        self.generation = 0
+        self.last_reload_error = None
+        self._reload_errors = {}
         self._owns_rdns = rdns is None
         self.rdns = rdns or ReverseDnsResolver()
         self._active_list_cache: tuple[PolicySnapshot | None, int, int] = (None, -1, 0)
@@ -495,8 +573,10 @@ class PolicyEngine:
     ) -> None:
         mapping.setdefault(key, []).append(scope)
 
+    @serialized_reload
     def reload(self) -> None:
         with self.db.connect() as con:
+            con.execute("BEGIN")
             settings = {
                 str(r["key"]): str(r["value"])
                 for r in con.execute("SELECT `key` AS `key`,value FROM settings")
@@ -768,6 +848,7 @@ class PolicyEngine:
     def _policy_settings_from_rows(rows) -> dict[str, str]:
         return {str(row["key"]): str(row["value"]) for row in rows}
 
+    @serialized_reload
     def reload_settings(self) -> None:
         with self.db.connect() as con:
             settings = self._policy_settings_from_rows(
@@ -831,8 +912,10 @@ class PolicyEngine:
             blocklist_mask=mask,
         )
 
+    @serialized_reload
     def reload_lists(self) -> None:
         with self.db.connect() as con:
+            con.execute("BEGIN")
             list_rows = con.execute(
                 "SELECT * FROM blocklists ORDER BY id"
             ).fetchall()
@@ -947,12 +1030,14 @@ class PolicyEngine:
             )
             self._active_list_cache = (None, -1, 0)
 
+    @serialized_reload
     def reload_scopes(self) -> None:
         for _attempt in range(2):
             base = self._snapshot
             bit_for_list_id = base.bit_for_list_id
 
             with self.db.connect() as con:
+                con.execute("BEGIN")
                 memberships: dict[int, set[int]] = {}
                 for row in con.execute(
                     "SELECT scope_id,blocklist_id FROM scope_blocklists"
@@ -1441,18 +1526,16 @@ class PolicyEngine:
     ) -> tuple[Decision, dict[str, Any] | None]:
         """Evaluate a policy request and optionally build its asynchronous log row.
 
-        Requests containing an ignored DNS record type are short-circuited before
-        PTR observation, scope/list evaluation, or query-log creation.
+        Ignored questions are skipped individually. Requests with only ignored
+        types bypass PTR observation, policy evaluation and query logging.
         """
         client = request_obj.get("client") or {}
         dns = request_obj.get("dns") or {}
         questions = dns.get("questions") or []
         client_ip = str(client.get("ip", ""))
 
-        if any(
-            self.should_ignore_record_type(question.get("type"))
-            for question in questions
-        ):
+        evaluated = [q for q in questions if not self.should_ignore_record_type(q.get("type"))]
+        if questions and not evaluated:
             return (
                 Decision(
                     False,
@@ -1461,6 +1544,8 @@ class PolicyEngine:
                 ),
                 None,
             )
+
+        questions = evaluated
 
         # Observation is an in-memory, deduplicated operation only. PTR DNS and
         # database work run on the dedicated resolver manager after the request.
