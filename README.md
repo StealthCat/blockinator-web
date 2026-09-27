@@ -8,7 +8,7 @@
 
 It accepts authenticated DNS query metadata, applies configurable pre-policy record-type bypasses, resolves the applicable client policy, evaluates whitelists and block lists, and returns an allow/block decision. The web console provides policy targeting, list management, schedules, live statistics, query history, authentication, SQLite/MySQL-backed persistence, and managed HTTPS.
 
-Blockinator is available as a prebuilt [Docker Hub image](https://hub.docker.com/r/stealthcat128/blockinator). Use Docker Compose with Caddy for managed HTTPS, or run the application alone for HTTP. It supports either:
+The primary installation method is to **clone this repository and run Docker Compose**, which builds Blockinator locally and starts Caddy for managed HTTPS. A prebuilt [Docker Hub image](https://hub.docker.com/r/stealthcat128/blockinator) is available as an alternative. It supports either:
 
 - **SQLite** — local, zero-configuration persistence and the default backend.
 - **MySQL 8.x** — remote persistence with connection pooling and optional TLS.
@@ -46,32 +46,21 @@ The console includes dark and light themes, scalable SVG branding and icons, and
 - API-key authentication for resolvers and database-backed administrator sessions.
 - Lock-free policy reads through immutable in-memory snapshots.
 
-## Install from Docker Hub
+## Quick start: Git clone and Docker Compose (recommended)
 
-Published image: **`stealthcat128/blockinator`**. Release `1.19.2` and `latest`
-support **Linux AMD64 and ARM64**. The examples pin `1.19.2` for predictable
-upgrades. Pulling `latest` does not update an already-running container.
+This is the primary installation method. It builds the application from the
+checked-out source and starts it alongside Caddy. Requirements: Docker Engine,
+Docker Compose v2, Git, Bash, and OpenSSL. Run these commands on the Docker host;
+use `sudo` for Docker if your account requires it.
 
-Choose one deployment below. **Compose with Caddy is recommended** for the full
-HTTPS/certificate-management features. Standalone Docker serves HTTP only.
-Both require credentials before the first startup; there is no default password.
-
-### Recommended: Docker Compose with Caddy
-
-Requirements: Docker Engine, Docker Compose v2, Git, Bash, and OpenSSL. Run the
-commands on the Docker host. Use `sudo` for Docker if your account requires it.
-
-#### 1. Get the matching deployment configuration
+### 1. Clone the repository
 
 ```bash
-git clone --branch release/v1.19.2 --single-branch https://github.com/StealthCat/blockinator-web.git
+git clone https://github.com/StealthCat/blockinator-web.git
 cd blockinator-web
 ```
 
-This obtains the Compose and Caddy configuration for the release. The application
-will be pulled from Docker Hub; no local image build is needed.
-
-#### 2. Create first-run credentials
+### 2. Create first-run credentials
 
 For a **new installation**, run this Bash block to create a private `.env` file
 with randomly generated credentials. It refuses to overwrite an existing file.
@@ -109,6 +98,90 @@ cat .env
 Keep this file private. Once the database is initialized, change credentials in
 **Access & Security**. Changing `.env` does not reset existing database credentials.
 
+### 3. Build and start Blockinator
+
+```bash
+docker compose up -d --build
+```
+
+Compose builds Blockinator locally and pulls the Caddy image. No Docker Hub
+override file is needed. SQLite is the default; for MySQL, configure `.env` using
+[Using MySQL instead of SQLite](#using-mysql-instead-of-sqlite) before starting.
+
+### 4. Open and configure Blockinator
+
+Open **`http://DOCKER-HOST:8080/`** and sign in as `admin` using the password in
+`.env`. Create your networks/endpoints, add block lists or whitelists, and configure
+the companion Technitium plugin with:
+
+- **Endpoint:** `http://DOCKER-HOST:8080/api/v1/decision`
+- **API key:** the `POLICY_API_KEY` value from `.env`, or a key created in **Access & Security**.
+
+For HTTPS, open **System Settings → HTTPS & TLS**, then configure an uploaded
+certificate or ACME. See [HTTPS and TLS](#https-and-tls) for hostname, port, and
+certificate settings. The default HTTPS port is `8443`; setting `HTTPS_PORT=443`
+and `POLICY_PORT=80` in `.env` uses standard host ports after recreating the stack.
+ACME validation must be reachable at the ports required by your chosen CA.
+
+SQLite data is persisted at `./data/policy.db`; TLS files and Caddy state are also
+under `./data`. Preserve that directory and `.env` when recreating containers.
+The Caddy admin API and application port stay inside the Compose network.
+
+Check status and logs:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 blockinator caddy
+```
+
+### Updating a Git clone installation
+
+Back up `.env` and `./data` before updating (stop the stack for a consistent SQLite
+backup); back up remote MySQL separately if used. From the existing project directory:
+
+```bash
+docker compose stop
+# Back up .env and ./data now; back up remote MySQL separately if used.
+git pull --ff-only
+docker compose up -d --build
+```
+
+Keep the same project directory and persistent data. Review release notes for
+configuration changes before upgrading. Use this procedure for the source-built
+installation; Docker Hub deployments have their own update steps below.
+
+## Alternative: install from Docker Hub
+
+Published image: **`stealthcat128/blockinator`**. Release `1.19.2` and `latest`
+support **Linux AMD64 and ARM64**. The examples pin `1.19.2` for predictable
+upgrades. Pulling `latest` does not update an already-running container.
+
+Use this alternative if you prefer a prebuilt image instead of building from the
+Git checkout. Within this alternative, Compose with Caddy provides the full
+HTTPS/certificate-management features; standalone Docker serves HTTP only.
+Both require credentials before the first startup; there is no default password.
+
+### Docker Hub with Docker Compose and Caddy
+
+Requirements: Docker Engine, Docker Compose v2, Git, Bash, and OpenSSL. Run the
+commands on the Docker host. Use `sudo` for Docker if your account requires it.
+
+#### 1. Get the matching deployment configuration
+
+```bash
+git clone --branch release/v1.19.2 --single-branch https://github.com/StealthCat/blockinator-web.git
+cd blockinator-web
+```
+
+This obtains the Compose and Caddy configuration for the release. The application
+will be pulled from Docker Hub; no local image build is needed.
+
+#### 2. Create first-run credentials
+
+Create `.env` using [Create first-run credentials](#2-create-first-run-credentials)
+in the primary installation instructions. Use the same password/API-key requirements
+and optional database settings. Preserve an existing `.env` when changing methods.
+
 #### 3. Select the Docker Hub image
 
 Create an override alongside `docker-compose.yml`:
@@ -134,24 +207,10 @@ Caddy is pulled separately; it is not bundled into the Blockinator image.
 
 #### 4. Open and configure Blockinator
 
-Open **`http://DOCKER-HOST:8080/`** and sign in as `admin` using the password in
-`.env`. Create your networks/endpoints, add block lists or whitelists, and configure
-the companion Technitium plugin with:
-
-- **Endpoint:** `http://DOCKER-HOST:8080/api/v1/decision`
-- **API key:** the `POLICY_API_KEY` value from `.env`, or a key created in **Access & Security**.
-
-For HTTPS, open **System Settings → HTTPS & TLS**, then configure an uploaded
-certificate or ACME. See [HTTPS and TLS](#https-and-tls) for hostname, port, and
-certificate settings. The default HTTPS port is `8443`; setting `HTTPS_PORT=443`
-and `POLICY_PORT=80` in `.env` uses standard host ports after recreating the stack.
-ACME validation must be reachable at the ports required by your chosen CA.
-
-SQLite data is persisted at `./data/policy.db`; TLS files and Caddy state are also
-under `./data`. Preserve that directory and `.env` when recreating containers.
-The Caddy admin API and application port stay inside the Compose network.
-
-Check status and logs:
+Open **`http://DOCKER-HOST:8080/`**. Login, Technitium integration, HTTPS configuration,
+and the `./data` persistence layout are the same as [Open and configure Blockinator](#4-open-and-configure-blockinator)
+in the primary setup. For this Docker Hub deployment, use both Compose files when
+checking status or logs:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.hub.yml ps
@@ -265,22 +324,6 @@ method automatically updates a running deployment.
 | Port already allocated / container name already in use | An existing deployment may already occupy that port/name. Choose another host port/name or deliberately replace the old deployment; do not run both examples unchanged on the same host. |
 | New environment password does not change the login | Credentials are already stored in the database. Manage them through **Access & Security**; preserve the database. |
 | HTTPS/ACME does not work with the standalone image | Deploy the Caddy Compose stack or manage TLS with your own external reverse proxy. |
-
-## Build from source
-
-For development, clone the repository, configure `.env` as above (or copy and edit
-`.env.example`), and run the base Compose file without the Docker Hub override:
-
-```bash
-git clone https://github.com/StealthCat/blockinator-web.git
-cd blockinator-web
-cp .env.example .env
-# Set unique ADMIN_PASSWORD and POLICY_API_KEY values in .env first.
-docker compose -f docker-compose.yml up -d --build
-```
-
-The console, ports, database options, and data locations are the same as the
-recommended Compose deployment above.
 
 ## Policy model
 
@@ -1121,7 +1164,7 @@ Run regression tests with `pip install -r requirements.txt pytest httpx==0.28.1`
 
 ## Docker Hub publishing (maintainers)
 
-For installation instructions, see [Install from Docker Hub](#install-from-docker-hub).
+For installation instructions, see [Alternative: install from Docker Hub](#alternative-install-from-docker-hub).
 
 The `Publish Docker Hub` GitHub Actions workflow builds published stable release
 source for `linux/amd64` and `linux/arm64`, after the SQLite/Docker and MySQL test
