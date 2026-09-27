@@ -325,3 +325,71 @@ def test_login_rate_limit_is_bounded():
     for _ in range(10): limiter.check("peer")
     with pytest.raises(HTTPException) as error: limiter.check("peer")
     assert error.value.status_code == 429
+
+
+def test_query_paging_filters_and_snapshot(web, browser):
+    import html
+    import re
+    from urllib.parse import parse_qs, urlsplit
+
+    client, _ = browser
+    with web.db.connect() as con:
+        con.execute("DELETE FROM query_log")
+        for i in range(63):
+            con.execute("INSERT INTO query_log(ts,client_ip,qname,qtype,blocked,server_id,matched_scope) VALUES(?,?,?,?,?,?,?)",
+                        ("2026-09-27T18:00:00+00:00", "192.0.2.1", f"page-{i}.example", "A", 1, "paging-server", "Paging scope"))
+    response = client.get("/queries", params={"q": "page-", "server": "paging-server", "target": "Paging scope", "decision": "blocked", "limit": 25, "refresh": 5})
+    assert response.status_code == 200
+    assert "Showing 1–25 of 63" in response.text
+    assert 'data-query-snapshot="0"' in response.text
+    first_ids = re.findall(r'data-query-row="(\d+)"', response.text)
+    next_url = html.unescape(re.search(r'href="([^"]+)">Next</a>', response.text)[1])
+    query = parse_qs(urlsplit(next_url).query)
+    assert query["target"] == ["Paging scope"]
+    assert query["refresh"] == ["5"]
+    with web.db.connect() as con:
+        con.execute("INSERT INTO query_log(ts,client_ip,qname,qtype,blocked,server_id,matched_scope) VALUES(?,?,?,?,?,?,?)",
+                    ("2026-09-27T18:00:01+00:00", "192.0.2.1", "page-new.example", "A", 1, "paging-server", "Paging scope"))
+    second = client.get(next_url)
+    assert 'data-query-snapshot="1"' in second.text
+    assert "Showing 26–50 of 63" in second.text
+    assert not set(first_ids) & set(re.findall(r'data-query-row="(\d+)"', second.text))
+    assert "page-new.example" not in second.text
+    last = client.get("/queries", params={"q": "page-", "limit": 30, "page": 999})
+    assert "Showing 61–64 of 64" in last.text
+    assert "Page 3 of 3" in last.text
+    assert 'name="limit" min="25" max="500" step="1" value="30"' in last.text
+    fragment = client.get(next_url.replace("/queries?", "/queries/rows?"))
+    assert "Showing 26–50 of 63" in fragment.text
+    assert 'class="query-pagination"' in fragment.text
+    empty = client.get("/queries?q=definitely-no-matches")
+    assert "Showing 0–0 of 0" in empty.text
+    assert '>Next</a>' not in empty.text
+    assert '>Previous</a>' not in empty.text
+
+
+def test_query_date_range(web, browser, monkeypatch):
+    client, _ = browser
+    monkeypatch.setattr(web, "system_default_timezone", lambda: "America/New_York")
+    with web.db.connect() as con:
+        con.execute("DELETE FROM query_log")
+        for stamp, name in (("2026-09-27T17:59:59.999999+00:00", "before.example"),
+                            ("2026-09-27T18:00:00+00:00", "start.example"),
+                            ("2026-09-27T18:00:00.999999+00:00", "end.example"),
+                            ("2026-09-27T18:00:01+00:00", "after.example")):
+            con.execute("INSERT INTO query_log(ts,client_ip,qname,qtype,blocked) VALUES(?,?,?,?,?)",
+                        (stamp, "192.0.2.1", name, "A", 1))
+    bounds = {"start": "2026-09-27T14:00:00", "end": "2026-09-27T14:00:00"}
+    for path in ("/queries", "/queries/rows"):
+        response = client.get(path, params=bounds)
+        assert response.status_code == 200
+        assert "start.example" in response.text and "end.example" in response.text
+        assert "before.example" not in response.text and "after.example" not in response.text
+        assert "Showing 1–2 of 2" in response.text
+    assert "Showing 1–3 of 3" in client.get("/queries", params={"start": bounds["start"]}).text
+    assert "Showing 1–3 of 3" in client.get("/queries", params={"end": bounds["end"]}).text
+    for params in ({"start": "nonsense"}, {"start": "2026-03-08T02:30"},
+                   {"start": "2026-09-27T14:01", "end": bounds["end"]}):
+        assert client.get("/queries", params=params).status_code == 400
+    for params in ({"page": 0}, {"page": "bad"}, {"snapshot": -1}):
+        assert client.get("/queries", params=params).status_code == 422

@@ -44,3 +44,27 @@ def format_timestamp_for_timezone(
     hour = str(int(local.strftime("%I")))
     time_part = local.strftime(":%M:%S %p %Z")
     return f"{date_part} {hour}{time_part}"
+
+
+def query_range_bound(value: str, timezone_name: str, *, end: bool = False) -> str | None:
+    """Convert a wall-clock input to an indexed UTC boundary (end is exclusive)."""
+    import re
+    from datetime import timedelta
+
+    if not value:
+        return None
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?", value):
+        raise ValueError("Use a date and time in YYYY-MM-DDTHH:MM:SS format")
+    try:
+        local = datetime.fromisoformat(value)
+        tz = ZoneInfo(timezone_name)
+        # On fall-back days include both occurrences of an ambiguous wall time.
+        aware = local.replace(tzinfo=tz, fold=1 if end else 0)
+        utc = aware.astimezone(timezone.utc)
+        if utc.astimezone(tz).replace(tzinfo=None) != local:
+            raise ValueError("This local time does not exist because of a daylight-saving transition")
+        if end:
+            utc += timedelta(seconds=1)
+        return utc.isoformat(timespec="seconds")
+    except (OverflowError, ZoneInfoNotFoundError) as exc:
+        raise ValueError("Date/time is outside the supported range") from exc

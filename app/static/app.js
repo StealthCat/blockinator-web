@@ -250,6 +250,10 @@
     if (!panel) return;
     var seconds = parseInt(panel.getAttribute("data-query-log-refresh") || "0", 10);
     var status = panel.querySelector("[data-query-refresh-status]");
+    if (panel.getAttribute("data-query-snapshot") === "1") {
+      if (status) status.textContent = "Browsing a snapshot · select Latest results to resume live updates";
+      return;
+    }
     if (!Number.isFinite(seconds) || seconds <= 0) {
       if (status) status.textContent = "Auto refresh off";
       return;
@@ -299,6 +303,8 @@
         panel.querySelector(".query-table tbody").replaceWith(next);
         wrap.scrollLeft = scrollLeft;
         window.scrollTo(x, y);
+        var pagination = incoming.querySelector(".query-pagination");
+        if (pagination) panel.querySelector(".query-pagination").replaceWith(pagination);
         var count = incoming.querySelector(".result-count");
         if (count) panel.querySelector(".result-count").textContent = count.textContent;
         var description = incoming.querySelector(".query-head p");

@@ -19,7 +19,7 @@ The primary installation method is to **clone this repository and run Docker Com
 
 The console includes dark and light themes, scalable SVG branding and icons, and responsive navigation. Select the theme under **System Settings → Appearance**.
 
-- **Query Log:** filter by domain, client, DNS server, policy target, list, or decision. Expand **Details** in a row for the full timestamp, DNS server, client IP, record type, policy API scheme, matched policy target, DNS transport, and client port.
+- **Query Log:** filter by domain, client, DNS server, policy target, list, decision, or date/time range. Page through matching history and choose 25–500 results per page. Expand **Details** in a row for the full timestamp, DNS server, client IP, record type, policy API scheme, matched policy target, DNS transport, and client port.
 - **Table density:** choose Comfortable or Compact on Query Log. This browser-local preference also applies to other tables.
 - **Auto refresh:** applies when you submit the filter form; updates the table without reloading the page. Updates pause while you inspect an expanded record, focus a control, edit filters, or hide the tab. Submit edited filters to resume; refresh failures leave the previous results visible.
 - **Mobile navigation:** use Menu to open navigation; Escape closes it and returns focus. Navigation remains available when JavaScript is disabled.
@@ -599,10 +599,30 @@ Filters include:
 - querying DNS server;
 - matched policy target;
 - matched list;
-- decision state; and
-- result limit.
+- decision state;
+- date/time range; and
+- results per page.
 
 Optional auto-refresh intervals are available at 5, 10, 15, 30, or 60 seconds and preserve the active filter URL.
+
+### Query Log pagination and time ranges
+
+Use **Results per page** to choose any page size from 25 to 500. **First**,
+**Previous**, **Next**, and **Last** retain all active filters. The result count
+shows the total matches, and the heading shows the current row range. Applying
+filters or changing page size starts again on the first page.
+
+**From** and **Through** use the timezone named beside the fields (the system
+default timezone), not the browser timezone. Either boundary can be omitted.
+The end includes the entire selected second. Invalid or reversed ranges are
+rejected. During daylight-saving fall-back, ambiguous boundaries include both
+occurrences; nonexistent spring-forward times are rejected.
+
+Page navigation pins the newest query ID so incoming requests cannot shift
+results between pages. Auto refresh pauses while browsing that snapshot; choose
+**Latest results** to return to live results with the same filters. Normal log
+retention can still remove rows from a snapshot. Live refresh updates the rows,
+total count and page links together.
 
 ### Raw request JSON
 

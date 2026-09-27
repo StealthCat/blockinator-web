@@ -8,10 +8,10 @@ import secrets
 from datetime import datetime, time as dt_time, timezone
 from time import perf_counter_ns
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -26,7 +26,7 @@ from .policy import PolicyEngine, normalize_hostname_pattern
 from .rdns import ReverseDnsResolver
 from .refresher import BlocklistRefresher
 from .statistics import StatisticsCache
-from .timeutil import format_timestamp_for_timezone
+from .timeutil import format_timestamp_for_timezone, query_range_bound
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -2602,6 +2602,10 @@ def queries_page(
     decision: str = "",
     limit: int = 100,
     refresh: int = 0,
+    page_number: int = Query(1, alias="page", ge=1, le=10000000),
+    snapshot: int | None = Query(None, ge=0, le=9223372036854775807),
+    start: str = "",
+    end: str = "",
 ):
     s = require_session(request)
     clauses, args = [], []
@@ -2636,17 +2640,36 @@ def queries_page(
             "AND COALESCE(reason,'')<>'whitelist_match'"
         )
 
+    display_timezone = system_default_timezone()
+    try:
+        start_utc = query_range_bound(start, display_timezone)
+        end_utc = query_range_bound(end, display_timezone, end=True)
+        if start_utc and end_utc and start_utc >= end_utc:
+            raise ValueError("Start must be before or equal to end")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if start_utc:
+        clauses.append("ts >= ?")
+        args.append(start_utc)
+    if end_utc:
+        clauses.append("ts < ?")
+        args.append(end_utc)
+
     limit = max(25, min(limit, 500))
     refresh = refresh if refresh in {0, 5, 10, 15, 30, 60} else 0
-    sql = (
-        "SELECT * FROM query_log"
-        + (" WHERE " + " AND ".join(clauses) if clauses else "")
-        + " ORDER BY id DESC LIMIT ?"
-    )
-    args.append(limit)
-
+    pinned = snapshot is not None or page_number > 1
     with db.connect() as con:
-        rows = con.execute(sql, args).fetchall()
+        if snapshot is None:
+            snapshot = con.execute("SELECT COALESCE(MAX(id),0) AS latest FROM query_log").fetchone()["latest"]
+        clauses.append("id <= ?")
+        args.append(snapshot)
+        where = " WHERE " + " AND ".join(clauses)
+        total = con.execute("SELECT COUNT(*) AS total FROM query_log" + where, args).fetchone()["total"]
+        pages = max(1, (total + limit - 1) // limit)
+        page_number = min(page_number, pages)
+        offset = (page_number - 1) * limit
+        rows = con.execute("SELECT * FROM query_log" + where + " ORDER BY id DESC LIMIT ? OFFSET ?",
+                           [*args, limit, offset]).fetchall()
         rows_only = request.url.path == "/queries/rows"
         if not rows_only:
             server_rows = con.execute(
@@ -2687,8 +2710,25 @@ def queries_page(
         for r in rows
     ) or '<tr><td colspan="5" class="empty">No matching queries. Try a different domain or clear your filters.</td></tr>'
 
+    first = offset + 1 if rows else 0
+    last = offset + len(rows) if rows else 0
+    summary = f"Showing {first:,}–{last:,} of {total:,} matching requests · times shown in {display_timezone}."
+    parameters = dict(q=q, client=client, server=server, target=target, blocklist=blocklist,
+                      decision=decision, limit=limit, refresh=refresh, start=start, end=end)
+    def page_link(number, label):
+        url = "/queries?" + urlencode({**parameters, "page": number, "snapshot": snapshot})
+        return f'<a class="small-button" href="{esc(url)}">{label}</a>'
+    controls = []
+    if page_number > 1:
+        controls.extend([page_link(1, "First"), page_link(page_number - 1, "Previous")])
+    controls.append(f'<span aria-current="page">Page {page_number:,} of {pages:,}</span>')
+    if page_number < pages:
+        controls.extend([page_link(page_number + 1, "Next"), page_link(pages, "Last")])
+    latest_url = "/queries?" + urlencode(parameters)
+    controls.append(f'<a class="text-link" href="{esc(latest_url)}">Latest results</a>')
+    pagination = '<nav class="query-pagination" aria-label="Query log pages">' + "".join(controls) + '</nav>'
     if rows_only:
-        return HTMLResponse(f'<table class="query-table"><tbody>{trs}</tbody></table><span class="result-count">{len(rows):,} results</span><div class="query-head"><p>Showing {len(rows)} most recent matching requests, including the DNS server, policy API scheme, and matched policy target · times shown in {esc(display_timezone)}.</p></div>', headers={"Cache-Control": "no-store"})
+        return HTMLResponse(f'<table class="query-table"><tbody>{trs}</tbody></table><span class="result-count">{total:,} results</span><div class="query-head"><p>{esc(summary)}</p></div>{pagination}', headers={"Cache-Control": "no-store"})
 
     server_options = '<option value="">All servers</option>' + "".join(
         f'<option value="{esc(row["server_id"])}"'
@@ -2718,11 +2758,11 @@ def queries_page(
         )
     )
 
-    body = f'''<section class="panel" data-query-log-refresh="{refresh}">
+    body = f'''<section class="panel" data-query-log-refresh="{refresh}" data-query-snapshot="{1 if pinned else 0}">
       <div class="panel-head query-head">
         <div><div class="panel-kicker">DNS activity</div><h3>Decision history</h3>
-        <p>Showing {len(rows)} most recent matching requests, including the DNS server, policy API scheme, and matched policy target · times shown in {esc(display_timezone)}.</p></div>
-        <div class="query-toolbar"><label class="density-control">Density<select data-table-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><span class="result-count">{len(rows)} results</span></div>
+        <p>{esc(summary)}</p></div>
+        <div class="query-toolbar"><label class="density-control">Density<select data-table-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><span class="result-count">{total:,} results</span></div>
       </div>
       <form class="filter-bar query-filter-bar" method="get">
         <label>Domain<input name="q" value="{esc(q)}" placeholder="Domain contains…"></label>
@@ -2737,10 +2777,9 @@ def queries_page(
           <option value="whitelisted" {"selected" if decision=="whitelisted" else ""}>Whitelisted</option>
           <option value="allowed" {"selected" if decision=="allowed" else ""}>Allowed</option>
         </select></label>
-        <label>Result limit<select name="limit">
-          <option value="{limit}">{limit}</option>
-          <option>50</option><option>100</option><option>250</option><option>500</option>
-        </select></label>
+        <label>From ({esc(display_timezone)})<input type="datetime-local" step="1" name="start" value="{esc(start)}"></label>
+        <label>Through ({esc(display_timezone)})<input type="datetime-local" step="1" name="end" value="{esc(end)}"></label>
+        <label>Results per page<input type="number" name="limit" min="25" max="500" step="1" value="{limit}"></label>
         <label>Auto refresh<select name="refresh" title="Query log auto refresh interval">{refresh_options}</select></label>
         <button class="primary-button">Filter</button>
       </form>
@@ -2749,6 +2788,7 @@ def queries_page(
         <thead><tr><th>Domain / type</th><th>Client</th><th>Decision / match</th><th>Response time</th><th>Time / details</th></tr></thead>
         <tbody>{trs}</tbody>
       </table></div>
+      {pagination}
     </section>'''
     return page(request, "Query Log", "queries", body, s)
 

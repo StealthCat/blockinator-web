@@ -290,3 +290,7 @@ html[data-table-density="compact"] .query-domain small, html[data-table-density=
 @media (prefers-reduced-motion: reduce) {
   *, *:before, *:after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+.query-pagination { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; padding-top: 20px; }
+.query-pagination [aria-current] { font-variant-numeric: tabular-nums; }
+.query-filter-bar input[type="datetime-local"] { min-width: 0; width: 100%; }
