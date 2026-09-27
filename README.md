@@ -8,7 +8,7 @@
 
 It accepts authenticated DNS query metadata, applies configurable pre-policy record-type bypasses, resolves the applicable client policy, evaluates whitelists and block lists, and returns an allow/block decision. The web console provides policy targeting, list management, schedules, live statistics, query history, authentication, SQLite/MySQL-backed persistence, and managed HTTPS.
 
-Blockinator runs with Docker Compose and supports either:
+Blockinator is available as a prebuilt [Docker Hub image](https://hub.docker.com/r/stealthcat128/blockinator). Use Docker Compose with Caddy for managed HTTPS, or run the application alone for HTTP. It supports either:
 
 - **SQLite** — local, zero-configuration persistence and the default backend.
 - **MySQL 8.x** — remote persistence with connection pooling and optional TLS.
@@ -46,31 +46,161 @@ The console includes dark and light themes, scalable SVG branding and icons, and
 - API-key authentication for resolvers and database-backed administrator sessions.
 - Lock-free policy reads through immutable in-memory snapshots.
 
-## Quick start
+## Install from Docker Hub
 
-### 1. Create the local configuration
+Published image: **`stealthcat128/blockinator`**. Release `1.19.2` and `latest`
+support **Linux AMD64 and ARM64**. The examples pin `1.19.2` for predictable
+upgrades. Pulling `latest` does not update an already-running container.
+
+Choose one deployment below. **Compose with Caddy is recommended** for the full
+HTTPS/certificate-management features. Standalone Docker serves HTTP only.
+Both require credentials before the first startup; there is no default password.
+
+### Recommended: Docker Compose with Caddy
+
+Requirements: Docker Engine, Docker Compose v2, Git, Bash, and OpenSSL. Run the
+commands on the Docker host. Use `sudo` for Docker if your account requires it.
+
+#### 1. Get the matching deployment configuration
 
 ```bash
-cp .env.example .env
+git clone --branch release/v1.19.2 --single-branch https://github.com/StealthCat/blockinator-web.git
+cd blockinator-web
 ```
 
-Before first startup, replace at least:
+This obtains the Compose and Caddy configuration for the release. The application
+will be pulled from Docker Hub; no local image build is needed.
 
-```env
+#### 2. Create first-run credentials
+
+For a **new installation**, run this Bash block to create a private `.env` file
+with randomly generated credentials. It refuses to overwrite an existing file.
+
+```bash
+(
+  set -eu
+  umask 077
+  set -o noclobber
+  admin_password=$(openssl rand -hex 24)
+  policy_api_key=$(openssl rand -hex 32)
+  cat > .env <<EOF
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=<unique-password-at-least-12-characters>
-POLICY_API_KEY=<unique-random-key-at-least-24-characters>
-```
-
-Generate each secret with `openssl rand -hex 32`. A fresh database refuses missing or known example credentials. Existing database credentials continue to take precedence.
-
-SQLite is the default:
-
-```env
+ADMIN_PASSWORD=$admin_password
+POLICY_API_KEY=$policy_api_key
 DATABASE_BACKEND=sqlite
+TZ=UTC
+POLICY_PORT=8080
+HTTPS_PORT=8443
+EOF
+)
 ```
 
-To use MySQL instead:
+If `.env` already exists, keep it and edit the required values instead. Optional
+settings are listed in `.env.example`. Set `TZ` to your IANA timezone, such as
+`America/New_York`. The admin password must be at least **12 characters**, and
+the policy API key at least **24 characters**; known example credentials are rejected.
+
+View the generated credentials locally when needed:
+
+```bash
+cat .env
+```
+
+Keep this file private. Once the database is initialized, change credentials in
+**Access & Security**. Changing `.env` does not reset existing database credentials.
+
+#### 3. Select the Docker Hub image
+
+Create an override alongside `docker-compose.yml`:
+
+```bash
+cat > docker-compose.hub.yml <<'EOF'
+services:
+  blockinator:
+    image: stealthcat128/blockinator:1.19.2
+EOF
+```
+
+Pull and start both services:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.hub.yml pull
+docker compose -f docker-compose.yml -f docker-compose.hub.yml up -d --no-build
+```
+
+Always include both `-f` arguments when managing this deployment. `--no-build`
+prevents the base Compose file's development build configuration from being used.
+Caddy is pulled separately; it is not bundled into the Blockinator image.
+
+#### 4. Open and configure Blockinator
+
+Open **`http://DOCKER-HOST:8080/`** and sign in as `admin` using the password in
+`.env`. Create your networks/endpoints, add block lists or whitelists, and configure
+the companion Technitium plugin with:
+
+- **Endpoint:** `http://DOCKER-HOST:8080/api/v1/decision`
+- **API key:** the `POLICY_API_KEY` value from `.env`, or a key created in **Access & Security**.
+
+For HTTPS, open **System Settings → HTTPS & TLS**, then configure an uploaded
+certificate or ACME. See [HTTPS and TLS](#https-and-tls) for hostname, port, and
+certificate settings. The default HTTPS port is `8443`; setting `HTTPS_PORT=443`
+and `POLICY_PORT=80` in `.env` uses standard host ports after recreating the stack.
+ACME validation must be reachable at the ports required by your chosen CA.
+
+SQLite data is persisted at `./data/policy.db`; TLS files and Caddy state are also
+under `./data`. Preserve that directory and `.env` when recreating containers.
+The Caddy admin API and application port stay inside the Compose network.
+
+Check status and logs:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.hub.yml ps
+docker compose -f docker-compose.yml -f docker-compose.hub.yml logs --tail=100 blockinator caddy
+```
+
+### Standalone Docker: HTTP only
+
+For a minimal setup without Caddy, create a working directory and create `.env`
+using the credential-generation block above. No repository checkout is required.
+
+```bash
+mkdir -p ~/blockinator
+cd ~/blockinator
+# Create .env here using the first-run credential block above before continuing.
+```
+
+Start the application with a persistent named volume and published HTTP port:
+
+```bash
+docker run -d \
+  --name blockinator \
+  --restart unless-stopped \
+  --env-file ./.env \
+  -e FORWARDED_ALLOW_IPS=127.0.0.1 \
+  -p 8080:8080 \
+  -v blockinator-data:/data \
+  stealthcat128/blockinator:1.19.2
+```
+
+Open **`http://DOCKER-HOST:8080/`**. The administrator login and plugin API key are
+the same as described above. `-p 8080:8080` publishes the port on the host;
+`-v blockinator-data:/data` preserves SQLite data when the container is replaced.
+`POLICY_PORT` and `HTTPS_PORT` in `.env` are Compose settings and do not change
+this command's port mapping. For a different host port, change the left-hand port
+in `-p`, for example `-p 8180:8080`.
+
+This example trusts proxy headers only from loopback. If you put the application
+behind your own reverse proxy, configure `FORWARDED_ALLOW_IPS` for that trusted
+proxy. Built-in certificate/ACME controls require the managed Caddy setup above.
+
+```bash
+docker logs --tail=100 blockinator
+docker inspect --format '{{.State.Health.Status}}' blockinator
+```
+
+### Using MySQL instead of SQLite
+
+Before first startup, set these values in `.env`:
 
 ```env
 DATABASE_BACKEND=mysql
@@ -78,38 +208,79 @@ MYSQL_HOST=mysql.example.internal
 MYSQL_PORT=3306
 MYSQL_DATABASE=blockinator
 MYSQL_USER=blockinator
-MYSQL_PASSWORD=replace-with-a-long-random-password
+MYSQL_PASSWORD=<your-database-password>
 ```
 
-Blockinator creates and upgrades its own tables. The MySQL database and user must already exist, and that user needs the privileges required to create/alter Blockinator tables, indexes, views, and foreign keys.
+The MySQL database/user must already exist, with privileges to create/alter the
+application's tables, indexes, views, and foreign keys. See [Database backends](#database-backends)
+for pooling and TLS settings. In a container, `localhost` refers to that container,
+not the Docker host or another MySQL container.
 
-Changing `DATABASE_BACKEND` selects a different store at the next startup. It does **not** migrate data automatically. To preserve an existing installation while switching backends, stop Blockinator and use `tools/migrate_database.py` as described under **Offline database migration**.
+With MySQL, configuration, credentials, policy data, and query history live in the
+remote database; retain local `/data` storage for TLS material. Changing
+`DATABASE_BACKEND` selects a different store and does not migrate existing data.
+Use the [offline migration procedure](#offline-database-migration) when switching.
 
-### 2. Start Blockinator
+### Updating an existing Docker Hub deployment
+
+Back up your data before upgrading; see [Data and backups](#data-and-backups).
+For Compose, stop the stack for a consistent SQLite backup, preserve `./data` and
+`.env`, change the image tag in `docker-compose.hub.yml` to the desired published
+version, then pull and recreate:
 
 ```bash
-docker compose up -d --build
+docker compose -f docker-compose.yml -f docker-compose.hub.yml stop
+# Back up ./data and .env now; back up remote MySQL separately if used.
+# Edit the image tag in docker-compose.hub.yml before continuing.
+docker compose -f docker-compose.yml -f docker-compose.hub.yml pull
+docker compose -f docker-compose.yml -f docker-compose.hub.yml up -d --no-build
 ```
 
-### 3. Open the console
+Review each release's deployment/configuration changes when upgrading. An existing
+source-built Compose installation can use the same override while retaining its
+original project directory, `.env`, and `./data`.
 
-With the default port mapping:
+For standalone Docker, stop the container, back up the `blockinator-data` volume
+(and remote MySQL if used), remove only the stopped container, and repeat the
+`docker run` command with the new image tag and the **same named volume**:
 
-```text
-http://DOCKER-HOST:8080/
+```bash
+docker stop blockinator
+# Back up persistent data before continuing.
+docker rm blockinator
+# Pull the desired version, then repeat docker run with that version and volume.
 ```
 
-Local runtime files are stored under `./data/`.
+Do not delete the data volume or data directory to upgrade or resolve a login issue.
+Removing the container alone preserves the named volume. Neither installation
+method automatically updates a running deployment.
 
-With SQLite, the primary database is:
+### Startup troubleshooting
 
-```text
-./data/policy.db
+| Symptom | Resolution |
+| --- | --- |
+| `Set a unique ADMIN_PASSWORD ... before first startup` | Supply `.env` via `--env-file` (standalone) or Compose; use a non-example password of at least 12 characters. A bare `docker run stealthcat128/blockinator` does not supply credentials. |
+| `Set a unique POLICY_API_KEY ... before first startup` | Set a non-example API key of at least 24 characters. Both bootstrap values are required for a fresh database. |
+| Container runs but the console is unreachable | Publish the port with `-p 8080:8080` for standalone Docker; check host firewall rules and container logs. |
+| Port already allocated / container name already in use | An existing deployment may already occupy that port/name. Choose another host port/name or deliberately replace the old deployment; do not run both examples unchanged on the same host. |
+| New environment password does not change the login | Credentials are already stored in the database. Manage them through **Access & Security**; preserve the database. |
+| HTTPS/ACME does not work with the standalone image | Deploy the Caddy Compose stack or manage TLS with your own external reverse proxy. |
+
+## Build from source
+
+For development, clone the repository, configure `.env` as above (or copy and edit
+`.env.example`), and run the base Compose file without the Docker Hub override:
+
+```bash
+git clone https://github.com/StealthCat/blockinator-web.git
+cd blockinator-web
+cp .env.example .env
+# Set unique ADMIN_PASSWORD and POLICY_API_KEY values in .env first.
+docker compose -f docker-compose.yml up -d --build
 ```
 
-With MySQL, configuration, credentials, policy data, and query history live in the remote database while TLS/ACME files remain under `./data`.
-
-Bootstrap administrator credentials and the bootstrap API key are only used when the database has no existing records. After initialization, manage them from **Access & Security**.
+The console, ports, database options, and data locations are the same as the
+recommended Compose deployment above.
 
 ## Policy model
 
@@ -948,7 +1119,9 @@ Selected feedback from the r/technitium community:
 Run regression tests with `pip install -r requirements.txt pytest httpx==0.28.1` followed by `python -m pytest -q`.
 
 
-## Docker Hub publishing
+## Docker Hub publishing (maintainers)
+
+For installation instructions, see [Install from Docker Hub](#install-from-docker-hub).
 
 The `Publish Docker Hub` GitHub Actions workflow builds published stable release
 source for `linux/amd64` and `linux/arm64`, after the SQLite/Docker and MySQL test
