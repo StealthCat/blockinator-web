@@ -1,0 +1,107 @@
+name: Publish Docker Hub
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published stable release tag to build
+        required: true
+        default: v1.19.2
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dockerhub-publish
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: github.event_name == 'release' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Validate published stable release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected a vX.Y.Z release tag'; exit 1; }
+          gh api "repos/$REPOSITORY/releases/tags/$RELEASE_TAG" > release.json
+          jq -e '.draft == false and .prerelease == false' release.json >/dev/null
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.release.outputs.tag }}
+          persist-credentials: false
+      - name: Pin release source
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: resolve
+    uses: ./.github/workflows/test.yml
+    with:
+      source_ref: ${{ needs.resolve.outputs.sha }}
+
+  publish:
+    needs: [resolve, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check Docker Hub credential
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          test -n "$DOCKERHUB_TOKEN" || { echo 'Add the DOCKERHUB_TOKEN repository secret with write access to stealthcat128/blockinator.'; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          username: stealthcat128
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push release images
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: stealthcat128/blockinator:${{ needs.resolve.outputs.version }}
+          labels: |
+            org.opencontainers.image.title=Blockinator Web
+            org.opencontainers.image.source=https://github.com/StealthCat/blockinator-web
+            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.resolve.outputs.sha }}
+            org.opencontainers.image.licenses=GPL-3.0-only
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Update latest only for the current latest GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest="$(gh api "repos/$REPOSITORY/releases/latest" --jq .tag_name)"
+          if [[ "$latest" == "$RELEASE_TAG" ]]; then
+            docker buildx imagetools create --tag stealthcat128/blockinator:latest "stealthcat128/blockinator@$IMAGE_DIGEST"
+          fi
+          echo "Published stealthcat128/blockinator@$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"

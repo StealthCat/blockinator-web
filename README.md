@@ -946,3 +946,32 @@ Selected feedback from the r/technitium community:
 - Statistics snapshots are shared for five seconds per window/timezone. Query Log refresh requests only authenticated row fragments, avoiding repeated filter-option scans. Statistics refreshes time out after 15 seconds and resume after browser back/forward restoration.
 
 Run regression tests with `pip install -r requirements.txt pytest httpx==0.28.1` followed by `python -m pytest -q`.
+
+
+## Docker Hub publishing
+
+The `Publish Docker Hub` GitHub Actions workflow builds published stable release
+source for `linux/amd64` and `linux/arm64`, after the SQLite/Docker and MySQL test
+jobs pass. Images are published to `stealthcat128/blockinator` with a version tag
+such as `1.19.2`. The `latest` image tag is updated only when that version is the
+current latest GitHub release. Publishing an older release does not move `latest`.
+
+Maintainers must add a Docker Hub access token with write permission as the
+repository's `DOCKERHUB_TOKEN` Actions secret. The login account is `stealthcat128`.
+Do not commit the token or put it in application environment files.
+
+New published releases trigger the workflow. For an existing release, open
+**Actions → Publish Docker Hub → Run workflow**, select `main`, and enter the
+published tag (for example, `v1.19.2`). The workflow resolves the tag once and
+uses that exact commit for testing and building. Drafts and prereleases are rejected.
+
+Once the workflow succeeds, pull the application image with:
+
+```bash
+docker pull stealthcat128/blockinator:1.19.2
+```
+
+The image contains the Blockinator application; Caddy remains a separate service.
+Keep the existing deployment's environment, data volumes, and Caddy configuration
+when switching from a local build to this image. This publishing workflow does
+not install updates on running deployments.

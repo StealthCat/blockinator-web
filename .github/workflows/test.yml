@@ -4,6 +4,12 @@ on:
   push:
     branches: ["main", "acme-tls", "whitelists", "fixes"]
   pull_request:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Exact release commit to validate
+        required: true
+        type: string
 
 jobs:
   test:
@@ -11,6 +17,9 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -101,6 +110,9 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
