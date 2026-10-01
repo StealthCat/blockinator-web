@@ -184,6 +184,7 @@ class Scope:
     blocklist_ids: frozenset[int]
     blocklist_mask: int
     schedule: CompiledSchedule
+    whitelisted: bool = False
 
     def schedule_is_active(self, now_utc: datetime | None = None) -> bool:
         return self.schedule.is_active(now_utc)
@@ -718,6 +719,7 @@ class PolicyEngine:
                     kind=str(row["kind"]),
                     target=target,
                     state=str(row["state"]),
+                    whitelisted=bool(row["whitelisted"]) and row["kind"] == "client",
                     networks=networks,
                     blocklist_ids=assigned_ids,
                     blocklist_mask=assigned_mask,
@@ -1125,6 +1127,7 @@ class PolicyEngine:
                         kind=str(row["kind"]),
                         target=target,
                         state=str(row["state"]),
+                        whitelisted=bool(row["whitelisted"]) and row["kind"] == "client",
                         networks=networks,
                         blocklist_ids=assigned_ids,
                         blocklist_mask=assigned_mask,
@@ -1395,6 +1398,13 @@ class PolicyEngine:
         )
 
         if client_scope is not None:
+            if client_scope.whitelisted:
+                return Decision(
+                    False,
+                    "endpoint_whitelisted",
+                    client_scope.name,
+                    response_mode=snapshot.response_mode,
+                )
             if client_scope.state == "paused":
                 return Decision(
                     False,

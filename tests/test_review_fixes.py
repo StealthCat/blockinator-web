@@ -393,3 +393,32 @@ def test_query_date_range(web, browser, monkeypatch):
         assert client.get("/queries", params=params).status_code == 400
     for params in ({"page": 0}, {"page": "bad"}, {"snapshot": -1}):
         assert client.get("/queries", params=params).status_code == 422
+
+
+def test_endpoint_whitelist_create_edit_and_type_change(web, browser):
+    client, session = browser
+    form = {'csrf_token': session.csrf_token, 'name': 'Trusted endpoint',
+            'kind': 'client', 'target': '198.51.100.42', 'state': 'active', 'whitelisted': '1'}
+    response = client.post('/admin/scopes', data=form)
+    assert response.status_code == 303 and 'error=' not in response.headers['location']
+    with web.db.connect() as con:
+        row = con.execute("SELECT * FROM scopes WHERE name='Trusted endpoint'").fetchone()
+    sid = row['id']
+    assert row['whitelisted'] == 1
+    assert web.engine.decide(form['target'], 'example.org').reason == 'endpoint_whitelisted'
+    page = client.get('/scopes')
+    assert page.status_code == 200
+    assert 'Whitelisted</span>' in page.text
+    assert 'name="whitelisted" value="1" checked' in page.text
+    form.pop('whitelisted')
+    assert client.post(f'/admin/scopes/{sid}/edit', data=form).status_code == 303
+    assert web.engine.decide(form['target'], 'example.org').reason != 'endpoint_whitelisted'
+    form.update(whitelisted='1')
+    client.post(f'/admin/scopes/{sid}/edit', data=form)
+    assert web.engine.decide(form['target'], 'example.org').reason == 'endpoint_whitelisted'
+    form.update(kind='network', target_v4='198.51.100.0/24')
+    client.post(f'/admin/scopes/{sid}/edit', data=form)
+    with web.db.connect() as con:
+        assert con.execute('SELECT whitelisted FROM scopes WHERE id=?', (sid,)).fetchone()['whitelisted'] == 0
+    client.post(f'/admin/scopes/{sid}/delete', data={'csrf_token': session.csrf_token})
+    assert web.engine.decide('198.51.100.42', 'example.org').reason != 'endpoint_whitelisted'

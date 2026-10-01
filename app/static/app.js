@@ -67,6 +67,11 @@
     var singleTarget = form.querySelector("[data-scope-single-target]");
     if (!select || !networkFields || !singleTarget) return;
 
+    var whitelist = form.querySelector("[data-scope-whitelist]");
+    if (whitelist) {
+      whitelist.hidden = select.value !== "client";
+      whitelist.querySelector("input").disabled = select.value !== "client";
+    }
     var isNetwork = select.value === "network";
     networkFields.hidden = !isNetwork;
     singleTarget.hidden = isNetwork;

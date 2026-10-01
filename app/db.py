@@ -441,6 +441,10 @@ class Database:
                 """
             )
 
+            # Run after the legacy scopes-table rebuild so the new flag survives upgrades.
+            if "whitelisted" not in {row["name"] for row in con.execute("PRAGMA table_info(scopes)")}:
+                con.execute("ALTER TABLE scopes ADD COLUMN whitelisted INTEGER NOT NULL DEFAULT 0")
+
             # Backfill the address-family table from legacy single-target networks.
             for row in con.execute(
                 """

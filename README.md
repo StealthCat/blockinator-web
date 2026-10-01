@@ -342,6 +342,10 @@ The record-type bypass occurs before PTR observation, policy-target matching, li
 
 A paused matching target permits the query instead of continuing to a lower-priority target.
 
+To whitelist an entire device, open **Policy Targets**, create or edit an **Endpoint**, enter its exact IPv4 or IPv6 address, and check **Whitelist endpoint**. The selected endpoint allows all domains, bypassing global, network, hostname, and endpoint list assignments. No list assignment is required. Its queries remain logged with policy reason `endpoint_whitelisted` and the endpoint name (ignored record types still bypass logging).
+
+The endpoint's enforcement schedule also controls its whitelist exemption. Outside that window, normal hostname/network/global policy and unmatched-client settings apply. Whitelisting is separate from pause/resume: to restore filtering, clear **Whitelist endpoint** and leave the blocking state **Active**. Existing assignments are retained for reuse. If multiple endpoint targets share an IP, the existing rule still applies: the oldest scheduled-active endpoint wins; edit that target instead of creating a duplicate.
+
 A Network target may contain IPv4, IPv6, or both. Dual-stack targets share one name, state, schedule, and assignment set.
 
 ### List precedence

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — Endpoint whitelisting
+
+- Add a **Whitelist endpoint** option when creating or editing IPv4/IPv6 endpoints, with a visible whitelist badge.
+- Bypass all lists for whitelisted endpoints during their configured schedule while preserving query logging and existing list assignments.
+- Upgrade existing SQLite and MySQL databases automatically; existing endpoints remain filtered by default.
+
 ## Unreleased — Interface polish
 
 - Preserve the navy/cyan identity with scalable local SVG branding, circuit artwork, and consistent navigation icons.

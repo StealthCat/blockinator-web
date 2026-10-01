@@ -1877,7 +1877,8 @@ input[type=file]{padding:8px}
   gap:11px;
 }
 .network-target-fields[hidden],
-[data-scope-single-target][hidden]{
+[data-scope-single-target][hidden],
+[data-scope-whitelist][hidden]{
   display:none!important;
 }
 .network-target-stack{

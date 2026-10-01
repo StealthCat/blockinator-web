@@ -485,6 +485,8 @@ class MySQLBackend:
                 """
             )
 
+            self._ensure_column(con, "scopes", "whitelisted", "TINYINT(1) NOT NULL DEFAULT 0")
+
             # Forward-compatible column checks for MySQL databases created by
             # earlier development versions of this backend.
             self._ensure_column(
