@@ -318,3 +318,25 @@ html[data-table-density="compact"] .query-domain small, html[data-table-density=
 }
 
 [data-scope-list-assignments][hidden] { display: none !important; }
+
+/* A distinct, clickable opt-in panel for target-wide allow rules. */
+.form-grid .whitelist-target-panel {
+  min-width: 0; gap: 12px; padding: 16px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); cursor: pointer;
+  transition: border-color .15s ease, background .15s ease;
+}
+.whitelist-target-panel:hover { border-color: var(--accent); }
+.whitelist-target-panel:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.whitelist-target-panel:focus-within { outline: 2px solid var(--accent); outline-offset: 3px; }
+.whitelist-target-heading { display: flex; align-items: flex-start; gap: 12px; }
+.whitelist-target-heading > span { display: grid; gap: 4px; min-width: 0; }
+.whitelist-target-heading b { color: var(--text-strong); font-size: 14px; font-weight: 650; }
+.whitelist-target-heading small { line-height: 1.5; }
+.whitelist-target-description { color: var(--text); font-size: 13px; line-height: 1.6; }
+.whitelist-target-notes { display: flex; flex-wrap: wrap; gap: 6px; }
+.whitelist-target-notes > span {
+  padding: 4px 8px; border: 1px solid var(--border-soft); border-radius: 6px;
+  background: var(--surface-1); color: var(--text-muted); font-size: 11px; line-height: 1.4;
+}
+.whitelist-target-help { padding-top: 10px; border-top: 1px solid var(--border-soft); line-height: 1.6; }

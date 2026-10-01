@@ -2330,7 +2330,12 @@ def scopes_page(request: Request):
                 </div>
                 <label class="full" data-scope-single-target>Endpoint IP / PTR hostname<input name="target" value="{esc(single_target_value)}" placeholder="192.168.20.44 or *.kids.home.arpa"></label>
                 <label>Blocking state<select name="state"><option value="active"{state_active_selected}>Active</option><option value="paused"{state_paused_selected}>Paused</option></select></label>
-                <label class="full" data-scope-whitelist><span class="check"><input type="checkbox" name="whitelisted" value="1"{" checked" if scope["whitelisted"] else ""}> Whitelist target</span><small>Allow all domains for clients matching this endpoint, network, or PTR hostname. Takes precedence over all matching filtering targets and lists. Queries remain logged. The schedule below also applies to this exemption. Uncheck and set the blocking state to Active to restore filtering.</small></label>
+                <label class="full whitelist-target-panel" data-scope-whitelist>
+                  <span class="whitelist-target-heading"><input type="checkbox" name="whitelisted" value="1"{" checked" if scope["whitelisted"] else ""}> <span><b>Whitelist target</b><small>Allow all domains for matching clients</small></span></span>
+                  <span class="whitelist-target-description">Bypass all filtering targets and lists for this endpoint, network, or reverse-DNS hostname.</span>
+                  <span class="whitelist-target-notes"><span>Respects schedule</span><span>Queries stay logged</span></span>
+                  <small class="whitelist-target-help">To restore filtering, turn this off and set the blocking state to Active.</small>
+                </label>
                 <div class="scope-edit-note"><b>{esc(scope_target_note[0])}</b><span>{esc(scope_target_note[1])}</span></div>
 
                 <div class="form-section full schedule-section">
@@ -2382,7 +2387,12 @@ def scopes_page(request: Request):
           </div>
           <label class="full" data-scope-single-target>Endpoint IP / PTR hostname<input name="target" placeholder="192.168.20.44 or *.kids.home.arpa"></label>
           <label>Initial state<select name="state"><option value="active">Active</option><option value="paused">Paused</option></select></label>
-          <label class="full" data-scope-whitelist><span class="check"><input type="checkbox" name="whitelisted" value="1"> Whitelist target</span><small>Allow all domains for clients matching this endpoint, network, or PTR hostname. Takes precedence over all matching filtering targets and lists. Queries remain logged. The schedule below also applies to this exemption. Uncheck and set the blocking state to Active to restore filtering.</small></label>
+          <label class="full whitelist-target-panel" data-scope-whitelist>
+                  <span class="whitelist-target-heading"><input type="checkbox" name="whitelisted" value="1"> <span><b>Whitelist target</b><small>Allow all domains for matching clients</small></span></span>
+                  <span class="whitelist-target-description">Bypass all filtering targets and lists for this endpoint, network, or reverse-DNS hostname.</span>
+                  <span class="whitelist-target-notes"><span>Respects schedule</span><span>Queries stay logged</span></span>
+                  <small class="whitelist-target-help">To restore filtering, turn this off and set the blocking state to Active.</small>
+                </label>
           <div class="form-section full schedule-section">
             <div class="form-section-head"><div><b>Enforcement schedule</b><p>Optional. Limit when this policy target participates in policy.</p></div></div>
             {new_scope_schedule_fields}
