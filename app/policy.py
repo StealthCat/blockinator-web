@@ -719,7 +719,7 @@ class PolicyEngine:
                     kind=str(row["kind"]),
                     target=target,
                     state=str(row["state"]),
-                    whitelisted=bool(row["whitelisted"]) and row["kind"] == "client",
+                    whitelisted=bool(row["whitelisted"]),
                     networks=networks,
                     blocklist_ids=assigned_ids,
                     blocklist_mask=assigned_mask,
@@ -1127,7 +1127,7 @@ class PolicyEngine:
                         kind=str(row["kind"]),
                         target=target,
                         state=str(row["state"]),
-                        whitelisted=bool(row["whitelisted"]) and row["kind"] == "client",
+                        whitelisted=bool(row["whitelisted"]),
                         networks=networks,
                         blocklist_ids=assigned_ids,
                         blocklist_mask=assigned_mask,
@@ -1248,11 +1248,12 @@ class PolicyEngine:
     def _first_scheduled_scope(
         scopes: tuple[Scope, ...] | None,
         now_utc: datetime,
+        whitelist_only: bool = False,
     ) -> Scope | None:
         if not scopes:
             return None
         for scope in scopes:
-            if scope.schedule_is_active(now_utc):
+            if (not whitelist_only or scope.whitelisted) and scope.schedule_is_active(now_utc):
                 return scope
         return None
 
@@ -1261,11 +1262,13 @@ class PolicyEngine:
         snapshot: PolicySnapshot,
         ip: ipaddress._BaseAddress,
         now_utc: datetime,
+        whitelist_only: bool = False,
     ) -> tuple[Scope | None, Scope | None, Scope | None]:
         canonical_ip = str(ip)
         client = self._first_scheduled_scope(
             snapshot.client_scopes.get(canonical_ip),
             now_utc,
+            whitelist_only=whitelist_only,
         )
 
         hostname: Scope | None = None
@@ -1274,6 +1277,7 @@ class PolicyEngine:
             hostname = self._first_scheduled_scope(
                 snapshot.exact_hostname_scopes.get(client_name),
                 now_utc,
+                whitelist_only=whitelist_only,
             )
             if hostname is None:
                 for suffix in snapshot.wildcard_suffixes:
@@ -1281,6 +1285,7 @@ class PolicyEngine:
                         hostname = self._first_scheduled_scope(
                             snapshot.wildcard_hostname_scopes.get(suffix),
                             now_utc,
+                            whitelist_only=whitelist_only,
                         )
                         if hostname is not None:
                             break
@@ -1304,6 +1309,7 @@ class PolicyEngine:
             candidate = self._first_scheduled_scope(
                 family_map[prefix].get(network_value),
                 now_utc,
+                whitelist_only=whitelist_only,
             )
             if candidate is not None:
                 network = candidate
@@ -1391,6 +1397,18 @@ class PolicyEngine:
                 response_mode=snapshot.response_mode,
             )
 
+        # An active whitelist may be less specific, or newer than another
+        # matching target. Search all matching candidates before normal policy.
+        whitelist_scopes = self._matching_scopes(snapshot, ip, now, whitelist_only=True)
+        whitelist_scope = next((scope for scope in whitelist_scopes if scope is not None), None)
+        if whitelist_scope is not None:
+            return Decision(
+                False,
+                "endpoint_whitelisted" if whitelist_scope.kind == "client" else "scope_whitelisted",
+                whitelist_scope.name,
+                response_mode=snapshot.response_mode,
+            )
+
         client_scope, hostname_scope, network_scope = self._matching_scopes(
             snapshot,
             ip,
@@ -1398,13 +1416,6 @@ class PolicyEngine:
         )
 
         if client_scope is not None:
-            if client_scope.whitelisted:
-                return Decision(
-                    False,
-                    "endpoint_whitelisted",
-                    client_scope.name,
-                    response_mode=snapshot.response_mode,
-                )
             if client_scope.state == "paused":
                 return Decision(
                     False,

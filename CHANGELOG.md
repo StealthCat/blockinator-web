@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — Whitelist all policy target types
+
+- Allow networks and exact/wildcard reverse-DNS targets to be whitelisted, including dual-stack networks.
+- Give any matching, scheduled-active whitelist precedence over filtering targets, including older or more-specific matches.
+- Hide list assignments while whitelisting is selected, preserve saved assignments, and identify target exemptions in Whitelisted query results.
+
 ## Unreleased — Policy target schedule layout
 
 - Make enforcement schedules fit both target editors and the narrow add-target panel on desktop and mobile.

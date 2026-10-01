@@ -240,7 +240,7 @@ def decision_kind(row) -> str:
         return "blocked"
     list_type = str(row["matched_list_type"] or "").strip().lower()
     reason = str(row["reason"] or "").strip().lower()
-    if list_type == "whitelist" or reason == "whitelist_match":
+    if list_type == "whitelist" or reason in {"whitelist_match", "endpoint_whitelisted", "scope_whitelisted"}:
         return "whitelisted"
     return "allowed"
 
@@ -2266,7 +2266,7 @@ def scopes_page(request: Request):
             if assigned_names else "No explicit list assignments"
         )
         if scope["whitelisted"]:
-            assigned_summary = "All domains allowed while this endpoint schedule is active; list assignments are bypassed."
+            assigned_summary = "All domains allowed while this target schedule is active; list assignments are bypassed."
         kind_network_selected = " selected" if scope["kind"] == "network" else ""
         kind_client_selected = " selected" if scope["kind"] == "client" else ""
         kind_hostname_selected = " selected" if scope["kind"] == "hostname" else ""
@@ -2330,7 +2330,7 @@ def scopes_page(request: Request):
                 </div>
                 <label class="full" data-scope-single-target>Endpoint IP / PTR hostname<input name="target" value="{esc(single_target_value)}" placeholder="192.168.20.44 or *.kids.home.arpa"></label>
                 <label>Blocking state<select name="state"><option value="active"{state_active_selected}>Active</option><option value="paused"{state_paused_selected}>Paused</option></select></label>
-                <label class="full" data-scope-whitelist><span class="check"><input type="checkbox" name="whitelisted" value="1"{" checked" if scope["whitelisted"] else ""}> Whitelist endpoint</span><small>Allow all domains for this exact IP, bypassing global and assigned lists. Queries remain logged. The schedule below also applies to this exemption. Uncheck and set the blocking state to Active to restore filtering.</small></label>
+                <label class="full" data-scope-whitelist><span class="check"><input type="checkbox" name="whitelisted" value="1"{" checked" if scope["whitelisted"] else ""}> Whitelist target</span><small>Allow all domains for clients matching this endpoint, network, or PTR hostname. Takes precedence over all matching filtering targets and lists. Queries remain logged. The schedule below also applies to this exemption. Uncheck and set the blocking state to Active to restore filtering.</small></label>
                 <div class="scope-edit-note"><b>{esc(scope_target_note[0])}</b><span>{esc(scope_target_note[1])}</span></div>
 
                 <div class="form-section full schedule-section">
@@ -2338,7 +2338,7 @@ def scopes_page(request: Request):
                   {scope_schedule_fields}
                 </div>
 
-                <div class="form-section full">
+                <div class="form-section full" data-scope-list-assignments{" hidden" if scope["whitelisted"] else ""}>
                   <div class="form-section-head">
                     <div><b>List assignments</b><p>Select block lists and whitelists that should explicitly apply to this scope. Lists marked Global already apply according to the configured global-list reach.</p></div>
                     <span>{len(selected)} selected</span>
@@ -2382,12 +2382,12 @@ def scopes_page(request: Request):
           </div>
           <label class="full" data-scope-single-target>Endpoint IP / PTR hostname<input name="target" placeholder="192.168.20.44 or *.kids.home.arpa"></label>
           <label>Initial state<select name="state"><option value="active">Active</option><option value="paused">Paused</option></select></label>
-          <label class="full" data-scope-whitelist><span class="check"><input type="checkbox" name="whitelisted" value="1"> Whitelist endpoint</span><small>Allow all domains for this exact IP, bypassing global and assigned lists. Queries remain logged. The schedule below also applies to this exemption. Uncheck and set the blocking state to Active to restore filtering.</small></label>
+          <label class="full" data-scope-whitelist><span class="check"><input type="checkbox" name="whitelisted" value="1"> Whitelist target</span><small>Allow all domains for clients matching this endpoint, network, or PTR hostname. Takes precedence over all matching filtering targets and lists. Queries remain logged. The schedule below also applies to this exemption. Uncheck and set the blocking state to Active to restore filtering.</small></label>
           <div class="form-section full schedule-section">
             <div class="form-section-head"><div><b>Enforcement schedule</b><p>Optional. Limit when this policy target participates in policy.</p></div></div>
             {new_scope_schedule_fields}
           </div>
-          <div class="form-section full">
+          <div class="form-section full" data-scope-list-assignments>
             <div class="form-section-head"><div><b>Initial list assignments</b><p>Optional. Assign scoped block lists and whitelists; Global lists apply automatically.</p></div></div>
             {new_list_editor}
           </div>
@@ -2449,7 +2449,7 @@ def add_scope(request: Request):
     target_v4_raw = str(form.get("target_v4", ""))
     target_v6_raw = str(form.get("target_v6", ""))
     state = str(form.get("state", "active")).strip().lower()
-    whitelisted = 1 if kind == "client" and form.get("whitelisted") == "1" else 0
+    whitelisted = 1 if form.get("whitelisted") == "1" else 0
     try:
         schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
             form, "policy target"
@@ -2520,7 +2520,7 @@ def edit_scope(scope_id: int, request: Request):
     target_v4_raw = str(form.get("target_v4", ""))
     target_v6_raw = str(form.get("target_v6", ""))
     state = str(form.get("state", "active")).strip().lower()
-    whitelisted = 1 if kind == "client" and form.get("whitelisted") == "1" else 0
+    whitelisted = 1 if form.get("whitelisted") == "1" else 0
     try:
         schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
             form, "policy target"
@@ -2646,12 +2646,12 @@ def queries_page(
         clauses.append("blocked=1")
     elif decision == "whitelisted":
         clauses.append(
-            "blocked=0 AND (matched_list_type='whitelist' OR reason='whitelist_match')"
+            "blocked=0 AND (matched_list_type='whitelist' OR reason IN ('whitelist_match','endpoint_whitelisted','scope_whitelisted'))"
         )
     elif decision == "allowed":
         clauses.append(
             "blocked=0 AND COALESCE(matched_list_type,'')<>'whitelist' "
-            "AND COALESCE(reason,'')<>'whitelist_match'"
+            "AND COALESCE(reason,'') NOT IN ('whitelist_match','endpoint_whitelisted','scope_whitelisted')"
         )
 
     display_timezone = system_default_timezone()

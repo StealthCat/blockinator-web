@@ -420,7 +420,7 @@ def test_whitelist_decision_has_distinct_dashboard_and_query_log_state():
     assert '"✦", "Whitelisted"' in source
     assert 'decision_pill_html(r)' in source
     assert '<option value="whitelisted"' in source
-    assert "matched_list_type='whitelist' OR reason='whitelist_match'" in source
+    assert "matched_list_type='whitelist' OR reason IN ('whitelist_match','endpoint_whitelisted','scope_whitelisted')" in source
     assert "COALESCE(matched_list_type,'')<>'whitelist'" in source
     assert ".decision-pill.whitelisted .decision-icon" in stylesheet
     assert ".pill.whitelist" in stylesheet

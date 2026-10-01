@@ -89,9 +89,11 @@
     if (!select || !networkFields || !singleTarget) return;
 
     var whitelist = form.querySelector("[data-scope-whitelist]");
-    if (whitelist) {
-      whitelist.hidden = select.value !== "client";
-      whitelist.querySelector("input").disabled = select.value !== "client";
+    var assignments = form.querySelector("[data-scope-list-assignments]");
+    if (whitelist && assignments) {
+      // Keep inputs enabled so hidden assignments survive saving and can be
+      // restored when whitelisting is turned off.
+      assignments.hidden = whitelist.querySelector("input").checked;
     }
     var isNetwork = select.value === "network";
     networkFields.hidden = !isNetwork;
@@ -110,7 +112,7 @@
       var select = form.querySelector("[data-scope-kind-select]");
       if (!select) return;
       syncScopeKindFields(form);
-      select.addEventListener("change", function () {
+      form.addEventListener("change", function () {
         syncScopeKindFields(form);
       });
     });

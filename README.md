@@ -333,18 +333,21 @@ Policy handling proceeds in this order:
 
 1. Ignored DNS record-type bypass.
 2. Global pause.
-3. Exact client-IP Endpoint.
-4. Matching reverse-DNS hostname.
-5. Most-specific matching Network.
-6. Unmatched-client fallback.
+3. Any matching whitelisted target whose schedule is active (Endpoint, Network, or reverse-DNS hostname).
+4. Exact client-IP Endpoint.
+5. Matching reverse-DNS hostname.
+6. Most-specific matching Network.
+7. Unmatched-client fallback.
 
 The record-type bypass occurs before PTR observation, policy-target matching, list evaluation, and Query Log creation. If all questions use ignored types, Blockinator immediately returns an allow decision with reason `ignored_record_type`; otherwise non-ignored questions are evaluated normally.
 
 A paused matching target permits the query instead of continuing to a lower-priority target.
 
-To whitelist an entire device, open **Policy Targets**, create or edit an **Endpoint**, enter its exact IPv4 or IPv6 address, and check **Whitelist endpoint**. The selected endpoint allows all domains, bypassing global, network, hostname, and endpoint list assignments. No list assignment is required. Its queries remain logged with policy reason `endpoint_whitelisted` and the endpoint name (ignored record types still bypass logging).
+To whitelist clients, open **Policy Targets**, create or edit an **Endpoint**, **Network**, or **Reverse-DNS Hostname**, and check **Whitelist target**. Networks support IPv4, IPv6, or both; PTR targets support exact names and wildcard suffixes. PTR matching uses learned reverse-DNS identities, so hostname exemptions apply after the client's identity is known.
 
-The endpoint's enforcement schedule also controls its whitelist exemption. Outside that window, normal hostname/network/global policy and unmatched-client settings apply. Whitelisting is separate from pause/resume: to restore filtering, clear **Whitelist endpoint** and leave the blocking state **Active**. Existing assignments are retained for reuse. If multiple endpoint targets share an IP, the existing rule still applies: the oldest scheduled-active endpoint wins; edit that target instead of creating a duplicate.
+Any matching whitelist with an active enforcement schedule takes precedence over all filtering targets and lists, even if another target is more specific or was created earlier. Outside the whitelist's schedule, normal policy applies. When several whitelists match, the logged target is selected by exact IP, then exact/most-specific PTR hostname, then most-specific network, with oldest ID breaking ties.
+
+List-assignment boxes disappear while **Whitelist target** is checked. Existing assignments remain saved for reuse when it is unchecked. To restore filtering, uncheck the option and leave the blocking state **Active**. Queries remain logged as Whitelisted with the matching target name and reason `endpoint_whitelisted` (exact IP) or `scope_whitelisted` (network/PTR); ignored record types still bypass logging.
 
 A Network target may contain IPv4, IPv6, or both. Dual-stack targets share one name, state, schedule, and assignment set.
 

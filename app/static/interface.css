@@ -316,3 +316,5 @@ html[data-table-density="compact"] .query-domain small, html[data-table-density=
 @media (max-width: 470px) {
   .scopes-layout .schedule-controls { grid-template-columns: minmax(0, 1fr); }
 }
+
+[data-scope-list-assignments][hidden] { display: none !important; }

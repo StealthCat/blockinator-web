@@ -419,6 +419,33 @@ def test_endpoint_whitelist_create_edit_and_type_change(web, browser):
     form.update(kind='network', target_v4='198.51.100.0/24')
     client.post(f'/admin/scopes/{sid}/edit', data=form)
     with web.db.connect() as con:
-        assert con.execute('SELECT whitelisted FROM scopes WHERE id=?', (sid,)).fetchone()['whitelisted'] == 0
+        assert con.execute('SELECT whitelisted FROM scopes WHERE id=?', (sid,)).fetchone()['whitelisted'] == 1
+    assert web.engine.decide('198.51.100.43', 'example.org').reason == 'scope_whitelisted'
     client.post(f'/admin/scopes/{sid}/delete', data={'csrf_token': session.csrf_token})
     assert web.engine.decide('198.51.100.42', 'example.org').reason != 'endpoint_whitelisted'
+
+
+@pytest.mark.parametrize('kind,target', [('network', '192.0.2.0/24'), ('hostname', '*.trusted.home.arpa')])
+def test_whitelist_target_forms_preserve_assignments_and_log_filter(web, browser, kind, target):
+    client, session = browser
+    with web.db.connect() as con:
+        lid = con.execute("INSERT INTO blocklists(name,use_globally) VALUES('Preserved assignment',0)").lastrowid
+    form = dict(csrf_token=session.csrf_token, name='Exempt ' + kind, kind=kind,
+                target=target, target_v4=target if kind == 'network' else '',
+                whitelisted='1', blocklist_id=str(lid))
+    result = client.post('/admin/scopes', data=form)
+    assert 'error=' not in result.headers['location']
+    with web.db.connect() as con:
+        sid = con.execute('SELECT id FROM scopes WHERE name=?', (form['name'],)).fetchone()['id']
+    page = client.get('/scopes').text
+    assert 'data-scope-list-assignments hidden' in page
+    client.post(f'/admin/scopes/{sid}/edit', data=form)
+    form.pop('whitelisted')
+    client.post(f'/admin/scopes/{sid}/edit', data=form)
+    with web.db.connect() as con:
+        assert con.execute('SELECT blocklist_id FROM scope_blocklists WHERE scope_id=?', (sid,)).fetchone()['blocklist_id'] == lid
+        con.execute("INSERT INTO query_log(ts,client_ip,qname,blocked,reason,matched_scope) VALUES(?,?,?,?,?,?)",
+                    ('2026-10-01T18:00:00+00:00', '192.0.2.10', 'target-whitelist-test.example', 0, 'scope_whitelisted', form['name']))
+    assert 'target-whitelist-test.example' in client.get('/queries?decision=whitelisted').text
+    assert 'target-whitelist-test.example' not in client.get('/queries?decision=allowed').text
+    client.post(f'/admin/scopes/{sid}/delete', data={'csrf_token': session.csrf_token})
