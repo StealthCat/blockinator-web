@@ -40,6 +40,18 @@
     var controls = editor.querySelector("[data-schedule-controls]");
     if (!toggle || !controls) return;
     controls.classList.toggle("schedule-disabled", !toggle.checked);
+    if (editor.classList.contains("target-schedule-editor")) {
+      controls.hidden = !toggle.checked;
+      var status = editor.querySelector("[data-schedule-status]");
+      var days = Array.from(editor.querySelectorAll('input[name="schedule_day"]:checked'));
+      var start = editor.querySelector('[name="schedule_start"]').value;
+      var end = editor.querySelector('[name="schedule_end"]').value;
+      var zone = editor.querySelector('[name="schedule_timezone"]').value.trim();
+      status.textContent = !toggle.checked ? "Always active. This target has no time restriction." :
+        !days.length ? "Select at least one day for this target to be active." :
+        days.map(function (input) { return input.nextElementSibling.textContent; }).join(", ") +
+        " · " + (start === end ? "All day" : start + "–" + end + (end < start ? " (overnight)" : "")) + " · " + zone;
+    }
     controls.setAttribute("aria-disabled", toggle.checked ? "false" : "true");
     controls.querySelectorAll("input").forEach(function (input) {
       if (toggle.checked) {
@@ -55,8 +67,17 @@
       var toggle = editor.querySelector("[data-schedule-toggle]");
       if (!toggle) return;
       syncScheduleControls(editor);
-      toggle.addEventListener("change", function () {
+      editor.addEventListener("change", function () {
         syncScheduleControls(editor);
+      });
+      editor.querySelectorAll("[data-schedule-days]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          var selected = button.getAttribute("data-schedule-days").split(",");
+          editor.querySelectorAll('input[name="schedule_day"]').forEach(function (input) {
+            input.checked = selected.indexOf(input.value) !== -1;
+          });
+          syncScheduleControls(editor);
+        });
       });
     });
   }

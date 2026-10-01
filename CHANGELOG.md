@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — Policy target schedule layout
+
+- Make enforcement schedules fit both target editors and the narrow add-target panel on desktop and mobile.
+- Add Every day, Weekdays, and Weekends shortcuts, a live schedule summary, and collapsible controls when scheduling is off.
+- Improve selected-day contrast and preserve existing scheduling behavior and saved values.
+
 ## Unreleased — Endpoint whitelisting
 
 - Add a **Whitelist endpoint** option when creating or editing IPv4/IPv6 endpoints, with a visible whitelist badge.

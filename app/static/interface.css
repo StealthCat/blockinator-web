@@ -294,3 +294,25 @@ html[data-table-density="compact"] .query-domain small, html[data-table-density=
 .query-pagination { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; padding-top: 20px; }
 .query-pagination [aria-current] { font-variant-numeric: tabular-nums; }
 .query-filter-bar input[type="datetime-local"] { min-width: 0; width: 100%; }
+
+/* Target schedules must fit the panel, including the narrow add-target column. */
+.scopes-layout .schedule-section { min-width: 0; overflow: visible; }
+.scopes-layout .schedule-controls {
+  grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start;
+  padding: 14px; gap: 16px 12px;
+}
+.scopes-layout .schedule-controls[hidden] { display: none; }
+.scopes-layout .schedule-days, .scopes-layout .schedule-timezone { grid-column: 1 / -1; }
+.scopes-layout .schedule-day-grid { grid-template-columns: repeat(auto-fit, minmax(42px, 1fr)); gap: 6px; }
+.scopes-layout .schedule-day span { color: var(--text-muted); background: var(--surface-1); border-color: var(--border); }
+.scopes-layout .schedule-day input:checked + span { color: var(--text-strong); background: var(--accent-soft); border-color: var(--accent); }
+.scopes-layout .schedule-toggle { gap: 10px; align-items: center; line-height: 1.5; }
+.scopes-layout .schedule-toggle input { margin: 0; }
+.scopes-layout .schedule-label { color: var(--text); font-size: 13px; }
+.scopes-layout .schedule-help { color: var(--text-muted); line-height: 1.6 !important; }
+.schedule-presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 4px; }
+.schedule-presets .small-button { min-height: 32px; padding: 5px 9px; font-size: 12px; }
+.scopes-layout .schedule-status { margin: 0; color: var(--text-muted); overflow-wrap: anywhere; font-size: 12px; }
+@media (max-width: 470px) {
+  .scopes-layout .schedule-controls { grid-template-columns: minmax(0, 1fr); }
+}

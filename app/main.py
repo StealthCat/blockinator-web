@@ -375,7 +375,7 @@ def schedule_summary(row) -> str:
     )
 
 
-def schedule_fields_html(row=None, default_timezone: str = "UTC") -> str:
+def schedule_fields_html(row=None, default_timezone: str = "UTC", *, policy_target: bool = False) -> str:
     enabled = bool(row["schedule_enabled"]) if row is not None else False
     days = schedule_days_set(row["schedule_days"]) if row is not None else set(range(7))
     start = str(row["schedule_start"] or "00:00") if row is not None else "00:00"
@@ -397,19 +397,26 @@ def schedule_fields_html(row=None, default_timezone: str = "UTC") -> str:
         f'<span>{label}</span></label>'
         for day, label in DAY_LABELS
     )
-    return f'''<div class="schedule-editor full" data-schedule-editor>
+    presets = ('<div class="schedule-presets" role="group" aria-label="Select schedule days">'
+               '<button type="button" class="small-button" data-schedule-days="0,1,2,3,4,5,6">Every day</button>'
+               '<button type="button" class="small-button" data-schedule-days="0,1,2,3,4">Weekdays</button>'
+               '<button type="button" class="small-button" data-schedule-days="5,6">Weekends</button></div>') if policy_target else ""
+    status = '<p class="schedule-status" data-schedule-status aria-live="polite"></p>' if policy_target else ""
+    return f'''<div class="schedule-editor full{" target-schedule-editor" if policy_target else ""}" data-schedule-editor>
       <label class="check schedule-toggle">
         <input type="checkbox" name="schedule_enabled" value="1" data-schedule-toggle{" checked" if enabled else ""}>
-        Enforce only during a schedule
+        {"Use an enforcement schedule" if policy_target else "Enforce only during a schedule"}
       </label>
+      {status}
       <div class="schedule-controls{" schedule-disabled" if not enabled else ""}" data-schedule-controls>
         <div class="schedule-days">
-          <span class="schedule-label">Days</span>
+          <span class="schedule-label">{"Days the schedule starts" if policy_target else "Days"}</span>
+          {presets}
           <div class="schedule-day-grid">{day_buttons}</div>
         </div>
         <label>Start time<input type="time" name="schedule_start" value="{esc(start)}"></label>
         <label>End time<input type="time" name="schedule_end" value="{esc(end)}"></label>
-        <label>Timezone<input name="schedule_timezone" value="{esc(tz_name)}" placeholder="America/New_York"></label>
+        <label class="schedule-timezone">Timezone<input name="schedule_timezone" value="{esc(tz_name)}" placeholder="America/New_York"></label>
         <p class="schedule-help full">Selected days are the days the window begins. Overnight ranges such as 22:00–06:00 continue into the following morning. Equal start/end times mean the full selected day.</p>
       </div>
     </div>'''
@@ -2266,7 +2273,7 @@ def scopes_page(request: Request):
         state_active_selected = " selected" if scope["state"] == "active" else ""
         state_paused_selected = " selected" if scope["state"] == "paused" else ""
         scope_schedule_summary = schedule_summary(scope)
-        scope_schedule_fields = schedule_fields_html(scope)
+        scope_schedule_fields = schedule_fields_html(scope, policy_target=True)
         scope_schedule_badge = (
             '<span class="scope-list-scheduled">Scheduled</span>'
             if scope["schedule_enabled"]
@@ -2352,7 +2359,7 @@ def scopes_page(request: Request):
         cards = '<div class="empty-card">No managed policy targets yet. Add a network, endpoint, or reverse-DNS hostname to start scoping policy.</div>'
 
     new_list_editor = blocklist_editor(set())
-    new_scope_schedule_fields = schedule_fields_html(default_timezone=system_default_timezone())
+    new_scope_schedule_fields = schedule_fields_html(default_timezone=system_default_timezone(), policy_target=True)
     body = f'''<div class="split-grid scopes-layout">
       <section class="panel">
         <div class="panel-head">
