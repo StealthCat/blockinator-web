@@ -4,6 +4,8 @@
 
 # Blockinator
 
+Current source version: **1.19.13**. See [CHANGELOG.md](CHANGELOG.md) for version history. Source versions and published Docker tags are tracked separately; the pinned Docker examples below remain on the published 1.19.2 image.
+
 **Blockinator** is a self-hosted DNS policy engine and management console designed to sit beside DNS servers such as Technitium DNS Server.
 
 It accepts authenticated DNS query metadata, applies configurable pre-policy record-type bypasses, resolves the applicable client policy, evaluates whitelists and block lists, and returns an allow/block decision. The web console provides policy targeting, list management, schedules, live statistics, query history, authentication, SQLite/MySQL-backed persistence, and managed HTTPS.

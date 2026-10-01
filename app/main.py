@@ -30,7 +30,7 @@ from .timeutil import format_timestamp_for_timezone, query_range_bound
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.19.2"
+APP_VERSION = "1.19.13"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),

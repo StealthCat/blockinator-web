@@ -1,24 +1,69 @@
 # Changelog
 
-## Unreleased — Whitelist all policy target types
+Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
+
+## 1.19.13 — Dedicated whitelist target panel and version tracking
+
+- Place Whitelist target in its own clickable panel with a highlighted enabled state, clearer spacing, and concise schedule/logging hints in both themes and on mobile.
+- Correct the application version from 1.19.2 to 1.19.13 across the UI, health endpoint, and OpenAPI metadata.
+- Backfill missing version history and add a CI version/changelog check and contributor versioning instructions.
+- Source update: `1c71b82`; version-history correction follows in this update.
+
+## 1.19.12 — Whitelist all policy target types
+
+- Source update: `9800f07`.
 
 - Allow networks and exact/wildcard reverse-DNS targets to be whitelisted, including dual-stack networks.
 - Give any matching, scheduled-active whitelist precedence over filtering targets, including older or more-specific matches.
 - Hide list assignments while whitelisting is selected, preserve saved assignments, and identify target exemptions in Whitelisted query results.
 
-## Unreleased — Policy target schedule layout
+## 1.19.11 — Policy target schedule layout
+
+- Source update: `474eb29`.
 
 - Make enforcement schedules fit both target editors and the narrow add-target panel on desktop and mobile.
 - Add Every day, Weekdays, and Weekends shortcuts, a live schedule summary, and collapsible controls when scheduling is off.
 - Improve selected-day contrast and preserve existing scheduling behavior and saved values.
 
-## Unreleased — Endpoint whitelisting
+## 1.19.10 — Endpoint whitelisting
+
+- Source update: `4ab36bb`.
 
 - Add a **Whitelist endpoint** option when creating or editing IPv4/IPv6 endpoints, with a visible whitelist badge.
 - Bypass all lists for whitelisted endpoints during their configured schedule while preserving query logging and existing list assignments.
 - Upgrade existing SQLite and MySQL databases automatically; existing endpoints remain filtered by default.
 
-## Unreleased — Interface polish
+## 1.19.9 — Query Log pagination and date ranges
+
+- Add numbered pagination and configurable page sizes of 25–500 records.
+- Add timezone-aware date/time range filtering and preserve filters while paging and refreshing.
+- Source update: `0aa9e5e`.
+
+## 1.19.8 — Primary Compose installation guidance
+
+- Make Git clone plus Docker Compose the primary installation path, with Docker Hub as an alternative.
+- Source update: `1c8599a`.
+
+## 1.19.7 — Docker Hub installation documentation
+
+- Document prebuilt-image installation, credentials, HTTPS deployment, and upgrades.
+- Source update: `fec7839`.
+
+## 1.19.6 — Multi-platform Docker Hub publishing
+
+- Add validated stable-release publishing for Linux AMD64 and ARM64 images, with pinned release sources and controlled latest-tag updates.
+- Source update: `5bbd20e`.
+
+## 1.19.5 — Policy, security, and responsiveness fixes
+
+- Improve policy reload consistency, asynchronous log-write handling, admin responsiveness, and runtime readiness reporting.
+- Harden source fetching and administrative request handling, with regression coverage.
+- Remove the experimental automatic updater and Git fallback before merging the retained review fixes.
+- Source update: merge `f0586e7` (including `92e7815` and `ad6c0d9`).
+
+## 1.19.4 — Interface polish
+
+- Source update: merge `ec81e50` (`cbc9d31`).
 
 - Preserve the navy/cyan identity with scalable local SVG branding, circuit artwork, and consistent navigation icons.
 - Add shared typography and surface tokens, readable table text, quieter cards, and equal dark/light theme coverage.
@@ -27,6 +72,11 @@
 - Refresh query rows in place, preserving filters and scroll position and pausing during interaction.
 - Add mobile navigation, visible keyboard focus, a skip link, reduced-motion support, and responsive SVG chart sizing.
 - Keep policy APIs, database schemas, filtering semantics, and authentication behavior unchanged.
+
+## 1.19.3 — Complete timezone selection
+
+- Expand the settings timezone dropdown to the available IANA timezone database.
+- Source update: merge `fe47bb2` (`8b6538a`).
 
 ## 1.19.2 — Ignored DNS record types
 

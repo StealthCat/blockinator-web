@@ -20,12 +20,19 @@ jobs:
         with:
           ref: ${{ inputs.source_ref || github.sha }}
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
+
+      - name: Check version increment and changelog
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python tools/check_version.py --base-ref "$BASE_SHA"
 
       - name: Install dependencies
         run: pip install -r requirements.txt pytest httpx==0.28.1
