@@ -1,6 +1,8 @@
-# Docker Hub installation
+# Alternative installations
 
 [Back to README](../README.md) · [Recommended source installation](../README.md#quick-start-git-clone-and-docker-compose-recommended)
+
+For the recommended stable `main` setup, follow the README. This guide covers [Docker Hub](#docker-hub-with-docker-compose-and-caddy), [fixed release tags](#fixed-version-installation-optional), and [moving an existing tag checkout to main](#moving-an-existing-tag-checkout-to-main).
 
 Published image: **`stealthcat128/blockinator`**. Release `1.20.1` and `latest`
 support **Linux AMD64 and ARM64**. The examples pin `1.20.1` for predictable
@@ -158,3 +160,38 @@ method automatically updates a running deployment.
 | Port already allocated / container name already in use | An existing deployment may already occupy that port/name. Choose another host port/name or deliberately replace the old deployment; do not run both examples unchanged on the same host. |
 | New environment password does not change the login | Credentials are already stored in the database. Manage them through **Access & Security**; preserve the database. |
 | HTTPS/ACME does not work with the standalone image | Deploy the Caddy Compose stack or manage TLS with your own external reverse proxy. |
+
+## Moving an existing tag checkout to main
+
+If you used the earlier tag-based instructions, back up first and run these commands
+from the existing checkout before using the [README update procedure](../README.md#updating). This also adds
+`main` to the fetch configuration of a `--single-branch` tag clone:
+
+```bash
+git remote set-branches --add origin main
+git fetch origin
+git switch main
+git pull --ff-only
+```
+
+## Fixed-version installation (optional)
+
+To build the exact published release instead of tracking stable updates:
+
+```bash
+git clone --branch v1.20.1 --single-branch https://github.com/StealthCat/blockinator-web.git
+cd blockinator-web
+```
+
+Continue with [first-run credentials](../README.md#2-create-first-run-credentials) and the
+remaining README setup steps. A detached HEAD is normal when checking out a tag.
+For a later release, stop and back up the deployment, replace `v1.20.1` in both
+commands below with the desired published tag, then rebuild:
+
+```bash
+git fetch origin tag v1.20.1
+git checkout --detach v1.20.1
+docker compose up -d --build
+```
+
+Tag-based installations use explicit tag changes instead of `git pull`.

@@ -2,6 +2,12 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.5 — Streamlined README
+
+- Focus the README on a concise overview, one complete recommended setup, and the stable-main update procedure.
+- Move optional tag installation and checkout-transition instructions into the alternative-installation guide; consolidate setup and navigation text.
+- Preserve every Reddit review and attribution unchanged as the final README section.
+
 ## 1.20.4 — Stable main installation workflow
 
 - Recommend standard clone and fast-forward pull on stable `main`, keeping exact release-tag installation as an option.
