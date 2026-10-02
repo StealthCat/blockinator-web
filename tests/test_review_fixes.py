@@ -449,3 +449,21 @@ def test_whitelist_target_forms_preserve_assignments_and_log_filter(web, browser
     assert 'target-whitelist-test.example' in client.get('/queries?decision=whitelisted').text
     assert 'target-whitelist-test.example' not in client.get('/queries?decision=allowed').text
     client.post(f'/admin/scopes/{sid}/delete', data={'csrf_token': session.csrf_token})
+
+
+def test_system_theme_can_be_saved_and_renders_on_login_and_console(web, browser):
+    client, session = browser
+    original = web.application_theme()
+    try:
+        response = client.post('/admin/settings/appearance', data={'csrf_token': session.csrf_token, 'ui_theme': 'system'})
+        assert response.status_code == 303
+        assert web.db.get_setting('ui_theme') == 'system'
+        assert web.application_theme() == 'system'
+        for url in ('/login', '/settings'):
+            html = (TestClient(web.app).get(url) if url == '/login' else client.get(url)).text
+            assert 'data-theme-preference="system"' in html
+            assert html.index('/static/theme.js') < html.index('/static/style.css')
+        assert 'name="ui_theme" value="system" checked' in client.get('/settings').text
+    finally:
+        web.db.set_setting('ui_theme', original)
+        web._update_runtime_settings_cache(ui_theme=original)

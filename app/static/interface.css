@@ -340,3 +340,6 @@ html[data-table-density="compact"] .query-domain small, html[data-table-density=
   background: var(--surface-1); color: var(--text-muted); font-size: 11px; line-height: 1.4;
 }
 .whitelist-target-help { padding-top: 10px; border-top: 1px solid var(--border-soft); line-height: 1.6; }
+
+.appearance-choice-grid { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); }
+.appearance-preview-system { background: linear-gradient(115deg, #102131 50%, #f4f7fb 50%); }

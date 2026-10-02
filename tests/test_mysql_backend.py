@@ -53,7 +53,7 @@ def _clear_database(db: Database) -> None:
 def test_mysql_backend_schema_settings_policy_and_storage():
     db = Database()
     assert db.backend == "mysql"
-    assert db.get_setting("ui_theme") in {"dark", "light"}
+    assert db.get_setting("ui_theme") in {"system", "dark", "light"}
     _clear_database(db)
 
     db.set_settings(

@@ -561,7 +561,7 @@ class MySQLBackend:
                 "unmatched_scope_action": "allow",
                 "global_blocklist_scope_mode": "all_clients",
                 "ignored_record_types": "",
-                "ui_theme": "dark",
+                "ui_theme": "system",
                 "max_query_logs": "25000",
                 "max_query_log_age_days": "0",
                 "log_request_json": "0",

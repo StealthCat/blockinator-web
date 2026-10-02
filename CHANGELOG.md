@@ -2,6 +2,12 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.19.14 — System theme preference
+
+- Add Use system theme to Appearance and make it the default for new settings in SQLite and MySQL.
+- Resolve the device preference before styles load on all pages, including sign-in, and follow live preference changes.
+- Preserve saved explicit Dark/Light choices and synchronize browser theme color and native controls.
+
 ## 1.19.13 — Dedicated whitelist target panel and version tracking
 
 - Place Whitelist target in its own clickable panel with a highlighted enabled state, clearer spacing, and concise schedule/logging hints in both themes and on mobile.

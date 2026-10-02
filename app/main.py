@@ -30,7 +30,7 @@ from .timeutil import format_timestamp_for_timezone, query_range_bound
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.19.13"
+APP_VERSION = "1.19.14"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),
@@ -110,13 +110,13 @@ statistics_cache = StatisticsCache(db)
 _runtime_settings = db.get_settings(
     {
         "default_timezone": os.getenv("TZ", "UTC").strip() or "UTC",
-        "ui_theme": "dark",
+        "ui_theme": "system",
     }
 )
 _runtime_default_timezone = (
     _runtime_settings["default_timezone"].strip() or "UTC"
 )
-_runtime_ui_theme = _runtime_settings["ui_theme"].strip().lower() or "dark"
+_runtime_ui_theme = _runtime_settings["ui_theme"].strip().lower() or "system"
 
 auth = AuthManager(db)
 rdns = ReverseDnsResolver()
@@ -505,7 +505,7 @@ def read_upload(upload, max_bytes=MAX_BYTES):
 
 def application_theme() -> str:
     theme = _runtime_ui_theme
-    return theme if theme in {"dark", "light"} else "dark"
+    return theme if theme in {"system", "dark", "light"} else "system"
 
 
 def page(request: Request, title: str, active: str, body: str, session=None) -> HTMLResponse:
@@ -586,13 +586,13 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
         </form>"""
 
     return HTMLResponse(f"""<!doctype html>
-<html lang="en" data-theme="{ui_theme}">
+<html lang="en" data-theme="{ui_theme}" data-theme-preference="{ui_theme}">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="{theme_color}">
 <title>{esc(title)} · Blockinator</title>
 <link rel="icon" href="/static/blockinator-mark.svg">
-<link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/interface.css">
+<script src="/static/theme.js?v={APP_VERSION}"></script><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/interface.css">
 </head>
 <body>
 <a class="skip-link" href="#main-content">Skip to content</a>
@@ -728,8 +728,8 @@ def login_page(request: Request):
     error = request.query_params.get("error", "")
     ui_theme = application_theme()
     theme_color = "#f4f7fb" if ui_theme == "light" else "#071018"
-    return HTMLResponse(f"""<!doctype html><html data-theme="{ui_theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="{theme_color}"><title>Sign in · Blockinator</title><link rel="icon" href="/static/blockinator-mark.svg"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/interface.css"></head>
+    return HTMLResponse(f"""<!doctype html><html data-theme="{ui_theme}" data-theme-preference="{ui_theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="{theme_color}"><title>Sign in · Blockinator</title><link rel="icon" href="/static/blockinator-mark.svg"><script src="/static/theme.js?v={APP_VERSION}"></script><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/interface.css"></head>
 <body class="login-body"><section class="login-visual"><div class="login-shade"></div><div class="login-copy"><img src="/static/blockinator-mark.svg" alt=""><p>DNS POLICY CONTROL</p><h1>Bad traffic<br>stops here.</h1><span>Block · Filter · Protect</span></div></section>
 <section class="login-panel"><form method="post" action="/login" class="login-card"><div class="mini-brand"><img src="/static/blockinator-mark.svg" alt=""><b>Blockinator</b></div><h2>Welcome back</h2><p>Sign in to manage DNS policy, endpoints, block lists and access keys.</p>
 {"<div class='flash bad'>" + esc(error) + "</div>" if error else ""}
@@ -3250,6 +3250,11 @@ def settings_page(request: Request):
           <form method="post" action="/admin/settings/appearance" class="appearance-theme-form">
             <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
             <div class="appearance-choice-grid">
+              <label class="appearance-choice {"selected" if ui_theme == "system" else ""}">
+                <input type="radio" name="ui_theme" value="system" {"checked" if ui_theme == "system" else ""}>
+                <span class="appearance-preview appearance-preview-system" aria-hidden="true"></span>
+                <span class="appearance-choice-copy"><b>Use system theme</b><small>Default. Automatically follows this device's light or dark preference.</small></span>
+              </label>
               <label class="appearance-choice {"selected" if ui_theme == "dark" else ""}">
                 <input type="radio" name="ui_theme" value="dark" {"checked" if ui_theme == "dark" else ""}>
                 <span class="appearance-preview appearance-preview-dark" aria-hidden="true">
@@ -3344,11 +3349,11 @@ def settings_page(request: Request):
 @admin_action(require_session)
 def save_appearance_settings(request: Request):
     _, form = require_post_session(request)
-    ui_theme = str(form.get("ui_theme", "dark")).strip().lower()
-    if ui_theme not in {"dark", "light"}:
+    ui_theme = str(form.get("ui_theme", "system")).strip().lower()
+    if ui_theme not in {"system", "dark", "light"}:
         return redirect(
             "/settings#appearance",
-            error="Appearance must be set to Dark or Light",
+            error="Appearance must be set to Use system theme, Dark, or Light",
         )
     db.set_setting("ui_theme", ui_theme)
     _update_runtime_settings_cache(ui_theme=ui_theme)

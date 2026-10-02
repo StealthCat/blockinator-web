@@ -4,7 +4,7 @@
 
 # Blockinator
 
-Current source version: **1.19.13**. See [CHANGELOG.md](CHANGELOG.md) for version history. Source versions and published Docker tags are tracked separately; the pinned Docker examples below remain on the published 1.19.2 image.
+Current source version: **1.19.14**. See [CHANGELOG.md](CHANGELOG.md) for version history. Source versions and published Docker tags are tracked separately; the pinned Docker examples below remain on the published 1.19.2 image.
 
 **Blockinator** is a self-hosted DNS policy engine and management console designed to sit beside DNS servers such as Technitium DNS Server.
 
@@ -19,7 +19,7 @@ The primary installation method is to **clone this repository and run Docker Com
 
 ## Management interface
 
-The console includes dark and light themes, scalable SVG branding and icons, and responsive navigation. Select the theme under **System Settings → Appearance**.
+The console includes dark and light themes, scalable SVG branding and icons, and responsive navigation. Select **Use system theme**, **Dark**, or **Light** under **System Settings → Appearance**. New installations default to Use system theme, which follows each device’s preference and updates automatically when it changes. Existing saved Dark/Light choices are preserved.
 
 - **Query Log:** filter by domain, client, DNS server, policy target, list, decision, or date/time range. Page through matching history and choose 25–500 results per page. Expand **Details** in a row for the full timestamp, DNS server, client IP, record type, policy API scheme, matched policy target, DNS transport, and client port.
 - **Table density:** choose Comfortable or Compact on Query Log. This browser-local preference also applies to other tables.
