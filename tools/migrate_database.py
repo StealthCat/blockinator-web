@@ -642,6 +642,18 @@ def migrate_data(
                 )
             progress(f"  {table}: verified {source_digest[:12]}…")
 
+    # Imports use raw DB drivers. Rebuild derived summaries after all source
+    # tables have been verified, even if the copied settings include a marker.
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from app.mysql_backend import MySQLConnection
+    from app.rollups import initialize_rollups, rebuild_rollups
+    connection = (MySQLConnection(destination.connection)
+                  if destination.kind == "mysql" else destination.connection)
+    initialize_rollups(SimpleNamespace(backend=destination.kind,
+                                      connect=lambda: nullcontext(connection)))
+    rebuild_rollups(connection)
+
     return MigrationSummary(
         row_counts=source_counts,
         content_verified=verify_content,

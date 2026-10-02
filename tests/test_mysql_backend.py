@@ -13,6 +13,7 @@ from app.policy import PolicyEngine
 from app.rdns import ReverseDnsResult
 from app.refresher import BlocklistRefresher
 from app.statistics import build_statistics_snapshot
+from app.rollups import insert_query_logs, delete_query_logs, rebuild_rollups, retained_totals
 
 
 pytestmark = pytest.mark.skipif(
@@ -48,6 +49,7 @@ def _clear_database(db: Database) -> None:
         ):
             con.execute(f"DELETE FROM {table}")
         con.execute("SET FOREIGN_KEY_CHECKS=1")
+        rebuild_rollups(con)
 
 
 def test_mysql_backend_schema_settings_policy_and_storage():
@@ -276,31 +278,14 @@ def test_mysql_statistics_snapshot():
     _clear_database(db)
 
     with db.connect() as con:
-        con.executemany(
-            """
-            INSERT INTO query_log(
-                ts,server_id,client_ip,qname,blocked,response_time_ms
-            ) VALUES(?,?,?,?,?,?)
-            """,
-            [
-                (
-                    "2026-09-23T17:59:05+00:00",
-                    "mysql-stats",
-                    "192.0.2.10",
-                    "blocked.example",
-                    1,
-                    2.5,
-                ),
-                (
-                    "2026-09-23T17:59:35+00:00",
-                    "mysql-stats",
-                    "192.0.2.11",
-                    "allowed.example",
-                    0,
-                    3.5,
-                ),
-            ],
-        )
+        insert_query_logs(con, [
+            {"ts": "2026-09-23T17:59:05+00:00", "server_id": "mysql-stats",
+             "client_ip": "192.0.2.10", "qname": "blocked.example", "blocked": 1,
+             "response_time_ms": 2.5},
+            {"ts": "2026-09-23T17:59:35+00:00", "server_id": "mysql-stats",
+             "client_ip": "192.0.2.11", "qname": "allowed.example", "blocked": 0,
+             "response_time_ms": 3.5},
+        ])
 
     snapshot = build_statistics_snapshot(
         db,
@@ -320,23 +305,32 @@ def test_mysql_statistics_snapshot():
     assert point["blocks"] == 1
 
 
-def test_mysql_rollups_follow_updates_deletes_and_rollback():
-    from app.rollups import retained_totals
+def test_mysql_rollups_follow_log_writes_deletes_rollback_and_offline_rebuild():
     db = Database()
     _clear_database(db)
     with db.connect() as con:
-        for timing in (1.5, 3.5, None):
-            con.execute("INSERT INTO query_log(ts,client_ip,blocked,response_time_ms) VALUES('2026-10-02T12:00:00+00:00','192.0.2.1',0,?)", (timing,))
-        first = con.execute('SELECT MIN(id) AS id FROM query_log').fetchone()['id']
-        con.execute("UPDATE query_log SET blocked=1,response_time_ms=5,ts='2026-10-02T12:01:00+00:00' WHERE id=?", (first,))
+        assert not con.execute("SELECT TRIGGER_NAME FROM information_schema.TRIGGERS "
+                               "WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE='query_log'").fetchall()
+        rows = [{"ts": "2026-10-02T12:00:00+00:00", "client_ip": "192.0.2.1",
+                 "blocked": 0, "response_time_ms": timing} for timing in (1.5, 3.5, None)]
+        insert_query_logs(con, rows)
+        assert retained_totals(con) == {"queries": 3, "blocks": 0, "average_response_time_ms": 2.5}
+        ids = [r['id'] for r in con.execute('SELECT id FROM query_log ORDER BY id')]
         con.execute("UPDATE query_log SET client_name='pc.home.arpa'")
         con.execute('BEGIN')
-        con.execute('DELETE FROM query_log')
+        delete_query_logs(con, ids)
+        insert_query_logs(con, [rows[0]])
         con.execute('ROLLBACK')
+        assert retained_totals(con)['queries'] == 3
+        assert con.execute('SELECT COUNT(*) AS c FROM query_log').fetchone()['c'] == 3
+        # Offline raw-driver imports/repairs explicitly rebuild derived data.
+        con.execute("UPDATE query_log SET blocked=1,response_time_ms=5,ts='2026-10-02T12:01:00+00:00' WHERE id=?", (ids[0],))
+        rebuild_rollups(con)
         raw = con.execute('SELECT COUNT(*) AS queries,SUM(blocked) AS blocks,AVG(response_time_ms) AS average_response_time_ms FROM query_log').fetchone()
         assert retained_totals(con) == dict(raw)
-        con.execute('DELETE FROM query_log WHERE id=?', (first,))
+        assert delete_query_logs(con, [ids[0]]) == 1
+        assert delete_query_logs(con, [ids[0]]) == 0
         assert retained_totals(con)['queries'] == 2
-        con.execute('DELETE FROM query_log')
+        delete_query_logs(con, ids)
         assert retained_totals(con)['queries'] == 0
         assert con.execute("SELECT COUNT(*) AS c FROM query_statistics WHERE bucket<>'__total__'").fetchone()['c'] == 0

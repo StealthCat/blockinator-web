@@ -4,7 +4,7 @@
 
 # Blockinator
 
-Current source version: **1.20.0**. See [CHANGELOG.md](CHANGELOG.md) for version history. Source versions and published Docker tags are tracked separately; the pinned Docker examples below remain on the published 1.19.2 image.
+Current source version: **1.20.1**. See [CHANGELOG.md](CHANGELOG.md) for version history. Source versions and published Docker tags are tracked separately; the pinned Docker examples below remain on the published 1.19.2 image.
 
 **Blockinator** is a self-hosted DNS policy engine and management console designed to sit beside DNS servers such as Technitium DNS Server.
 
@@ -27,7 +27,7 @@ The primary installation method is to **clone this repository and run Docker Com
 - **Operational health:** dashboard warnings surface logger drops, uncertain commits, overdue/failed list refreshes, and stopped background workers. A pending policy rebuild is visible throughout the console and automatically retries until the committed configuration becomes active.
 - **Isolation:** console reads use a separate bounded four-thread pool (12 admitted requests); overload returns HTTP 503 with Retry-After, preserving policy-worker capacity.
 - **Schedules and imports:** schedules accept local HH:MM times, using the selected IANA zone. Seconds and UTC offsets are rejected; malformed persisted schedules are inactive and shown as invalid. Multipart pasted content uses MAX_BLOCKLIST_BYTES (100 MiB by default), with up to 4,096 form fields and four files. File upload and total-request limits still apply.
-- **Retained statistics:** transactional minute rollups and total counters replace repeated raw-log scans. Counters describe retained queries and decrease when logs are pruned. Existing installs receive a one-time backfill on startup; allow extra startup time for large databases. MySQL users need CREATE, TRIGGER and the existing data/schema permissions on the application database. Offline migration reconstructs rollups through log writes.
+- **Retained statistics:** transactional minute rollups and total counters replace repeated raw-log scans. Counters describe retained queries and decrease when logs are pruned. Existing installs receive a one-time backfill on startup; allow extra startup time for large databases. SQLite uses triggers; MySQL maintains counters in application write transactions using ordinary database permissions, without SUPER or trigger creation. Offline migration rebuilds derived counters after copying and verifying the source tables. Direct external MySQL history edits require an offline counter rebuild with `app.rollups.rebuild_rollups`.
 - **Maintenance:** age retention runs without incoming traffic, deleting at most 1,000 age-expired and 1,000 excess-count rows per transaction. Large reductions are applied progressively. PTR history backfill uses durable ID checkpoints and bounded per-client jobs instead of repeatedly scanning all retained queries.
 - **HTTPS:** Docker Compose passes HTTPS_PORT to the application so redirects and displayed URLs match the published port.
 

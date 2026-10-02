@@ -2,6 +2,12 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.1 — MySQL statistics compatibility
+
+- Maintain MySQL retained statistics in log-write and pruning transactions without requiring trigger creation or server-level SUPER privileges.
+- Rebuild derived statistics after verified offline migrations, including imports whose settings already contain the initialization marker.
+- Keep SQLite trigger-based summaries and add regression coverage for MySQL rollback and imported history.
+
 ## 1.20.0 — Reliable policy recovery, efficient history, and console tools
 
 - Retry failed policy rebuilds independently of list changes and expose pending activation and operational warnings.

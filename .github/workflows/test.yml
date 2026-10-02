@@ -146,5 +146,5 @@ jobs:
           ADMIN_PASSWORD: test-admin-password
           POLICY_API_KEY: test-policy-api-key-long-enough
           TZ: UTC
-        run: python -m pytest -q tests/test_mysql_backend.py
+        run: python -m pytest -q tests/test_mysql_backend.py tests/test_database_migration.py
 

@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .db import Database
 from .ptr_resolver import PtrResolutionManager
+from .rollups import insert_query_logs, delete_query_logs
 from .rdns import ReverseDnsResolver
 
 
@@ -159,8 +160,7 @@ def _prune_query_logs(
             "SELECT id FROM query_log WHERE ts < ? ORDER BY ts LIMIT 1000", (cutoff.isoformat(),)
         )]
         if ids:
-            cur = con.execute("DELETE FROM query_log WHERE id IN (" + ",".join("?" for _ in ids) + ")", ids)
-            age_deleted = max(0, cur.rowcount)
+            age_deleted = delete_query_logs(con, ids)
 
     if max_rows > 0:
         row = con.execute(
@@ -172,8 +172,7 @@ def _prune_query_logs(
                 "SELECT id FROM query_log WHERE id <= ? ORDER BY id LIMIT 1000", (cutoff_id,)
             )]
             if ids:
-                cur = con.execute("DELETE FROM query_log WHERE id IN (" + ",".join("?" for _ in ids) + ")", ids)
-                row_deleted = max(0, cur.rowcount)
+                row_deleted = delete_query_logs(con, ids)
 
     return age_deleted, row_deleted
 
@@ -399,46 +398,14 @@ class QueryLogger:
             commit_started = False
             try:
                 con.execute("BEGIN")
-                con.executemany(
-                    """
-                    INSERT INTO query_log(
-                      ts,server_id,client_ip,client_name,client_port,protocol,policy_scheme,
-                      qname,qtype,qclass,blocked,reason,matched_scope,matched_list,
-                      matched_list_type,response_time_ms,request_json
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    [
-                        (
-                            r["ts"],
-                            r.get("server_id"),
-                            r["client_ip"],
-                            r.get("client_name"),
-                            r.get("client_port"),
-                            r.get("protocol"),
-                            r.get("policy_scheme"),
-                            r.get("qname"),
-                            r.get("qtype"),
-                            r.get("qclass"),
-                            1 if r["blocked"] else 0,
-                            r.get("reason"),
-                            r.get("matched_scope"),
-                            r.get("matched_list"),
-                            r.get("matched_list_type"),
-                            r.get("response_time_ms"),
-                            (
-                                json.dumps(
-                                    r.get("request_obj"),
-                                    separators=(",", ":"),
-                                    ensure_ascii=False,
-                                )
-                                if self.capture_request_json
-                                and r.get("request_obj") is not None
-                                else None
-                            ),
-                        )
-                        for r in batch
-                    ],
-                )
+                insert_query_logs(con, [
+                    {**r, "blocked": 1 if r["blocked"] else 0,
+                     "request_json": (
+                         json.dumps(r.get("request_obj"), separators=(",", ":"), ensure_ascii=False)
+                         if self.capture_request_json and r.get("request_obj") is not None else None
+                     )}
+                    for r in batch
+                ])
 
                 if self._should_prune(inserted_rows):
                     deleted = _prune_query_logs(

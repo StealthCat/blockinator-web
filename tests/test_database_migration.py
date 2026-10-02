@@ -122,6 +122,12 @@ def _assert_migrated_data(endpoint: Endpoint) -> None:
     assert endpoint.count("scope_network_targets") == 1
     assert endpoint.count("scope_blocklists") == 1
     assert endpoint.count("query_log") == 1
+    from app.mysql_backend import MySQLConnection
+    from app.rollups import retained_totals
+    stats_con = (MySQLConnection(endpoint.connection) if endpoint.kind == "mysql"
+                 else endpoint.connection)
+    assert retained_totals(stats_con) == {"queries": 1, "blocks": 1,
+                                         "average_response_time_ms": 1.25}
     assert endpoint.count("client_identities") == 1
     assert endpoint.count("client_ptr_status") == 1
     assert endpoint.count("admin_users") == 1
