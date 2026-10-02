@@ -2,6 +2,14 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.2 — Documentation consolidation
+
+- Keep the recommended source-built Compose quick start in the README and move detailed deployment, user, API, operations, and contributor material into linked guides.
+- Correct ignored-question semantics, system-theme options, incremental PTR reconciliation, and statistics/retention guidance; clarify migration prerequisites and runtime authentication.
+- Consolidate repeated setup, security, and release instructions, and replace the completed TLS implementation checklist with links to current documentation.
+- Update Docker Hub examples to the successfully published 1.20.1 image.
+- Preserve all Reddit reviews unchanged as the final README section. Existing release tags and branches remain unchanged.
+
 ## 1.20.1 — MySQL statistics compatibility
 
 - Maintain MySQL retained statistics in log-write and pruning transactions without requiring trigger creation or server-level SUPER privileges.
