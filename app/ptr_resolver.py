@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import threading
 import time
@@ -204,6 +205,7 @@ class PtrResolutionManager:
                 self._run_backfill_if_due()
                 self._schedule_due()
                 self._collect_done()
+                self._backfill_known_names()
                 self._last_error = ""
             except Exception as exc:
                 self._last_error = str(exc)[:500]
@@ -299,59 +301,49 @@ class PtrResolutionManager:
 
             self._write_transaction(seed)
 
+        # Walk each historical row once using the primary key. Persist the
+        # checkpoint together with discovered clients and name updates.
+        cursor = int(self.db.get_setting("ptr_log_cursor", "0"))
         with self.db.connect() as con:
-            candidates = con.execute(
-                """
-                SELECT candidates.client_ip
-                FROM (
-                    SELECT DISTINCT client_ip FROM query_log
-                ) AS candidates
-                WHERE NOT EXISTS(
-                    SELECT 1
-                    FROM client_ptr_status AS p
-                    WHERE p.client_ip=candidates.client_ip
-                )
-                LIMIT ?
-                """,
-                (self._batch_size,),
-            ).fetchall()
+            candidates = con.execute("""SELECT q.id,q.client_ip,q.client_name,
+                i.client_name AS known_name FROM query_log q
+                LEFT JOIN client_identities i ON i.client_ip=q.client_ip
+                WHERE q.id>? ORDER BY q.id LIMIT ?""", (cursor, self._batch_size)).fetchall()
         if candidates:
-            self.observe_many(str(row["client_ip"]) for row in candidates)
+            def reconcile(con):
+                con.executemany("""INSERT OR IGNORE INTO client_ptr_status(
+                    client_ip,status,first_seen_at,last_seen_at,next_attempt_at,attempt_count)
+                    VALUES(?,'pending',?,?,0,0)""",
+                    [(address, epoch_now, epoch_now) for address in {str(r["client_ip"]) for r in candidates}])
+                con.executemany("UPDATE query_log SET client_name=? WHERE id=? AND (client_name IS NULL OR client_name='')",
+                    [(r["known_name"], r["id"]) for r in candidates if r["known_name"] and not r["client_name"]])
+                con.execute("""INSERT INTO settings(`key`,value) VALUES('ptr_log_cursor',?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (str(candidates[-1]["id"]),))
+            self._write_transaction(reconcile)
+            if len(candidates) == self._batch_size:
+                self._last_backfill = 0.0  # Continue next tick, with bounded work.
 
-        self._backfill_known_names()
+    def _backfill_name_chunk(self, con, address, hostname, after_id, through_id):
+        rows = con.execute("""SELECT id FROM query_log WHERE client_ip=?
+            AND id>? AND id<=? ORDER BY id LIMIT 128""", (address, after_id, through_id)).fetchall()
+        con.executemany("UPDATE query_log SET client_name=? WHERE id=? AND (client_name IS NULL OR client_name='')",
+                        [(hostname, row["id"]) for row in rows])
+        key = "ptr_backfill:" + address
+        if len(rows) < 128 or rows[-1]["id"] >= through_id:
+            con.execute("DELETE FROM settings WHERE `key`=?", (key,))
+        else:
+            value = json.dumps([hostname, rows[-1]["id"], through_id])
+            con.execute("""INSERT INTO settings(`key`,value) VALUES(?,?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (key, value))
 
     def _backfill_known_names(self) -> None:
         with self.db.connect() as con:
-            rows = con.execute(
-                """
-                SELECT i.client_ip,i.client_name
-                FROM client_identities AS i
-                WHERE EXISTS(
-                    SELECT 1
-                    FROM query_log AS q
-                    WHERE q.client_ip=i.client_ip
-                      AND (q.client_name IS NULL OR q.client_name='')
-                )
-                LIMIT ?
-                """,
-                (self._batch_size,),
-            ).fetchall()
-        if not rows:
-            return
-
-        def write(con) -> None:
-            for row in rows:
-                con.execute(
-                    """
-                    UPDATE query_log
-                    SET client_name=?
-                    WHERE client_ip=?
-                      AND (client_name IS NULL OR client_name='')
-                    """,
-                    (row["client_name"], row["client_ip"]),
-                )
-
-        self._write_transaction(write)
+            jobs = con.execute("""SELECT `key`,value FROM settings
+                WHERE `key` LIKE ? ORDER BY `key` LIMIT 4""", ("ptr_backfill:%",)).fetchall()
+        for job in jobs:
+            hostname, after_id, through_id = json.loads(job["value"])
+            self._write_transaction(lambda con: self._backfill_name_chunk(
+                con, job["key"].split(":", 1)[1], hostname, after_id, through_id))
 
     def _schedule_due(self) -> None:
         capacity = max(0, self.workers * 2 - len(self._inflight))
@@ -451,15 +443,8 @@ class PtrResolutionManager:
                     """,
                     (address, hostname),
                 )
-                con.execute(
-                    """
-                    UPDATE query_log
-                    SET client_name=?
-                    WHERE client_ip=?
-                      AND (client_name IS NULL OR client_name='')
-                    """,
-                    (hostname, address),
-                )
+                through_id = con.execute("SELECT COALESCE(MAX(id),0) AS id FROM query_log").fetchone()["id"]
+                self._backfill_name_chunk(con, address, hostname, 0, through_id)
 
             self._write_transaction(write_resolved)
             if hostname != previous_name:

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .db import Database
+from .rollups import retained_totals
 
 
 STATISTICS_WINDOWS = {15, 60, 360, 1440}
@@ -61,29 +62,19 @@ def build_statistics_snapshot(
     cutoff = start_minute.isoformat()
 
     with db.connect() as con:
-        totals = con.execute(
-            """
-            SELECT
-              COUNT(*) AS queries,
-              COALESCE(SUM(blocked),0) AS blocks,
-              AVG(response_time_ms) AS average_response_time_ms
-            FROM query_log
-            """
-        ).fetchone()
+        con.execute("BEGIN")
+        totals = retained_totals(con)
         minute_rows = con.execute(
             """
             SELECT
-              SUBSTR(ts,1,16) AS minute_key,
-              COUNT(*) AS queries,
-              COALESCE(SUM(blocked),0) AS blocks,
-              AVG(response_time_ms) AS average_response_time_ms,
-              COUNT(response_time_ms) AS response_samples
-            FROM query_log
-            WHERE ts >= ?
-            GROUP BY SUBSTR(ts,1,16)
-            ORDER BY minute_key
+              bucket AS minute_key, queries, blocks,
+              CASE WHEN response_samples>0 THEN response_total/response_samples ELSE NULL END
+                AS average_response_time_ms, response_samples
+            FROM query_statistics
+            WHERE bucket >= ? AND bucket <= ? AND queries>0
+            ORDER BY bucket
             """,
-            (cutoff,),
+            (cutoff[:16], end_minute.isoformat()[:16]),
         ).fetchall()
 
     raw_minutes: dict[datetime, tuple[int, int, float | None, int]] = {}

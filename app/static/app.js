@@ -1,4 +1,58 @@
 (function () {
+  function initializeFormRecovery() {
+    document.querySelectorAll('form[method="post"]').forEach(function (form) {
+      var action = new URL(form.action, window.location.href).pathname;
+      if (!/^\/admin\/(lists|scopes|settings|query-domain)(\/|$)/.test(action) || /\/(delete|toggle)$/.test(action)) return;
+      var busy = false;
+      form.addEventListener('submit', function (event) {
+        if (event.defaultPrevented) return;
+        event.preventDefault();
+        if (busy) return;
+        busy = true;
+        // Build the payload before disabling the submitter; its action chooses
+        // Save vs Refresh. Keep the original DOM (including files) on errors.
+        var data = new FormData(form);
+        var submitter = event.submitter;
+        if (submitter && submitter.name) data.append(submitter.name, submitter.value);
+        var buttons = Array.from(form.querySelectorAll('button[type="submit"], button:not([type])'));
+        var previous = buttons.map(function (button) { return button.disabled; });
+        buttons.forEach(function (button) { button.disabled = true; });
+        var message = form.querySelector('[data-form-message]');
+        if (!message) {
+          message = document.createElement('div');
+          message.setAttribute('data-form-message', '');
+          message.setAttribute('role', 'alert');
+          message.className = 'flash full';
+          form.prepend(message);
+        }
+        message.textContent = 'Saving…';
+        fetch(form.action, {method: 'POST', credentials: 'same-origin', body: data, headers: {'Accept': 'text/html'}})
+          .then(async function (response) {
+            var url = new URL(response.url);
+            if (url.pathname === '/login') { window.location.assign(url.href); return; }
+            var error = url.searchParams.get('error');
+            if (error) throw new Error(error);
+            if (!response.ok) {
+              var detail = 'Save failed. Your entries are still here; review them and retry.';
+              if ((response.headers.get('content-type') || '').includes('application/json')) {
+                var payload = await response.json();
+                if (typeof payload.detail === 'string') detail = payload.detail;
+              }
+              throw new Error(detail);
+            }
+            // Successful handlers redirect to their canonical GET page.
+            window.location.assign(response.redirected ? url.href : window.location.href);
+          }).catch(function (error) {
+            message.classList.add('bad');
+            message.textContent = error.message + ' Your entries have been preserved.';
+            message.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+          }).finally(function () {
+            busy = false;
+            buttons.forEach(function (button, index) { button.disabled = previous[index]; });
+          });
+      });
+    });
+  }
   function openHashDetails() {
     if (!window.location.hash) return;
     var target = document.getElementById(window.location.hash.slice(1));
@@ -678,6 +732,7 @@
 
   window.addEventListener("hashchange", openHashDetails);
   openHashDetails();
+  initializeFormRecovery();
   initializeGlobalAssignmentControls();
   initializeScheduleControls();
   initializeScopeKindFields();

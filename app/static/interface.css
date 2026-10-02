@@ -343,3 +343,18 @@ html[data-table-density="compact"] .query-domain small, html[data-table-density=
 
 .appearance-choice-grid { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); }
 .appearance-preview-system { background: linear-gradient(115deg, #102131 50%, #f4f7fb 50%); }
+
+.scope-effective { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin: 10px 0; }
+.scope-effective small { color: var(--text-muted); }
+.query-shortcuts { display: flex; flex-wrap: wrap; gap: 10px 16px; padding-top: 12px; }
+.operational-alerts { border-left: 3px solid #f3b653; margin-bottom: 20px; }
+.operational-alerts li { margin: 8px 0; line-height: 1.5; }
+.health-summary { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; color: var(--text-muted); }
+.policy-test-result { margin-top: 20px; }
+.policy-explanation { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin: 22px 0; }
+.policy-explanation dt { color: var(--text-muted); font-size: 12px; }
+.policy-explanation dd { margin: 5px 0 0; overflow-wrap: anywhere; }
+.policy-test-result td small { display: block; color: var(--text-muted); margin-top: 5px; }
+[data-form-message] { grid-column: 1 / -1; overflow-wrap: anywhere; }
+
+[data-schedule-controls][hidden] { display: none !important; }

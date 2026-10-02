@@ -72,8 +72,12 @@ class Database:
             bootstrap_timezone = os.getenv("TZ", "UTC").strip() or "UTC"
             with self._init_lock:
                 self._mysql.initialize(bootstrap_timezone)
+                from .rollups import initialize_rollups
+                initialize_rollups(self)
             return
         self._initialize_sqlite()
+        from .rollups import initialize_rollups
+        initialize_rollups(self)
 
     def _initialize_sqlite(self) -> None:
         with self._init_lock, self.connect() as con:
@@ -169,6 +173,7 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_query_log_ts ON query_log(ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_client ON query_log(client_ip, ts DESC);
+                CREATE INDEX IF NOT EXISTS idx_query_log_client_id ON query_log(client_ip, id);
                 CREATE INDEX IF NOT EXISTS idx_query_log_qname ON query_log(qname, ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_matched_list ON query_log(matched_list, ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_query_log_server_id ON query_log(server_id, id DESC);

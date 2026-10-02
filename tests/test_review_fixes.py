@@ -409,7 +409,7 @@ def test_endpoint_whitelist_create_edit_and_type_change(web, browser):
     page = client.get('/scopes')
     assert page.status_code == 200
     assert 'Whitelisted</span>' in page.text
-    assert 'name="whitelisted" value="1" checked' in page.text
+    assert 'name="whitelisted" value="1" checked' in client.get(f'/scopes/{sid}/edit').text
     form.pop('whitelisted')
     assert client.post(f'/admin/scopes/{sid}/edit', data=form).status_code == 303
     assert web.engine.decide(form['target'], 'example.org').reason != 'endpoint_whitelisted'
@@ -437,7 +437,7 @@ def test_whitelist_target_forms_preserve_assignments_and_log_filter(web, browser
     assert 'error=' not in result.headers['location']
     with web.db.connect() as con:
         sid = con.execute('SELECT id FROM scopes WHERE name=?', (form['name'],)).fetchone()['id']
-    page = client.get('/scopes').text
+    page = client.get(f'/scopes/{sid}/edit').text
     assert 'data-scope-list-assignments hidden' in page
     client.post(f'/admin/scopes/{sid}/edit', data=form)
     form.pop('whitelisted')

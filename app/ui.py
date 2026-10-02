@@ -3,6 +3,7 @@ from html import escape
 
 # A consistent 24px grid; no font glyphs or third-party runtime requests.
 ICON_PATHS = {
+    "policy-test": '<circle cx="10" cy="10" r="6"/><path d="m14.5 14.5 6 6M7 10l2 2 4-4"/>',
     "dashboard": '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
     "statistics": '<path d="M3 3v18h18M6 15l4-5 4 3 6-8"/>',
     "lists": '<path d="M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1"/>',
@@ -39,6 +40,12 @@ def query_details_html(row, display_time: str) -> str:
     items = ''.join('<div><dt>' + label + '</dt><dd>' +
                     escape(str(value or "—"), quote=True) + '</dd></div>'
                     for label, value in fields)
-    return ('<details class="query-details" data-query-id="' + str(int(row["id"])) + '">'
+    query_id = str(int(row["id"]))
+    links = '<a class="text-link" href="/queries/' + query_id + '/actions">Domain actions</a>'
+    if row["matched_scope"]:
+        links += '<a class="text-link" href="/queries/' + query_id + '/target">Open target</a>'
+    if "matched_list" in row.keys() and row["matched_list"]:
+        links += '<a class="text-link" href="/queries/' + query_id + '/list">Open list</a>'
+    return ('<details class="query-details" data-query-id="' + query_id + '">'
             '<summary>Details<span class="sr-only"> for ' + escape(str(row["qname"] or "")) +
-            '</span></summary><dl>' + items + '</dl></details>')
+            '</span></summary><dl>' + items + '</dl><div class="query-shortcuts">' + links + '</div></details>')

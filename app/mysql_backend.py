@@ -555,6 +555,8 @@ class MySQLBackend:
                 "blocked,id",
             )
 
+            self._ensure_index(con, "query_log", "idx_query_log_client_id", "client_ip,id")
+
             defaults = {
                 "global_blocking": "1",
                 "block_response": "nxdomain",

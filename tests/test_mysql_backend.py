@@ -318,3 +318,25 @@ def test_mysql_statistics_snapshot():
     )
     assert point["queries"] == 2
     assert point["blocks"] == 1
+
+
+def test_mysql_rollups_follow_updates_deletes_and_rollback():
+    from app.rollups import retained_totals
+    db = Database()
+    _clear_database(db)
+    with db.connect() as con:
+        for timing in (1.5, 3.5, None):
+            con.execute("INSERT INTO query_log(ts,client_ip,blocked,response_time_ms) VALUES('2026-10-02T12:00:00+00:00','192.0.2.1',0,?)", (timing,))
+        first = con.execute('SELECT MIN(id) AS id FROM query_log').fetchone()['id']
+        con.execute("UPDATE query_log SET blocked=1,response_time_ms=5,ts='2026-10-02T12:01:00+00:00' WHERE id=?", (first,))
+        con.execute("UPDATE query_log SET client_name='pc.home.arpa'")
+        con.execute('BEGIN')
+        con.execute('DELETE FROM query_log')
+        con.execute('ROLLBACK')
+        raw = con.execute('SELECT COUNT(*) AS queries,SUM(blocked) AS blocks,AVG(response_time_ms) AS average_response_time_ms FROM query_log').fetchone()
+        assert retained_totals(con) == dict(raw)
+        con.execute('DELETE FROM query_log WHERE id=?', (first,))
+        assert retained_totals(con)['queries'] == 2
+        con.execute('DELETE FROM query_log')
+        assert retained_totals(con)['queries'] == 0
+        assert con.execute("SELECT COUNT(*) AS c FROM query_statistics WHERE bucket<>'__total__'").fetchone()['c'] == 0

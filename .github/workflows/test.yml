@@ -2,7 +2,7 @@ name: Test
 
 on:
   push:
-    branches: ["main", "acme-tls", "whitelists", "fixes"]
+    branches: ["main", "dev", "acme-tls", "whitelists", "fixes"]
   pull_request:
   workflow_call:
     inputs:

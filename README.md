@@ -4,7 +4,7 @@
 
 # Blockinator
 
-Current source version: **1.19.14**. See [CHANGELOG.md](CHANGELOG.md) for version history. Source versions and published Docker tags are tracked separately; the pinned Docker examples below remain on the published 1.19.2 image.
+Current source version: **1.20.0**. See [CHANGELOG.md](CHANGELOG.md) for version history. Source versions and published Docker tags are tracked separately; the pinned Docker examples below remain on the published 1.19.2 image.
 
 **Blockinator** is a self-hosted DNS policy engine and management console designed to sit beside DNS servers such as Technitium DNS Server.
 
@@ -16,6 +16,22 @@ The primary installation method is to **clone this repository and run Docker Com
 - **MySQL 8.x** — remote persistence with connection pooling and optional TLS.
 
 > The companion Technitium integration is maintained separately in the `blockinator-technitium` repository.
+
+## Changes in 1.20.0
+
+- **Policy Tester:** preview a domain, client IP, record type, and optional local time using the active policy and learned PTR hostname. The result explains matching targets, schedules, candidate lists, and the winning rule. It does not perform DNS lookups or record test queries.
+- **Policy Targets:** search by name/address/hostname, filter by type, browse 25 targets per page, and open a dedicated editor. Cards show effective state and the next schedule transition. Overlapping rules can still override a target; use Policy Tester for the final decision.
+- **Query Log:** choose Contains, Starts with, or Exact text matching. Next/Previous use ID cursors; explicit page-number bookmarks and Last remain supported. Filtered counts are cached for up to five seconds and filter choices for 30 seconds. Retention may remove rows while browsing a snapshot.
+- **Domain shortcuts:** expand a query's Details to open the logged target/list or add the domain to a selected manual block list or whitelist. Renamed/deleted resources and expired log rows produce an explanatory message.
+- **Form recovery:** with JavaScript enabled, validation and save failures keep entered text, assignments, and selected files in the current form. Values are not copied into browser storage. Network errors preserve inputs, but the write may already have completed; check the saved state before retrying.
+- **Operational health:** dashboard warnings surface logger drops, uncertain commits, overdue/failed list refreshes, and stopped background workers. A pending policy rebuild is visible throughout the console and automatically retries until the committed configuration becomes active.
+- **Isolation:** console reads use a separate bounded four-thread pool (12 admitted requests); overload returns HTTP 503 with Retry-After, preserving policy-worker capacity.
+- **Schedules and imports:** schedules accept local HH:MM times, using the selected IANA zone. Seconds and UTC offsets are rejected; malformed persisted schedules are inactive and shown as invalid. Multipart pasted content uses MAX_BLOCKLIST_BYTES (100 MiB by default), with up to 4,096 form fields and four files. File upload and total-request limits still apply.
+- **Retained statistics:** transactional minute rollups and total counters replace repeated raw-log scans. Counters describe retained queries and decrease when logs are pruned. Existing installs receive a one-time backfill on startup; allow extra startup time for large databases. MySQL users need CREATE, TRIGGER and the existing data/schema permissions on the application database. Offline migration reconstructs rollups through log writes.
+- **Maintenance:** age retention runs without incoming traffic, deleting at most 1,000 age-expired and 1,000 excess-count rows per transaction. Large reductions are applied progressively. PTR history backfill uses durable ID checkpoints and bounded per-client jobs instead of repeatedly scanning all retained queries.
+- **HTTPS:** Docker Compose passes HTTPS_PORT to the application so redirects and displayed URLs match the published port.
+
+The application still runs as one process with an in-memory policy snapshot; do not add Uvicorn workers or replicas without cross-process policy coordination. This source release does not change the pinned published Docker image examples.
 
 ## Management interface
 
@@ -672,7 +688,7 @@ Available windows:
 
 The page refreshes every five seconds without a full browser reload. Longer windows automatically use larger buckets.
 
-Statistics are derived from retained Query Log data, so retention pruning limits statistics history and ignored record-type requests are intentionally excluded.
+Statistics use transactionally maintained rollups of retained Query Log data, so retention pruning limits statistics history and ignored record-type requests are intentionally excluded.
 
 ## Performance architecture
 

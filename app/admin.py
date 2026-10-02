@@ -12,6 +12,29 @@ from functools import wraps
 
 from fastapi import HTTPException
 from starlette.responses import JSONResponse
+from .blocklists import MAX_BYTES
+
+MAX_FORM_FIELDS = 4096
+
+# Console reads never borrow the synchronous policy endpoint's worker tokens.
+_read_workers = ThreadPoolExecutor(max_workers=4, thread_name_prefix="console-read")
+_read_slots = threading.BoundedSemaphore(12)
+
+
+def console_read(function):
+    @wraps(function)
+    async def wrapped(*args, **kwargs):
+        if not _read_slots.acquire(blocking=False):
+            raise HTTPException(503, "Console is busy; retry shortly", headers={"Retry-After": "2"})
+        try:
+            future = _read_workers.submit(function, *args, **kwargs)
+        except BaseException:
+            _read_slots.release()
+            raise
+        future.add_done_callback(lambda _: _read_slots.release())
+        return await asyncio.wrap_future(future)
+    wrapped.__signature__ = inspect.signature(function, eval_str=True)
+    return wrapped
 
 _workers = ThreadPoolExecutor(max_workers=4, thread_name_prefix="admin")
 _slots = threading.BoundedSemaphore(12)
@@ -43,7 +66,8 @@ def admin_action(require_session):
         async def wrapped(*args, **kwargs):
             request = kwargs["request"]
             session = await run_admin(require_session, request)
-            async with request.form(max_files=4, max_fields=128) as form:
+            part_limit = MAX_BYTES if request.url.path.startswith("/admin/lists") else 1024 * 1024
+            async with request.form(max_files=4, max_fields=MAX_FORM_FIELDS, max_part_size=part_limit) as form:
                 token = str(form.get("csrf_token", ""))
                 if not token or not secrets.compare_digest(token, session.csrf_token):
                     raise HTTPException(403, "invalid CSRF token")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import queue
+import re
 import threading
 import time as monotonic_time
 from dataclasses import dataclass, replace
@@ -107,11 +108,13 @@ def _compile_schedule(
     timezone_name: str,
 ) -> CompiledSchedule:
     try:
+        if not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", start_text) or not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", end_text):
+            raise ValueError("Schedules require HH:MM local times")
         start = time.fromisoformat(start_text)
         end = time.fromisoformat(end_text)
         tz = ZoneInfo(timezone_name)
         return CompiledSchedule(bool(enabled), days, start, end, tz, True)
-    except (ValueError, ZoneInfoNotFoundError):
+    except (ValueError, ZoneInfoNotFoundError, TypeError):
         return CompiledSchedule(
             bool(enabled),
             days,
@@ -152,11 +155,12 @@ def _prune_query_logs(
 
     if max_age_days > 0:
         cutoff = (now_utc or datetime.now(timezone.utc)) - timedelta(days=max_age_days)
-        cur = con.execute(
-            "DELETE FROM query_log WHERE ts < ?",
-            (cutoff.isoformat(),),
-        )
-        age_deleted = max(0, cur.rowcount)
+        ids = [row["id"] for row in con.execute(
+            "SELECT id FROM query_log WHERE ts < ? ORDER BY ts LIMIT 1000", (cutoff.isoformat(),)
+        )]
+        if ids:
+            cur = con.execute("DELETE FROM query_log WHERE id IN (" + ",".join("?" for _ in ids) + ")", ids)
+            age_deleted = max(0, cur.rowcount)
 
     if max_rows > 0:
         row = con.execute(
@@ -164,11 +168,12 @@ def _prune_query_logs(
         ).fetchone()
         cutoff_id = int(row["max_id"] or 0) - max_rows if row else 0
         if cutoff_id > 0:
-            cur = con.execute(
-                "DELETE FROM query_log WHERE id <= ?",
-                (cutoff_id,),
-            )
-            row_deleted = max(0, cur.rowcount)
+            ids = [row["id"] for row in con.execute(
+                "SELECT id FROM query_log WHERE id <= ? ORDER BY id LIMIT 1000", (cutoff_id,)
+            )]
+            if ids:
+                cur = con.execute("DELETE FROM query_log WHERE id IN (" + ",".join("?" for _ in ids) + ")", ids)
+                row_deleted = max(0, cur.rowcount)
 
     return age_deleted, row_deleted
 
@@ -337,7 +342,7 @@ class QueryLogger:
                 if con.in_transaction:
                     con.execute("ROLLBACK")
                 raise
-        self._last_prune = monotonic_time.monotonic()
+        self._last_prune = monotonic_time.monotonic() - (60.0 if max(result) >= 1000 else 0.0)
         self._rows_since_prune = 0
         return result
 
@@ -385,6 +390,8 @@ class QueryLogger:
                     break
 
             if not batch:
+                if self._should_prune(0):
+                    self._prune_connected(con)
                 continue
 
             self._pending = batch
@@ -434,12 +441,12 @@ class QueryLogger:
                 )
 
                 if self._should_prune(inserted_rows):
-                    _prune_query_logs(
+                    deleted = _prune_query_logs(
                         con,
                         self.max_rows,
                         self.max_age_days,
                     )
-                    self._last_prune = monotonic_time.monotonic()
+                    self._last_prune = monotonic_time.monotonic() - (60.0 if max(deleted) >= 1000 else 0.0)
                     self._rows_since_prune = 0
 
                 commit_started = True
@@ -467,6 +474,18 @@ class QueryLogger:
                     self._pending = []
                 raise
 
+    def _prune_connected(self, con):
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            deleted = _prune_query_logs(con, self.max_rows, self.max_age_days)
+            con.execute("COMMIT")
+        except Exception:
+            if con.in_transaction:
+                con.execute("ROLLBACK")
+            raise
+        self._last_prune = monotonic_time.monotonic() - (60.0 if max(deleted) >= 1000 else 0.0)
+        self._rows_since_prune = 0
+
 
 def serialized_reload(method):
     from functools import wraps
@@ -479,6 +498,7 @@ def serialized_reload(method):
             except Exception as exc:
                 self._reload_errors[method.__name__] = type(exc).__name__
                 self.last_reload_error = ", ".join(f"{name}: {error}" for name, error in self._reload_errors.items())
+                self._recovery_wakeup.set()
                 raise
             self.generation += 1
             if method.__name__ == "reload":
@@ -502,6 +522,8 @@ class PolicyEngine:
         self.generation = 0
         self.last_reload_error = None
         self._reload_errors = {}
+        self._recovery_wakeup = threading.Event()
+        self._recovery_stop = threading.Event()
         self._owns_rdns = rdns is None
         self.rdns = rdns or ReverseDnsResolver()
         self._active_list_cache: tuple[PolicySnapshot | None, int, int] = (None, -1, 0)
@@ -536,8 +558,27 @@ class PolicyEngine:
         )
         self.reload()
         self.ptr_resolver.start()
+        self._recovery_thread = threading.Thread(target=self._recover_policy, name="policy-recovery", daemon=True)
+        self._recovery_thread.start()
+
+    def _recover_policy(self):
+        while not self._recovery_stop.is_set():
+            self._recovery_wakeup.wait(2.0)
+            self._recovery_wakeup.clear()
+            if self._recovery_stop.is_set():
+                break
+            if self.last_reload_error:
+                # A complete rebuild reconciles every committed change, even
+                # when the next source download is unchanged or returns 304.
+                try:
+                    self.reload()
+                except Exception:
+                    self._recovery_stop.wait(2.0)
 
     def close(self) -> None:
+        self._recovery_stop.set()
+        self._recovery_wakeup.set()
+        self._recovery_thread.join(timeout=5.0)
         self.ptr_resolver.close()
         self.logger.close()
         if self._owns_rdns:
@@ -1375,8 +1416,10 @@ class PolicyEngine:
         client_ip: str,
         qname: str,
         now_utc: datetime | None = None,
+        *,
+        snapshot: PolicySnapshot | None = None,
     ) -> Decision:
-        snapshot = self._snapshot
+        snapshot = snapshot or self._snapshot
         try:
             ip = ipaddress.ip_address(client_ip)
         except ValueError:

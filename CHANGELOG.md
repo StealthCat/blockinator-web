@@ -2,6 +2,17 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.0 — Reliable policy recovery, efficient history, and console tools
+
+- Retry failed policy rebuilds independently of list changes and expose pending activation and operational warnings.
+- Isolate console reads from policy workers; pass the public HTTPS port through Compose.
+- Enforce HH:MM schedules defensively, align multipart limits with list imports, and run bounded age retention during idle periods.
+- Maintain transactional retained-query totals and minute rollups for SQLite/MySQL, including upgrades and offline imports.
+- Add cursor-based Next/Previous log navigation, cached counts/filter choices, literal exact/prefix searches, and incremental durable PTR backfill.
+- Add searchable/paginated targets with dedicated editors, effective status and next schedule transition.
+- Add a read-only Policy Tester and query shortcuts for target/list navigation and manual domain assignment.
+- Preserve editable forms in the browser on failed saves without storing form data; document limits, counter semantics and deployment requirements.
+
 ## 1.19.14 — System theme preference
 
 - Add Use system theme to Appearance and make it the default for new settings in SQLite and MySQL.

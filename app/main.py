@@ -4,6 +4,7 @@ import html
 import ipaddress
 import json
 import os
+import re
 import secrets
 from datetime import datetime, time as dt_time, timezone
 from time import perf_counter_ns
@@ -20,17 +21,20 @@ from .ui import icon, query_details_html
 from .auth import AuthManager, SESSION_COOKIE, SESSION_TTL_SECONDS
 from .blocklists import MAX_BYTES, fetch_url, normalize_domain, parse_blocklist
 from .safe_fetch import validate_source_url
-from .admin import blocking_action, admin_action, run_admin, BodyLimitMiddleware, login_limiter
+from .admin import blocking_action, admin_action, run_admin, BodyLimitMiddleware, login_limiter, console_read, MAX_FORM_FIELDS
 from .db import Database
 from .policy import PolicyEngine, normalize_hostname_pattern
 from .rdns import ReverseDnsResolver
 from .refresher import BlocklistRefresher
 from .statistics import StatisticsCache
-from .timeutil import format_timestamp_for_timezone, query_range_bound
+from .rollups import retained_totals
+from .query_cache import query_counts, query_choices, literal_pattern
+from .timeutil import format_timestamp_for_timezone, query_range_bound, parse_utc_timestamp
+from .inspector import inspect_policy, target_status
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.19.14"
+APP_VERSION = "1.20.0"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),
@@ -323,10 +327,12 @@ def parse_schedule_form(form, label: str = "block list") -> tuple[bool, str, str
     tz_name = str(form.get("schedule_timezone", "UTC")).strip() or "UTC"
 
     try:
+        if not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", start) or not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", end):
+            raise ValueError("Use HH:MM local times without seconds or offsets")
         dt_time.fromisoformat(start)
         dt_time.fromisoformat(end)
     except ValueError as exc:
-        raise ValueError("Schedule start and end must be valid times") from exc
+        raise ValueError("Schedule start and end must use HH:MM local times without seconds or offsets") from exc
 
     try:
         ZoneInfo(tz_name)
@@ -521,6 +527,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
         "whitelists": "Create explicit allow rules with the same sources, schedules, assignments, and refresh controls as block lists.",
         "scopes": "Define filtering by network, exact endpoint, or reverse-DNS hostname and control each target independently.",
         "queries": "Inspect DNS decisions, troubleshoot policy matches, and follow activity across your clients.",
+        "policy-test": "Preview a decision and see how targets, schedules and lists interact.",
         "security": "Manage administrator access and the API credentials used by connected DNS resolvers.",
         "settings": "Tune Blockinator's response behavior, retention, and core service preferences.",
     }
@@ -529,8 +536,9 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
         "statistics": (None, None, None),
         "lists": ('#add-list', 'Import a list', 'plus'),
         "whitelists": ('#add-list', 'Add whitelist', 'plus'),
-        "scopes": ('#add-scope', 'Add endpoint', 'plus'),
+        "scopes": ('/scopes#add-scope', 'Add target', 'plus'),
         "queries": ('/queries', 'Reset filters', 'refresh'),
+        "policy-test": (None, None, None),
         "security": ('#create-key', 'Create API key', 'plus'),
         "settings": (None, None, None),
     }
@@ -542,6 +550,7 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
         ("/whitelists", "whitelists", "Whitelists", "✓"),
         ("/scopes", "scopes", "Policy Targets", "◎"),
         ("/queries", "queries", "Query Log", "≡"),
+        ("/policy-test", "policy-test", "Policy Tester", "◇"),
     ]
     admin_nav = [
         ("/security", "security", "Access & Security", "◈"),
@@ -565,7 +574,9 @@ def page(request: Request, title: str, active: str, body: str, session=None) -> 
     if error:
         flash += f'<div class="flash bad"><span class="flash-icon">!</span><div><b>Something needs attention</b><span>{esc(error)}</span></div></div>'
 
-    global_on = db.get_setting("global_blocking", "1") == "1"
+    if engine.last_reload_error:
+        flash += '<div class="flash bad" role="alert">Policy changes are saved but activation is pending. Automatic retry is running. <a href="/settings#runtime">View runtime status</a></div>'
+    global_on = engine.snapshot.global_blocking
     ui_theme = application_theme()
     theme_color = "#f4f7fb" if ui_theme == "light" else "#071018"
     status_label = "Protection active" if global_on else "Protection paused"
@@ -677,7 +688,7 @@ def import_list(
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION}
 
 @app.get("/readyz")
 def readyz():
@@ -685,6 +696,7 @@ def readyz():
     return JSONResponse({"status": "ready" if ready else "degraded"}, status_code=200 if ready else 503)
 
 @app.get("/api/v1/runtime")
+@console_read
 def runtime_status(request: Request):
     require_session(request)
     return JSONResponse({"policy_generation": engine.generation,
@@ -722,6 +734,7 @@ def decision(
     }
 
 @app.get("/login", response_class=HTMLResponse)
+@console_read
 def login_page(request: Request):
     if session_for(request):
         return RedirectResponse("/", status_code=303)
@@ -760,20 +773,13 @@ def logout(request: Request):
     return response
 
 @app.get("/", response_class=HTMLResponse)
+@console_read
 def dashboard(request: Request):
     s = require_session(request)
     snapshot = engine.snapshot
     with db.connect() as con:
-        query_totals = dict(
-            con.execute(
-                """
-                SELECT
-                    COUNT(*) AS queries,
-                    COALESCE(SUM(blocked),0) AS blocked
-                FROM query_log
-                """
-            ).fetchone()
-        )
+        query_totals = retained_totals(con)
+        query_totals["blocked"] = query_totals["blocks"]
         recent = con.execute(
             """
             SELECT
@@ -808,6 +814,7 @@ def dashboard(request: Request):
         for r in recent
     ) or '<tr><td colspan="5" class="empty">No DNS decisions recorded yet.</td></tr>'
     body = f'''
+    {dashboard_alerts_html()}
     <section class="hero-card"><img src="/static/blockinator-network.svg" alt="" width="1200" height="560" fetchpriority="high"><div class="hero-overlay"><p>BLOCK · FILTER · PROTECT</p><h2>Your network. Your policy.</h2><span>Centralized DNS policy control with client-aware filtering.</span></div></section>
     <div class="stat-grid">
       <article class="stat"><span>Queries</span><strong>{totals["queries"]:,}</strong><small>Recorded decisions</small></article>
@@ -824,6 +831,7 @@ def dashboard(request: Request):
     return page(request, "Dashboard", "dashboard", body, s)
 
 @app.get("/statistics", response_class=HTMLResponse)
+@console_read
 def statistics_page(request: Request):
     s = require_session(request)
     display_timezone = system_default_timezone()
@@ -907,6 +915,7 @@ def statistics_page(request: Request):
 
 
 @app.get("/api/v1/statistics")
+@console_read
 def statistics_api(
     request: Request,
     minutes: int = 60,
@@ -928,11 +937,13 @@ def global_toggle(request: Request):
     return redirect("/", notice="Global blocking paused" if current else "Global blocking resumed")
 
 @app.get("/lists", response_class=HTMLResponse)
+@console_read
 def lists_page(request: Request):
     return _managed_lists_page(request, "block")
 
 
 @app.get("/whitelists", response_class=HTMLResponse)
+@console_read
 def whitelists_page(request: Request):
     return _managed_lists_page(request, "whitelist")
 
@@ -1105,6 +1116,7 @@ def _managed_lists_page(request: Request, list_type: str):
       <section class="panel action-panel" id="add-list">
         <div class="panel-kicker">New source</div><h3>Add {singular_label}</h3>
         <p class="panel-help">Import from a URL, upload a file, or paste rules directly. URL sources refresh automatically on their own per-list interval.</p>
+        <p class="panel-help">Paste or upload up to {MAX_BYTES // (1024 * 1024):,} MiB. Forms support up to {MAX_FORM_FIELDS:,} fields, including selected assignments.</p>
         <form method="post" action="/admin/lists" enctype="multipart/form-data" class="form-grid">
           <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
           <input type="hidden" name="list_type" value="{list_type}">
@@ -1147,6 +1159,7 @@ def _list_label(row) -> str:
 
 @app.get("/lists/{list_id}/edit", response_class=HTMLResponse)
 @app.get("/whitelists/{list_id}/edit", response_class=HTMLResponse)
+@console_read
 def managed_list_edit_page(list_id: int, request: Request):
     s = require_session(request)
 
@@ -1486,6 +1499,7 @@ def managed_list_edit_page(list_id: int, request: Request):
           </div>
         </section>
 
+        <p class="panel-help">Replacement content limit: {MAX_BYTES // (1024 * 1024):,} MiB. Assignment and other form fields: {MAX_FORM_FIELDS:,} maximum.</p>
         <div class="list-edit-savebar">
           <div>
             <b>Ready to apply changes?</b>
@@ -1537,6 +1551,7 @@ def _refresh_manual_list_count(con, list_id: int) -> int:
 
 @app.get("/lists/{list_id}/domains", response_class=HTMLResponse)
 @app.get("/whitelists/{list_id}/domains", response_class=HTMLResponse)
+@console_read
 def manual_list_domains_page(
     list_id: int,
     request: Request,
@@ -1815,7 +1830,7 @@ def add_list(request: Request):
         try:
             validate_source_url(source_url)
         except ValueError as exc:
-            return redirect("/lists", error=str(exc))
+            return redirect(base_path, error=str(exc))
     text = str(form.get("text", ""))
     global_list = str(form.get("global_list", "")) == "1"
     try:
@@ -1915,7 +1930,7 @@ def edit_list(list_id: int, request: Request):
         try:
             validate_source_url(source_url)
         except ValueError as exc:
-            return redirect("/lists", error=str(exc))
+            return redirect(f"{base_path}/{list_id}/edit", error=str(exc))
     enabled = str(form.get("enabled", "")) == "1"
     global_list = str(form.get("global_list", "")) == "1"
     try:
@@ -2130,17 +2145,39 @@ def _save_scope_network_targets(
     )
 
 @app.get("/scopes", response_class=HTMLResponse)
-def scopes_page(request: Request):
+@console_read
+def scopes_page(request: Request, q: str = "", kind: str = "",
+                page_number: int = Query(1, alias="page", ge=1), edit_id: int | None = None):
     s = require_session(request)
     with db.connect() as con:
-        scopes = con.execute("SELECT * FROM scopes ORDER BY kind,name COLLATE NOCASE").fetchall()
+        clauses, params = [], []
+        if edit_id is not None:
+            clauses.append("id=?")
+            params.append(edit_id)
+        if q:
+            clauses.append("(name LIKE ? ESCAPE '!' OR target LIKE ? ESCAPE '!' OR id IN "
+                           "(SELECT scope_id FROM scope_network_targets WHERE target LIKE ? ESCAPE '!'))")
+            params.extend([literal_pattern(q, "contains")] * 3)
+        if kind in {"network", "client", "hostname"}:
+            clauses.append("kind=?")
+            params.append(kind)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        total = con.execute("SELECT COUNT(*) AS c FROM scopes" + where, params).fetchone()["c"]
+        pages = max(1, (total + 24) // 25)
+        page_number = min(page_number, pages)
+        scopes = con.execute("SELECT * FROM scopes" + where + " ORDER BY kind,name COLLATE NOCASE LIMIT 25 OFFSET ?",
+                             [*params, (page_number - 1) * 25]).fetchall()
+        if edit_id is not None and not scopes:
+            raise HTTPException(404, "Policy target not found")
         blocklists = con.execute("SELECT * FROM blocklists ORDER BY name COLLATE NOCASE").fetchall()
         membership_rows = con.execute(
-            "SELECT scope_id,blocklist_id FROM scope_blocklists"
-        ).fetchall()
+            "SELECT scope_id,blocklist_id FROM scope_blocklists WHERE scope_id IN (" +
+            ",".join("?" for _ in scopes) + ")", [r["id"] for r in scopes]
+        ).fetchall() if scopes else []
         network_target_rows = con.execute(
-            "SELECT scope_id,family,target FROM scope_network_targets"
-        ).fetchall()
+            "SELECT scope_id,family,target FROM scope_network_targets WHERE scope_id IN (" +
+            ",".join("?" for _ in scopes) + ")", [r["id"] for r in scopes]
+        ).fetchall() if scopes else []
 
     memberships: dict[int, set[int]] = {}
     for membership in membership_rows:
@@ -2272,6 +2309,8 @@ def scopes_page(request: Request):
         kind_hostname_selected = " selected" if scope["kind"] == "hostname" else ""
         state_active_selected = " selected" if scope["state"] == "active" else ""
         state_paused_selected = " selected" if scope["state"] == "paused" else ""
+        effective_label, transition = target_status(scope, engine.snapshot.global_blocking)
+        transition_text = ("Next schedule change: " + format_timestamp_for_timezone(transition.isoformat(), system_default_timezone())) if transition else "No upcoming schedule change"
         scope_schedule_summary = schedule_summary(scope)
         scope_schedule_fields = schedule_fields_html(scope, policy_target=True)
         scope_schedule_badge = (
@@ -2288,36 +2327,7 @@ def scopes_page(request: Request):
             ),
         }.get(scope["kind"], ("Policy target", "Changing the type changes target validation."))
 
-        cards += f'''<article class="scope-card editable-scope-card" id="scope-{int(scope["id"])}">
-          <div class="scope-card-summary">
-            <div class="scope-summary-main">
-              <div class="scope-icon {scope_kind_class}">{scope_kind_icon}</div>
-              <div class="scope-summary-copy">
-                <div class="scope-summary-title">
-                  <h3>{esc(scope["name"])}</h3>
-                  <span class="pill">{esc(scope_kind_label)}</span>
-                  <span class="pill {"green" if scope["state"] == "active" else "amber"}">{esc(scope["state"])}</span>
-                  {'<span class="pill green">Whitelisted</span>' if scope["whitelisted"] else ''}
-                  {scope_schedule_badge}
-                </div>
-                <div class="scope-summary-target">{target_html}</div>
-                <p class="scope-assignment-summary">{esc(assigned_summary)}</p>
-                <p class="scope-schedule-summary {"scheduled" if scope["schedule_enabled"] else ""}">{esc(scope_schedule_summary)}</p>
-              </div>
-            </div>
-            <div class="actions scope-card-actions">
-              <form method="post" action="/admin/scopes/{int(scope["id"])}/toggle">
-                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
-                <button class="small-button">{"Pause" if scope["state"] == "active" else "Resume"}</button>
-              </form>
-              <a class="small-button edit-link" href="#edit-scope-{int(scope["id"])}">Edit & assign</a>
-              <form method="post" action="/admin/scopes/{int(scope["id"])}/delete" onsubmit="return confirm('Delete this scope and its list assignments?')">
-                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
-                <button class="small-button danger">Delete</button>
-              </form>
-            </div>
-          </div>
-          <details class="scope-editor" id="edit-scope-{int(scope["id"])}">
+        editor_html = f'''          <details open class="scope-editor" id="edit-scope-{int(scope["id"])}">
             <summary><span><b>Edit {esc(scope_kind_label.lower())}</b><small>Identity, target, state, schedule and list assignments</small></span><span class="editor-chevron">⌄</span></summary>
             <div class="scope-edit-body">
               <form method="post" action="/admin/scopes/{int(scope["id"])}/edit" class="form-grid scope-edit-form">
@@ -2353,25 +2363,67 @@ def scopes_page(request: Request):
 
                 <div class="editor-actions full">
                   <button class="primary-button" type="submit">Save changes</button>
-                  <button class="small-button" type="button" onclick="this.closest('details').open=false">Close editor</button>
+                  <a class="small-button" href="/scopes">Back to targets</a>
                 </div>
               </form>
             </div>
-          </details>
+          </details>''' if edit_id is not None else ''
+        cards += f'''<article class="scope-card editable-scope-card" id="scope-{int(scope["id"])}">
+          <div class="scope-card-summary">
+            <div class="scope-summary-main">
+              <div class="scope-icon {scope_kind_class}">{scope_kind_icon}</div>
+              <div class="scope-summary-copy">
+                <div class="scope-summary-title">
+                  <h3>{esc(scope["name"])}</h3>
+                  <span class="pill">{esc(scope_kind_label)}</span>
+                  <span class="pill {"green" if scope["state"] == "active" else "amber"}">{esc(scope["state"])}</span>
+                  {'<span class="pill green">Whitelisted</span>' if scope["whitelisted"] else ''}
+                  {scope_schedule_badge}
+                </div>
+                <div class="scope-summary-target">{target_html}</div>
+                <p class="scope-effective"><b>{esc(effective_label)}</b><small>{esc(transition_text)}</small></p>
+                <p class="scope-assignment-summary">{esc(assigned_summary)}</p>
+                <p class="scope-schedule-summary {"scheduled" if scope["schedule_enabled"] else ""}">{esc(scope_schedule_summary)}</p>
+              </div>
+            </div>
+            <div class="actions scope-card-actions">
+              <form method="post" action="/admin/scopes/{int(scope["id"])}/toggle">
+                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+                <button class="small-button" title="Pausing blocking allows queries; it does not disable a whitelist">{"Pause blocking" if scope["state"] == "active" else "Resume blocking"}</button>
+              </form>
+              <a class="small-button edit-link" href="/scopes/{int(scope["id"])}/edit">Edit & assign</a>
+              <form method="post" action="/admin/scopes/{int(scope["id"])}/delete" onsubmit="return confirm('Delete this scope and its list assignments?')">
+                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+                <button class="small-button danger">Delete</button>
+              </form>
+            </div>
+          </div>
+          {editor_html}
         </article>'''
 
     if not cards:
         cards = '<div class="empty-card">No managed policy targets yet. Add a network, endpoint, or reverse-DNS hostname to start scoping policy.</div>'
 
+    if edit_id is not None:
+        return page(request, "Edit policy target", "scopes", '<a class="text-link" href="/scopes">← All policy targets</a>' + cards, s)
+    type_options = "".join(f'<option value="{value}"{" selected" if kind == value else ""}>{label}</option>'
+                           for value, label in (("", "All types"), ("network", "Networks"), ("client", "Endpoints"), ("hostname", "Hostnames")))
+    pagination = f'<span>Page {page_number:,} of {pages:,}</span>'
+    for number, label in ((page_number - 1, "Previous"), (page_number + 1, "Next")):
+        if 1 <= number <= pages:
+            url = "/scopes?" + urlencode({"q": q, "kind": kind, "page": number})
+            pagination += f'<a class="small-button" href="{esc(url)}">{label}</a>'
     new_list_editor = blocklist_editor(set())
     new_scope_schedule_fields = schedule_fields_html(default_timezone=system_default_timezone(), policy_target=True)
     body = f'''<div class="split-grid scopes-layout">
       <section class="panel">
         <div class="panel-head">
-          <div><div class="panel-kicker">Policy targets</div><h3>Networks, endpoints & hostnames</h3><p>Edit targets, schedules, pause/resume enforcement, and block-list and whitelist assignments without leaving this page.</p></div>
-          <span class="result-count">{len(scopes)} scopes</span>
+          <div><div class="panel-kicker">Policy targets</div><h3>Networks, endpoints & hostnames</h3><p>Find a target, inspect its effective state, and open its editor to change policy.</p></div>
+          <span class="result-count">{total:,} matching targets</span>
         </div>
-        <div class="scope-card-list">{cards}</div>
+        <form method="get" class="filter-bar"><label>Search targets<input name="q" value="{esc(q)}" placeholder="Name, address or hostname"></label>
+          <label>Type<select name="kind">{type_options}</select></label><button class="primary-button">Search</button><a href="/scopes" class="text-link">Reset</a></form>
+        <div class="scope-card-list">{cards}</div><nav class="query-pagination" aria-label="Policy target pages">{pagination}</nav>
       </section>
 
       <section class="panel action-panel" id="add-scope">
@@ -2406,6 +2458,12 @@ def scopes_page(request: Request):
       </section>
     </div>'''
     return page(request, "Policy Targets", "scopes", body, s)
+
+
+@app.get("/scopes/{scope_id}/edit", response_class=HTMLResponse)
+@console_read
+def scope_edit_page(scope_id: int, request: Request):
+    return scopes_page.__wrapped__(request, q="", kind="", page_number=1, edit_id=scope_id)
 
 
 def _blocklist_ids_from_form(form) -> list[int]:
@@ -2536,15 +2594,15 @@ def edit_scope(scope_id: int, request: Request):
             form, "policy target"
         )
     except ValueError as e:
-        return redirect(f"/scopes#edit-scope-{scope_id}", error=str(e))
+        return redirect(f"/scopes/{scope_id}/edit", error=str(e))
     blocklist_ids = _blocklist_ids_from_form(form)
 
     if not name:
-        return redirect(f"/scopes#edit-scope-{scope_id}", error="Scope name is required")
+        return redirect(f"/scopes/{scope_id}/edit", error="Scope name is required")
     if kind not in {"network", "client", "hostname"}:
-        return redirect(f"/scopes#edit-scope-{scope_id}", error="Scope type must be Network, Endpoint, or Reverse-DNS Hostname")
+        return redirect(f"/scopes/{scope_id}/edit", error="Scope type must be Network, Endpoint, or Reverse-DNS Hostname")
     if state not in {"active", "paused"}:
-        return redirect(f"/scopes#edit-scope-{scope_id}", error="Scope state must be active or paused")
+        return redirect(f"/scopes/{scope_id}/edit", error="Scope state must be active or paused")
     try:
         if kind == "network":
             target_v4, target_v6 = _normalize_network_targets(target_v4_raw, target_v6_raw)
@@ -2559,7 +2617,7 @@ def edit_scope(scope_id: int, request: Request):
             "network": "network CIDRs",
             "hostname": "PTR hostname pattern",
         }.get(kind, "policy target")
-        return redirect(f"/scopes#edit-scope-{scope_id}", error=f"Invalid {label}: {e}")
+        return redirect(f"/scopes/{scope_id}/edit", error=f"Invalid {label}: {e}")
 
     with db.connect() as con:
         existing = con.execute("SELECT id FROM scopes WHERE id=?", (scope_id,)).fetchone()
@@ -2586,7 +2644,7 @@ def edit_scope(scope_id: int, request: Request):
             con.execute("COMMIT")
         except Exception as e:
             con.execute("ROLLBACK")
-            return redirect(f"/scopes#edit-scope-{scope_id}", error=f"Could not save scope: {e}")
+            return redirect(f"/scopes/{scope_id}/edit", error=f"Could not save scope: {e}")
 
     engine.reload_scopes()
     return redirect(
@@ -2616,6 +2674,7 @@ def delete_scope(scope_id: int, request: Request):
 
 @app.get("/queries/rows", response_class=HTMLResponse)
 @app.get("/queries", response_class=HTMLResponse)
+@console_read
 def queries_page(
     request: Request,
     q: str = "",
@@ -2630,18 +2689,24 @@ def queries_page(
     snapshot: int | None = Query(None, ge=0, le=9223372036854775807),
     start: str = "",
     end: str = "",
+    match: str = "contains",
+    before: int | None = Query(None, ge=1),
+    after: int | None = Query(None, ge=1),
 ):
     s = require_session(request)
+    if before is not None and after is not None:
+        raise HTTPException(400, "Choose either a before or after cursor")
+    if match not in {"contains", "prefix", "exact"}:
+        match = "contains"
     clauses, args = [], []
     if q:
-        clauses.append("qname LIKE ?")
-        args.append("%" + q + "%")
+        clauses.append("qname = ?" if match == "exact" else "qname LIKE ? ESCAPE '!'")
+        args.append(q if match == "exact" else literal_pattern(q, match))
     if client:
-        clauses.append(
-            "(client_ip LIKE ? OR client_name LIKE ? OR "
-            "client_ip IN (SELECT client_ip FROM client_identities WHERE client_name LIKE ?))"
-        )
-        client_pattern = "%" + client + "%"
+        operator = "= ?" if match == "exact" else "LIKE ? ESCAPE '!'"
+        clauses.append(f"(client_ip {operator} OR client_name {operator} OR "
+                       f"client_ip IN (SELECT client_ip FROM client_identities WHERE client_name {operator}))")
+        client_pattern = client if match == "exact" else literal_pattern(client, match)
         args.extend([client_pattern, client_pattern, client_pattern])
     if server:
         clauses.append("server_id = ?")
@@ -2650,8 +2715,8 @@ def queries_page(
         clauses.append("matched_scope = ?")
         args.append(target)
     if blocklist:
-        clauses.append("matched_list LIKE ?")
-        args.append("%" + blocklist + "%")
+        clauses.append("matched_list = ?" if match == "exact" else "matched_list LIKE ? ESCAPE '!'")
+        args.append(blocklist if match == "exact" else literal_pattern(blocklist, match))
     if decision == "blocked":
         clauses.append("blocked=1")
     elif decision == "whitelisted":
@@ -2681,45 +2746,44 @@ def queries_page(
 
     limit = max(25, min(limit, 500))
     refresh = refresh if refresh in {0, 5, 10, 15, 30, 60} else 0
-    pinned = snapshot is not None or page_number > 1
+    pinned = snapshot is not None or page_number > 1 or before is not None or after is not None
     with db.connect() as con:
         if snapshot is None:
             snapshot = con.execute("SELECT COALESCE(MAX(id),0) AS latest FROM query_log").fetchone()["latest"]
         clauses.append("id <= ?")
         args.append(snapshot)
         where = " WHERE " + " AND ".join(clauses)
-        total = con.execute("SELECT COUNT(*) AS total FROM query_log" + where, args).fetchone()["total"]
+        count_key = (db.backend, db.path, tuple(clauses), tuple(args if pinned else args[:-1]), pinned)
+        if not pinned and len(clauses) == 1:
+            total = retained_totals(con)["queries"]
+        else:
+            total = query_counts.get(count_key, lambda: con.execute(
+                "SELECT COUNT(*) AS total FROM query_log" + where, args).fetchone()["total"])
         pages = max(1, (total + limit - 1) // limit)
         page_number = min(page_number, pages)
         offset = (page_number - 1) * limit
-        rows = con.execute("SELECT * FROM query_log" + where + " ORDER BY id DESC LIMIT ? OFFSET ?",
-                           [*args, limit, offset]).fetchall()
+        if before is not None:
+            rows = con.execute("SELECT * FROM query_log" + where + " AND id < ? ORDER BY id DESC LIMIT ?",
+                               [*args, before, limit]).fetchall()
+        elif after is not None:
+            rows = list(reversed(con.execute("SELECT * FROM query_log" + where + " AND id > ? ORDER BY id ASC LIMIT ?",
+                                            [*args, after, limit]).fetchall()))
+        else:
+            # Offset is only used for explicit page bookmarks / Last, not
+            # Next/Previous navigation, which remains constant-cost by ID.
+            rows = con.execute("SELECT * FROM query_log" + where + " ORDER BY id DESC LIMIT ? OFFSET ?",
+                               [*args, limit, offset]).fetchall()
         rows_only = request.url.path == "/queries/rows"
         if not rows_only:
-            server_rows = con.execute(
-                """
-                SELECT DISTINCT server_id
-                FROM query_log
-                WHERE server_id IS NOT NULL AND TRIM(server_id) <> ''
-                ORDER BY server_id COLLATE NOCASE
-                """
-            ).fetchall()
-            target_rows = con.execute(
-                """
-                SELECT DISTINCT matched_scope
-                FROM query_log
-                WHERE matched_scope IS NOT NULL AND TRIM(matched_scope) <> ''
-                ORDER BY matched_scope COLLATE NOCASE
-                """
-            ).fetchall()
-            blocklist_rows = con.execute(
-                """
-                SELECT DISTINCT matched_list
-                FROM query_log
-                WHERE matched_list IS NOT NULL AND TRIM(matched_list) <> ''
-                ORDER BY matched_list COLLATE NOCASE
-                """
-            ).fetchall()
+            server_rows = query_choices.get((db.backend, db.path, "server_id"), lambda: con.execute(
+                "SELECT DISTINCT server_id FROM query_log WHERE server_id IS NOT NULL AND TRIM(server_id)<>'' ORDER BY server_id COLLATE NOCASE"
+            ).fetchall())
+            target_rows = query_choices.get((db.backend, db.path, "matched_scope"), lambda: con.execute(
+                "SELECT DISTINCT matched_scope FROM query_log WHERE matched_scope IS NOT NULL AND TRIM(matched_scope)<>'' ORDER BY matched_scope COLLATE NOCASE"
+            ).fetchall())
+            blocklist_rows = query_choices.get((db.backend, db.path, "matched_list"), lambda: con.execute(
+                "SELECT DISTINCT matched_list FROM query_log WHERE matched_list IS NOT NULL AND TRIM(matched_list)<>'' ORDER BY matched_list COLLATE NOCASE"
+            ).fetchall())
 
     query_client_names = log_client_names(rows)
     display_timezone = system_default_timezone()
@@ -2738,16 +2802,16 @@ def queries_page(
     last = offset + len(rows) if rows else 0
     summary = f"Showing {first:,}–{last:,} of {total:,} matching requests · times shown in {display_timezone}."
     parameters = dict(q=q, client=client, server=server, target=target, blocklist=blocklist,
-                      decision=decision, limit=limit, refresh=refresh, start=start, end=end)
-    def page_link(number, label):
-        url = "/queries?" + urlencode({**parameters, "page": number, "snapshot": snapshot})
+                      decision=decision, limit=limit, refresh=refresh, start=start, end=end, match=match)
+    def page_link(number, label, **cursor):
+        url = "/queries?" + urlencode({**parameters, "page": number, "snapshot": snapshot, **cursor})
         return f'<a class="small-button" href="{esc(url)}">{label}</a>'
     controls = []
     if page_number > 1:
-        controls.extend([page_link(1, "First"), page_link(page_number - 1, "Previous")])
+        controls.extend([page_link(1, "First"), page_link(page_number - 1, "Previous", **({"after": rows[0]["id"]} if rows else {}))])
     controls.append(f'<span aria-current="page">Page {page_number:,} of {pages:,}</span>')
     if page_number < pages:
-        controls.extend([page_link(page_number + 1, "Next"), page_link(pages, "Last")])
+        controls.extend([page_link(page_number + 1, "Next", **({"before": rows[-1]["id"]} if rows else {})), page_link(pages, "Last")])
     latest_url = "/queries?" + urlencode(parameters)
     controls.append(f'<a class="text-link" href="{esc(latest_url)}">Latest results</a>')
     pagination = '<nav class="query-pagination" aria-label="Query log pages">' + "".join(controls) + '</nav>'
@@ -2782,6 +2846,8 @@ def queries_page(
         )
     )
 
+    match_options = "".join(f'<option value="{value}"{" selected" if match == value else ""}>{label}</option>'
+                            for value, label in (("contains", "Contains"), ("prefix", "Starts with"), ("exact", "Exact match")))
     body = f'''<section class="panel" data-query-log-refresh="{refresh}" data-query-snapshot="{1 if pinned else 0}">
       <div class="panel-head query-head">
         <div><div class="panel-kicker">DNS activity</div><h3>Decision history</h3>
@@ -2789,6 +2855,7 @@ def queries_page(
         <div class="query-toolbar"><label class="density-control">Density<select data-table-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><span class="result-count">{total:,} results</span></div>
       </div>
       <form class="filter-bar query-filter-bar" method="get">
+        <label>Text matching<select name="match">{match_options}</select></label>
         <label>Domain<input name="q" value="{esc(q)}" placeholder="Domain contains…"></label>
         <label>Client IP or hostname<input name="client" value="{esc(client)}" placeholder="Client IP or hostname…"></label>
         <label>DNS server<select name="server">{server_options}</select></label>
@@ -2807,6 +2874,7 @@ def queries_page(
         <label>Auto refresh<select name="refresh" title="Query log auto refresh interval">{refresh_options}</select></label>
         <button class="primary-button">Filter</button>
       </form>
+      <p class="panel-help">Filtered counts refresh at most every five seconds. Retention may remove older rows while browsing.</p>
       <p class="query-refresh-status" data-query-refresh-status role="status" aria-live="polite"></p>
       <div class="table-wrap"><table class="query-table">
         <thead><tr><th>Domain / type</th><th>Client</th><th>Decision / match</th><th>Response time</th><th>Time / details</th></tr></thead>
@@ -2816,7 +2884,144 @@ def queries_page(
     </section>'''
     return page(request, "Query Log", "queries", body, s)
 
+
+def dashboard_alerts_html():
+    alerts = []
+    logger = engine.logger.status()
+    if not logger["running"]:
+        alerts.append("The query logger has stopped.")
+    if logger["dropped_rows"]:
+        alerts.append(f'{logger["dropped_rows"]:,} log rows have been dropped since startup.')
+    if logger["uncertain_rows"]:
+        alerts.append(f'{logger["uncertain_rows"]:,} log writes have an uncertain commit result.')
+    if logger["last_error"]:
+        alerts.append("Query logging is reporting a database error.")
+    if logger["queue_depth"] >= 5000:
+        alerts.append(f'Query logging is falling behind: {logger["queue_depth"]:,} rows queued.')
+    if not refresher.status()["running"]:
+        alerts.append("The list refresh worker is not running.")
+    if not engine.ptr_resolver.running:
+        alerts.append("The PTR resolver worker is not running.")
+    now = datetime.now(timezone.utc)
+    with db.connect() as con:
+        rows = con.execute("SELECT name,last_refresh_attempt,last_error,refresh_minutes FROM blocklists WHERE source_type='url' AND enabled=1").fetchall()
+    for row in rows:
+        attempted = parse_utc_timestamp(str(row["last_refresh_attempt"] or ""))
+        if row["last_error"]:
+            alerts.append(f'List “{row["name"]}” failed to refresh; its previous contents remain in use.')
+        elif attempted is None or (now - attempted).total_seconds() > max(120, int(row["refresh_minutes"]) * 120):
+            alerts.append(f'List “{row["name"]}” is awaiting refresh or is overdue.')
+    if not alerts:
+        return '<div class="health-summary"><span class="big-dot green"></span>Background services are healthy</div>'
+    items = "".join(f'<li>{esc(item)}</li>' for item in alerts[:12])
+    return f'<section class="panel operational-alerts" role="status"><h3>Needs attention</h3><ul>{items}</ul><a class="text-link" href="/settings#runtime">Runtime diagnostics</a> · <a class="text-link" href="/lists">Review lists</a></section>'
+
+
+@app.get("/policy-test", response_class=HTMLResponse)
+@console_read
+def policy_test_page(request: Request, client: str = "", domain: str = "", record_type: str = "A", at: str = ""):
+    session = require_session(request)
+    result_html = ""
+    zone = system_default_timezone()
+    if client or domain:
+        try:
+            address = str(ipaddress.ip_address(client.strip()))
+            question = Question(name=domain.strip(), type=record_type)
+            when = datetime.fromisoformat(query_range_bound(at, zone)) if at else datetime.now(timezone.utc)
+            result = inspect_policy(engine, address, question.name, question.type, when)
+            decision = result["decision"]
+            outcome = "Ignored" if result["ignored"] else "Blocked" if decision["block"] else "Allowed"
+            scope_rows = "".join(f'<tr><td><a href="/scopes/{row["id"]}/edit">{esc(row["name"])}</a><small>{esc(row["target"])}</small></td>'
+                f'<td>{"Whitelist" if row["whitelisted"] else esc(row["state"])}</td>'
+                f'<td>{"Active" if row["schedule_active"] else "Inactive"} · {esc(row["timezone"])}<small>{esc(row["schedule_start"])}–{esc(row["schedule_end"]) if row["scheduled"] else "always"}</small></td></tr>'
+                for row in result["scopes"]) or '<tr><td colspan="3">No matching target. The unmatched-client default is ' + esc(result["unmatched_scope_action"]) + '.</td></tr>'
+            list_rows = "".join(f'<tr><td><a href="/{"whitelists" if row["type"] == "whitelist" else "lists"}/{row["id"]}/edit">{esc(row["name"])}</a></td>'
+                f'<td>{esc(row["type"])}</td><td>{"Active" if row["enabled"] and row["schedule_active"] else "Inactive"} · {esc(row["timezone"])}</td><td>{esc(row["matched_domain"] or "No domain match")}</td></tr>'
+                for row in result["lists"]) or '<tr><td colspan="4">No applicable lists.</td></tr>'
+            result_html = f'''<section class="panel policy-test-result"><div class="panel-kicker">Decision preview</div><h3>{outcome}</h3>
+              <p><b>{esc(decision["reason"])}</b> · {esc(format_timestamp_for_timezone(result["time"], zone))}</p>
+              <dl class="policy-explanation"><div><dt>Winning target</dt><dd>{esc(decision.get("matched_scope") or "None")}</dd></div>
+              <div><dt>Winning list / domain</dt><dd>{esc(decision.get("matched_list") or "None")} · {esc(decision.get("matched_domain") or "—")}</dd></div>
+              <div><dt>Learned PTR hostname</dt><dd>{esc(result["hostname"] or "Not currently known; hostname targets cannot match yet")}</dd></div></dl>
+              <p class="panel-help">An active whitelist target overrides filtering targets. Otherwise endpoint, hostname and network priority determines pause behavior; applicable lists are combined and whitelist domains win. Global pause and ignored types bypass filtering.</p>
+              <h4>Matching targets and schedules</h4><div class="table-wrap"><table><thead><tr><th>Target</th><th>Mode</th><th>Schedule</th></tr></thead><tbody>{scope_rows}</tbody></table></div>
+              <h4>Applicable lists before bypass rules</h4><div class="table-wrap"><table><thead><tr><th>List</th><th>Type</th><th>Schedule</th><th>Domain match</th></tr></thead><tbody>{list_rows}</tbody></table></div></section>'''
+        except (ValueError, TypeError) as exc:
+            result_html = f'<div class="flash bad" role="alert">{esc(str(exc))}</div>'
+    body = f'''<section class="panel"><h3>Test a policy decision</h3><p>Uses the active policy and currently learned PTR name. This preview does not send DNS requests, create log rows, or change settings.</p>
+      <form method="get" class="form-grid"><label>Client IP<input name="client" value="{esc(client)}" required placeholder="192.168.1.42"></label>
+      <label>Domain<input name="domain" value="{esc(domain)}" required placeholder="example.com"></label>
+      <label>Record type<input name="record_type" value="{esc(record_type)}" required maxlength="16"></label>
+      <label>Optional time ({esc(zone)})<input type="datetime-local" name="at" value="{esc(at)}" step="1"></label>
+      <p class="panel-help full">Leave time blank for now. On an autumn clock change, an ambiguous time uses its first occurrence.</p>
+      <button class="primary-button">Test decision</button></form></section>{result_html}'''
+    return page(request, "Policy Tester", "policy-test", body, session)
+
+
+@app.get("/queries/{query_id}/target")
+@console_read
+def query_target_link(query_id: int, request: Request):
+    require_session(request)
+    with db.connect() as con:
+        row = con.execute("SELECT s.id FROM scopes s JOIN query_log q ON q.matched_scope=s.name WHERE q.id=?", (query_id,)).fetchone()
+    return redirect(f'/scopes/{row["id"]}/edit') if row else redirect('/scopes', error="The logged target was renamed, removed, or its log row expired")
+
+
+@app.get("/queries/{query_id}/list")
+@console_read
+def query_list_link(query_id: int, request: Request):
+    require_session(request)
+    with db.connect() as con:
+        row = con.execute("SELECT b.id,b.list_type FROM blocklists b JOIN query_log q ON q.matched_list=b.name WHERE q.id=?", (query_id,)).fetchone()
+    return redirect(f'{_list_base_path(row)}/{row["id"]}/edit') if row else redirect('/lists', error="The logged list was renamed, removed, or its log row expired")
+
+
+@app.get("/queries/{query_id}/actions", response_class=HTMLResponse)
+@console_read
+def query_actions_page(query_id: int, request: Request):
+    session = require_session(request)
+    with db.connect() as con:
+        row = con.execute("SELECT qname,client_ip,qtype FROM query_log WHERE id=?", (query_id,)).fetchone()
+        lists = con.execute("SELECT id,name,list_type FROM blocklists WHERE source_type='manual' ORDER BY list_type,name COLLATE NOCASE").fetchall()
+    if not row:
+        return redirect('/queries', error="This log record has expired")
+    options = "".join(f'<option value="{item["id"]}">{"Whitelist" if item["list_type"] == "whitelist" else "Block list"} · {esc(item["name"])}</option>' for item in lists)
+    tester = '/policy-test?' + urlencode({'client': row['client_ip'], 'domain': row['qname'], 'record_type': row['qtype'] or 'A'})
+    body = f'''<section class="panel"><h3>{esc(row["qname"])}</h3><p>Add this domain to an existing manual list. The domain and its subdomains will follow that list's targeting and schedule.</p>
+      <a class="text-link" href="{esc(tester)}">Preview current policy →</a>
+      <form method="post" action="/admin/query-domain" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(session.csrf_token)}">
+      <label>Domain<input name="domain" value="{esc(row["qname"])}" required></label><label>Destination list<select name="list_id" required>{options}</select></label>
+      <button class="primary-button" {"disabled" if not lists else ""}>Add domain</button></form>
+      <p class="panel-help">URL-backed and uploaded lists are excluded because replacement imports would overwrite this edit. <a href="/lists#add-list">Create a manual block list</a> or <a href="/whitelists#add-list">whitelist</a>.</p>
+      <a class="text-link" href="/queries">← Query Log</a></section>'''
+    return page(request, "Domain actions", "queries", body, session)
+
+
+@app.post("/admin/query-domain")
+@admin_action(require_session)
+def query_add_domain(request: Request):
+    _, form = require_post_session(request)
+    domain = normalize_domain(str(form.get("domain", "")))
+    try:
+        list_id = int(form.get("list_id", ""))
+    except (TypeError, ValueError):
+        return redirect('/queries', error="Select a manual list")
+    if not domain:
+        return redirect('/queries', error="Enter a valid domain with at least two labels")
+    with db.connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
+        if not row or row["source_type"] != "manual":
+            con.execute("ROLLBACK")
+            return redirect('/queries', error="Select an existing manual list")
+        db.add_list_domain(con, list_id, domain)
+        _refresh_manual_list_count(con, list_id)
+        con.execute("COMMIT")
+    engine.reload_lists()
+    return redirect(f'{_list_base_path(row)}/{list_id}/edit', notice=f'Added {domain}')
+
 @app.get("/security", response_class=HTMLResponse)
+@console_read
 def security_page(request: Request):
     s = require_session(request)
     keys = auth.list_api_keys()
@@ -2860,7 +3065,7 @@ def create_key(request: Request):
     try:
         _id, raw = auth.create_api_key(str(form.get("name","")).strip())
         request.state.new_api_key = raw
-        return security_page(request)
+        return security_page.__wrapped__(request)
     except ValueError as e:
         return redirect("/security", error=str(e))
 
@@ -2889,6 +3094,7 @@ def delete_key(key_id: int, request: Request):
     return redirect("/security", notice="API key deleted")
 
 @app.get("/settings", response_class=HTMLResponse)
+@console_read
 def settings_page(request: Request):
     s = require_session(request)
     snapshot = engine.snapshot
