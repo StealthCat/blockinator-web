@@ -6,7 +6,7 @@
 
 **Blockinator** is a self-hosted DNS policy engine and management console for DNS servers, including Technitium through the [companion plugin](https://github.com/StealthCat/blockinator-technitium). The DNS server sends authenticated query metadata; Blockinator returns an allow/block decision. Blockinator does not replace the DNS server or resolve DNS queries itself.
 
-Current source version: **1.20.2**. See the [changelog](CHANGELOG.md) and [published releases](https://github.com/StealthCat/blockinator-web/releases). Source versions and Docker image tags are tracked separately; the prebuilt installation examples use the published **1.20.1** image.
+Current source version: **1.20.3**. See the [changelog](CHANGELOG.md) and [published releases](https://github.com/StealthCat/blockinator-web/releases). Installation examples use the current stable release tag **[v1.20.1](https://github.com/StealthCat/blockinator-web/releases/tag/v1.20.1)** and Docker image **1.20.1**. The source version above includes later documentation updates; it does not imply a newer published release.
 
 ## Features
 
@@ -33,16 +33,19 @@ Current source version: **1.20.2**. See the [changelog](CHANGELOG.md) and [publi
 ## Quick start: Git clone and Docker Compose (recommended)
 
 This is the primary installation method. It builds the application from the
-checked-out source and starts it alongside Caddy. Requirements: Docker Engine,
+tagged release source and starts it alongside Caddy. Requirements: Docker Engine,
 Docker Compose v2, Git, Bash, and OpenSSL. Run these commands on the Docker host;
 use `sudo` for Docker if your account requires it.
 
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/StealthCat/blockinator-web.git
+git clone --branch v1.20.1 --single-branch https://github.com/StealthCat/blockinator-web.git
 cd blockinator-web
 ```
+
+This checks out the published release, rather than following `main`. Git may report
+a **detached HEAD**; that is expected for a tag-based installation.
 
 ### 2. Create first-run credentials
 
@@ -121,17 +124,22 @@ docker compose logs --tail=100 blockinator caddy
 ### Updating a Git clone installation
 
 Back up `.env` and `./data` before updating (stop the stack for a consistent SQLite
-backup); back up remote MySQL separately if used. From the existing project directory:
+backup); back up remote MySQL separately if used. From the existing project directory,
+fetch and check out the release tag you want to run. The current release is `v1.20.1`:
 
 ```bash
 docker compose stop
 # Back up .env and ./data now; back up remote MySQL separately if used.
-git pull --ff-only
+git fetch origin tag v1.20.1
+git checkout --detach v1.20.1
 docker compose up -d --build
 ```
 
-Keep the same project directory and persistent data. Review release notes for
-configuration changes before upgrading. Use this procedure for the source-built
+For future upgrades, replace `v1.20.1` in both commands with the desired published
+release tag. `git pull` is not the update mechanism for a detached tag checkout.
+Preserve local configuration changes before switching tags; do not force the checkout.
+Keep the same project directory and persistent data, and review the release notes
+for configuration changes before upgrading. Use this procedure for the source-built
 installation; [Docker Hub deployments have separate update steps](docs/INSTALLATION.md#updating-an-existing-docker-hub-deployment).
 
 ## Alternative: Docker Hub

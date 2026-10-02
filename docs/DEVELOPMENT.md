@@ -110,7 +110,7 @@ python tools/check_version.py --base-ref BASE_COMMIT_SHA
 
 Publish a release from a tested `main` commit: create a `release/vX.Y.Z` branch and `vX.Y.Z` tag pointing to that commit, then publish a stable GitHub release with release and upgrade notes. Never move an existing release tag or rewrite historical commits. Later documentation updates increment the source version without changing the released snapshot.
 
-A source commit or tag alone does not publish a Docker image. Update pinned installation examples only after the corresponding image publish workflow succeeds.
+A source commit or tag alone does not publish a Docker image. After the image publish workflow succeeds, update the README and Docker Hub guide together: clone/upgrade commands must use the published `vX.Y.Z` tag, while Docker image tags use `X.Y.Z`. Deployment examples pin release tags; release branches retain snapshots for maintenance. Do not point installation commands at an unreleased `main` commit.
 
 ## Docker Hub publishing (maintainers)
 

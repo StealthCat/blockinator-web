@@ -19,12 +19,13 @@ commands on the Docker host. Use `sudo` for Docker if your account requires it.
 ### 1. Get the matching deployment configuration
 
 ```bash
-git clone --branch release/v1.20.1 --single-branch https://github.com/StealthCat/blockinator-web.git
+git clone --branch v1.20.1 --single-branch https://github.com/StealthCat/blockinator-web.git
 cd blockinator-web
 ```
 
-This obtains the Compose and Caddy configuration for the release. The application
-will be pulled from Docker Hub; no local image build is needed.
+This pins the Compose and Caddy configuration to the `v1.20.1` release
+tag. A detached HEAD is expected. The application will be pulled from the matching
+`1.20.1` Docker image; no local image build is needed.
 
 ### 2. Create first-run credentials
 
@@ -111,19 +112,24 @@ docker inspect --format '{{.State.Health.Status}}' blockinator
 
 Back up your data before upgrading; see [Data and backups](OPERATIONS.md#data-and-backups).
 For Compose, stop the stack for a consistent SQLite backup, preserve `./data` and
-`.env`, change the image tag in `docker-compose.hub.yml` to the desired published
-version, then pull and recreate:
+`.env`, check out the matching release tag, and set the image tag in
+`docker-compose.hub.yml` to the same version without the `v` prefix. For the current
+release, use `v1.20.1` for Git and `1.20.1` for Docker:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.hub.yml stop
 # Back up ./data and .env now; back up remote MySQL separately if used.
-# Edit the image tag in docker-compose.hub.yml before continuing.
+git fetch origin tag v1.20.1
+git checkout --detach v1.20.1
+# Set image: stealthcat128/blockinator:1.20.1 in docker-compose.hub.yml.
 docker compose -f docker-compose.yml -f docker-compose.hub.yml pull
 docker compose -f docker-compose.yml -f docker-compose.hub.yml up -d --no-build
 ```
 
-Review each release's deployment/configuration changes when upgrading. An existing
-source-built Compose installation can use the same override while retaining its
+For future upgrades, replace both Git tag references and the Docker image version
+together. Preserve local configuration edits before switching tags; do not force
+the checkout. Review each release's deployment/configuration changes when upgrading.
+An existing source-built Compose installation can use the same override while retaining its
 original project directory, `.env`, and `./data`.
 
 For standalone Docker, stop the container, back up the `blockinator-data` volume

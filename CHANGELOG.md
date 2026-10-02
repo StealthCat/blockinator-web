@@ -2,6 +2,12 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.3 — Pin installation instructions to the stable release
+
+- Use the current published `v1.20.1` tag in both source-build and Docker Hub configuration clone instructions.
+- Replace branch-pull upgrade instructions with explicit tag fetch/checkouts and explain detached HEAD behavior and matching Docker image versions.
+- Clarify the distinction between current source and published release versions; keep release-maintenance guidance consistent.
+
 ## 1.20.2 — Documentation consolidation
 
 - Keep the recommended source-built Compose quick start in the README and move detailed deployment, user, API, operations, and contributor material into linked guides.
