@@ -23,7 +23,8 @@ git clone --branch v1.20.1 --single-branch https://github.com/StealthCat/blockin
 cd blockinator-web
 ```
 
-This pins the Compose and Caddy configuration to the `v1.20.1` release
+The recommended source build tracks stable `main` as described in the README.
+This prebuilt-image alternative pins the Compose and Caddy configuration to the `v1.20.1` release
 tag. A detached HEAD is expected. The application will be pulled from the matching
 `1.20.1` Docker image; no local image build is needed.
 

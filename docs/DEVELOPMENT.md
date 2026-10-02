@@ -100,6 +100,19 @@ The latency benchmark reports throughput plus mean/p50/p95/p99 latency across se
 
 ## Versioning and release workflow
 
+| Reference | Purpose |
+| --- | --- |
+| `main` (default) | Stable application code and current documentation; recommended source installation |
+| `dev` | Unreleased application changes and integration testing |
+| `vX.Y.Z` tag | Exact published release snapshot; never move an existing tag |
+| `release/vX.Y.Z` | Optional maintenance branch for that release |
+
+Develop application changes on `dev` or a feature branch targeting `dev`. Merge
+tested application changes into `main` when ready to release. Documentation-only
+updates, including the required source-version metadata, may go directly to `main`.
+Keep `dev` up to date with `main` before starting the next development cycle.
+
+
 Follow [AGENTS.md](../AGENTS.md) for every update, including documentation: increment `APP_VERSION` in `app/main.py`, add a matching top changelog entry, and synchronize the README source version. UI, health, and OpenAPI versions derive from `APP_VERSION`.
 
 Before publishing, replace `BASE_COMMIT_SHA` with the previous commit SHA:
@@ -110,7 +123,7 @@ python tools/check_version.py --base-ref BASE_COMMIT_SHA
 
 Publish a release from a tested `main` commit: create a `release/vX.Y.Z` branch and `vX.Y.Z` tag pointing to that commit, then publish a stable GitHub release with release and upgrade notes. Never move an existing release tag or rewrite historical commits. Later documentation updates increment the source version without changing the released snapshot.
 
-A source commit or tag alone does not publish a Docker image. After the image publish workflow succeeds, update the README and Docker Hub guide together: clone/upgrade commands must use the published `vX.Y.Z` tag, while Docker image tags use `X.Y.Z`. Deployment examples pin release tags; release branches retain snapshots for maintenance. Do not point installation commands at an unreleased `main` commit.
+A source commit or tag alone does not publish a Docker image. Keep the recommended source-installation commands on stable `main`, using ordinary clone and fast-forward pull. After the image publish workflow succeeds, update the optional fixed-version example and Docker Hub guide together: Git tags use `vX.Y.Z`, while Docker image tags use `X.Y.Z`. The prebuilt deployment keeps its Compose configuration pinned to the matching image release.
 
 ## Docker Hub publishing (maintainers)
 

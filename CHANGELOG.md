@@ -2,6 +2,12 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.4 — Stable main installation workflow
+
+- Recommend standard clone and fast-forward pull on stable `main`, keeping exact release-tag installation as an option.
+- Add safe instructions for moving an existing single-branch tag checkout to `main`; retain matching release configuration for pinned Docker Hub images.
+- Document `dev` as the home for unreleased application changes and `main` for stable code and current documentation, including contributor instructions.
+
 ## 1.20.3 — Pin installation instructions to the stable release
 
 - Use the current published `v1.20.1` tag in both source-build and Docker Hub configuration clone instructions.

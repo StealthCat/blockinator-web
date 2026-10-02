@@ -6,7 +6,7 @@
 
 **Blockinator** is a self-hosted DNS policy engine and management console for DNS servers, including Technitium through the [companion plugin](https://github.com/StealthCat/blockinator-technitium). The DNS server sends authenticated query metadata; Blockinator returns an allow/block decision. Blockinator does not replace the DNS server or resolve DNS queries itself.
 
-Current source version: **1.20.3**. See the [changelog](CHANGELOG.md) and [published releases](https://github.com/StealthCat/blockinator-web/releases). Installation examples use the current stable release tag **[v1.20.1](https://github.com/StealthCat/blockinator-web/releases/tag/v1.20.1)** and Docker image **1.20.1**. The source version above includes later documentation updates; it does not imply a newer published release.
+Current source version: **1.20.4**. See the [changelog](CHANGELOG.md) and [published releases](https://github.com/StealthCat/blockinator-web/releases). The recommended source installation tracks stable `main`; unreleased application changes belong on `dev`. The current published release is **[v1.20.1](https://github.com/StealthCat/blockinator-web/releases/tag/v1.20.1)**, with Docker image **1.20.1**. Source versions can include later documentation updates without a new release.
 
 ## Features
 
@@ -33,19 +33,19 @@ Current source version: **1.20.3**. See the [changelog](CHANGELOG.md) and [publi
 ## Quick start: Git clone and Docker Compose (recommended)
 
 This is the primary installation method. It builds the application from the
-tagged release source and starts it alongside Caddy. Requirements: Docker Engine,
+stable `main` branch and starts it alongside Caddy. Requirements: Docker Engine,
 Docker Compose v2, Git, Bash, and OpenSSL. Run these commands on the Docker host;
 use `sudo` for Docker if your account requires it.
 
 ### 1. Clone the repository
 
 ```bash
-git clone --branch v1.20.1 --single-branch https://github.com/StealthCat/blockinator-web.git
+git clone https://github.com/StealthCat/blockinator-web.git
 cd blockinator-web
 ```
 
-This checks out the published release, rather than following `main`. Git may report
-a **detached HEAD**; that is expected for a tag-based installation.
+`main` is the default branch and contains stable application code and current
+documentation. To pin an exact release instead, see [Fixed-version installation](#fixed-version-installation-optional).
 
 ### 2. Create first-run credentials
 
@@ -124,23 +124,55 @@ docker compose logs --tail=100 blockinator caddy
 ### Updating a Git clone installation
 
 Back up `.env` and `./data` before updating (stop the stack for a consistent SQLite
-backup); back up remote MySQL separately if used. From the existing project directory,
-fetch and check out the release tag you want to run. The current release is `v1.20.1`:
+backup); back up remote MySQL separately if used. From the existing project directory
+on `main`:
 
 ```bash
 docker compose stop
 # Back up .env and ./data now; back up remote MySQL separately if used.
+git pull --ff-only
+docker compose up -d --build
+```
+
+Keep the same project directory and persistent data, and review release notes for
+configuration changes before upgrading. Preserve local edits; if Git reports a
+conflict or divergent history, resolve it without forcing or resetting the checkout.
+[Docker Hub deployments have separate update steps](docs/INSTALLATION.md#updating-an-existing-docker-hub-deployment).
+
+### Moving an existing tag checkout to main
+
+If you used the earlier tag-based instructions, back up first and run these commands
+from the existing checkout before using the update procedure above. This also adds
+`main` to the fetch configuration of a `--single-branch` tag clone:
+
+```bash
+git remote set-branches --add origin main
+git fetch origin
+git switch main
+git pull --ff-only
+```
+
+### Fixed-version installation (optional)
+
+To build the exact published release instead of tracking stable updates:
+
+```bash
+git clone --branch v1.20.1 --single-branch https://github.com/StealthCat/blockinator-web.git
+cd blockinator-web
+```
+
+Continue with [first-run credentials](#2-create-first-run-credentials) and the
+remaining setup steps above. A detached HEAD is normal when checking out a tag.
+For a later release, stop and back up the deployment, replace `v1.20.1` in both
+commands below with the desired published tag, then rebuild:
+
+```bash
 git fetch origin tag v1.20.1
 git checkout --detach v1.20.1
 docker compose up -d --build
 ```
 
-For future upgrades, replace `v1.20.1` in both commands with the desired published
-release tag. `git pull` is not the update mechanism for a detached tag checkout.
-Preserve local configuration changes before switching tags; do not force the checkout.
-Keep the same project directory and persistent data, and review the release notes
-for configuration changes before upgrading. Use this procedure for the source-built
-installation; [Docker Hub deployments have separate update steps](docs/INSTALLATION.md#updating-an-existing-docker-hub-deployment).
+Tag-based installations use explicit tag changes instead of `git pull`.
 
 ## Alternative: Docker Hub
 
