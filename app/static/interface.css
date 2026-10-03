@@ -392,3 +392,14 @@ html[data-table-density="compact"] .query-domain small, html[data-table-density=
 @media (prefers-reduced-motion: reduce) {
   :is(.scopes-layout, .editable-scope-card) :is(.small-button, .primary-button) { transition: none; }
 }
+
+/* Fit target search actions to their content instead of generic grid tracks. */
+.scope-filter-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.scope-filter-bar > label { display: grid; gap: 6px; min-width: 0; flex: 1 1 140px; }
+.scope-filter-bar > label:first-child { flex: 2 1 220px; }
+.scope-filter-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+.scope-filter-actions .primary-button { width: auto; min-height: 40px; height: 40px; padding: 9px 16px; flex: 0 0 auto; }
+.scope-filter-actions .text-link { display: inline-flex; align-items: center; min-height: 40px; }
+@media (max-width: 760px) {
+  .scope-filter-actions .primary-button, .scope-filter-actions .text-link { min-height: 44px; height: 44px; }
+}

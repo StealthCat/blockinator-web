@@ -2,6 +2,10 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.8 — Compact policy target search
+
+- Keep Search and Reset sized to their content and aligned with the target filters, with wrapping on narrow screens.
+
 ## 1.20.7 — Compact policy target actions
 
 - Shorten policy target action labels to Pause, Resume, and Edit.

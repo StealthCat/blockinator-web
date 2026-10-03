@@ -34,7 +34,7 @@ from .inspector import inspect_policy, target_status
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.20.7"
+APP_VERSION = "1.20.8"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),
@@ -2427,8 +2427,8 @@ def scopes_page(request: Request, q: str = "", kind: str = "",
           <div><div class="panel-kicker">Policy targets</div><h3>Networks, endpoints & hostnames</h3><p>Find a target, inspect its effective state, and open its editor to change policy.</p></div>
           <span class="result-count">{total:,} matching targets</span>
         </div>
-        <form method="get" class="filter-bar"><label>Search targets<input name="q" value="{esc(q)}" placeholder="Name, address or hostname"></label>
-          <label>Type<select name="kind">{type_options}</select></label><button class="primary-button">Search</button><a href="/scopes" class="text-link">Reset</a></form>
+        <form method="get" class="filter-bar scope-filter-bar"><label>Search targets<input name="q" value="{esc(q)}" placeholder="Name, address or hostname"></label>
+          <label>Type<select name="kind">{type_options}</select></label><div class="scope-filter-actions"><button type="submit" class="primary-button">Search</button><a href="/scopes" class="text-link">Reset</a></div></form>
         <div class="scope-card-list">{cards}</div><nav class="query-pagination" aria-label="Policy target pages">{pagination}</nav>
       </section>
 
