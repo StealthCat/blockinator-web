@@ -2,6 +2,13 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.6 — Clear policy target terminology and polished controls
+
+- Distinguish blocklist targets from whitelist targets in cards, editors, schedules, and creation buttons.
+- Hide blocking state and pause/resume controls for whitelist targets, whose bypass follows their schedule independently of blocking state.
+- Polish policy target actions with consistent sizing, icons, theme-aware colors, responsive layouts, and keyboard focus states.
+- Advance beyond the versions already used on main; this change is based on dev.
+
 ## 1.20.1 — MySQL statistics compatibility
 
 - Maintain MySQL retained statistics in log-write and pruning transactions without requiring trigger creation or server-level SUPER privileges.

@@ -34,7 +34,7 @@ from .inspector import inspect_policy, target_status
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.20.1"
+APP_VERSION = "1.20.6"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),
@@ -411,7 +411,7 @@ def schedule_fields_html(row=None, default_timezone: str = "UTC", *, policy_targ
     return f'''<div class="schedule-editor full{" target-schedule-editor" if policy_target else ""}" data-schedule-editor>
       <label class="check schedule-toggle">
         <input type="checkbox" name="schedule_enabled" value="1" data-schedule-toggle{" checked" if enabled else ""}>
-        {"Use an enforcement schedule" if policy_target else "Enforce only during a schedule"}
+        {"Use a target schedule" if policy_target else "Enforce only during a schedule"}
       </label>
       {status}
       <div class="schedule-controls{" schedule-disabled" if not enabled else ""}" data-schedule-controls>
@@ -2327,8 +2327,17 @@ def scopes_page(request: Request, q: str = "", kind: str = "",
             ),
         }.get(scope["kind"], ("Policy target", "Changing the type changes target validation."))
 
+        target_label = "Whitelist target" if scope["whitelisted"] else "Blocklist target"
+        blocking_badge = "" if scope["whitelisted"] else (
+            f'<span class="pill {"green" if scope["state"] == "active" else "amber"}">'
+            f'{"Blocking enabled" if scope["state"] == "active" else "Blocking paused"}</span>'
+        )
+        toggle_html = "" if scope["whitelisted"] else f'''<form method="post" action="/admin/scopes/{int(scope["id"])}/toggle">
+                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+                <button class="small-button target-toggle" type="submit"><span aria-hidden="true">{"Ⅱ" if scope["state"] == "active" else "▷"}</span>{"Pause blocking" if scope["state"] == "active" else "Resume blocking"}</button>
+              </form>'''
         editor_html = f'''          <details open class="scope-editor" id="edit-scope-{int(scope["id"])}">
-            <summary><span><b>Edit {esc(scope_kind_label.lower())}</b><small>Identity, target, state, schedule and list assignments</small></span><span class="editor-chevron">⌄</span></summary>
+            <summary><span><b>Edit {target_label.lower()}</b><small>Identity, target behavior and schedule</small></span><span class="editor-chevron">⌄</span></summary>
             <div class="scope-edit-body">
               <form method="post" action="/admin/scopes/{int(scope["id"])}/edit" class="form-grid scope-edit-form">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
@@ -2339,17 +2348,17 @@ def scopes_page(request: Request, q: str = "", kind: str = "",
                   <label>IPv6 CIDR<input name="target_v6" value="{esc(scope_ipv6)}" placeholder="2001:db8:20::/64"></label>
                 </div>
                 <label class="full" data-scope-single-target>Endpoint IP / PTR hostname<input name="target" value="{esc(single_target_value)}" placeholder="192.168.20.44 or *.kids.home.arpa"></label>
-                <label>Blocking state<select name="state"><option value="active"{state_active_selected}>Active</option><option value="paused"{state_paused_selected}>Paused</option></select></label>
+                <label data-scope-blocking-state{" hidden" if scope["whitelisted"] else ""}>Blocking state<select name="state"><option value="active"{state_active_selected}>Active</option><option value="paused"{state_paused_selected}>Paused</option></select></label>
                 <label class="full whitelist-target-panel" data-scope-whitelist>
                   <span class="whitelist-target-heading"><input type="checkbox" name="whitelisted" value="1"{" checked" if scope["whitelisted"] else ""}> <span><b>Whitelist target</b><small>Allow all domains for matching clients</small></span></span>
                   <span class="whitelist-target-description">Bypass all filtering targets and lists for this endpoint, network, or reverse-DNS hostname.</span>
                   <span class="whitelist-target-notes"><span>Respects schedule</span><span>Queries stay logged</span></span>
-                  <small class="whitelist-target-help">To restore filtering, turn this off and set the blocking state to Active.</small>
+                  <small class="whitelist-target-help">To use a blocklist target, turn this off and set the blocking state to Active.</small>
                 </label>
                 <div class="scope-edit-note"><b>{esc(scope_target_note[0])}</b><span>{esc(scope_target_note[1])}</span></div>
 
                 <div class="form-section full schedule-section">
-                  <div class="form-section-head"><div><b>Enforcement schedule</b><p>Leave scheduling off for this policy target to participate at all times.</p></div></div>
+                  <div class="form-section-head"><div><b data-scope-schedule-title>{"Whitelist" if scope["whitelisted"] else "Blocklist"} target schedule</b><p data-scope-schedule-help>{"Choose when this target allows all domains. Outside the schedule, other matching targets and the default policy apply." if scope["whitelisted"] else "Choose when this target applies its blocklists and assigned whitelists."}</p></div></div>
                   {scope_schedule_fields}
                 </div>
 
@@ -2376,8 +2385,8 @@ def scopes_page(request: Request, q: str = "", kind: str = "",
                 <div class="scope-summary-title">
                   <h3>{esc(scope["name"])}</h3>
                   <span class="pill">{esc(scope_kind_label)}</span>
-                  <span class="pill {"green" if scope["state"] == "active" else "amber"}">{esc(scope["state"])}</span>
-                  {'<span class="pill green">Whitelisted</span>' if scope["whitelisted"] else ''}
+                  <span class="pill {"green" if scope["whitelisted"] else "target-blocklist-badge"}">{target_label}</span>
+                  {blocking_badge}
                   {scope_schedule_badge}
                 </div>
                 <div class="scope-summary-target">{target_html}</div>
@@ -2387,14 +2396,11 @@ def scopes_page(request: Request, q: str = "", kind: str = "",
               </div>
             </div>
             <div class="actions scope-card-actions">
-              <form method="post" action="/admin/scopes/{int(scope["id"])}/toggle">
+              {toggle_html}
+              <a class="small-button edit-link" href="/scopes/{int(scope["id"])}/edit"><span aria-hidden="true">✎</span>Edit {target_label.lower()}</a>
+              <form method="post" action="/admin/scopes/{int(scope["id"])}/delete" onsubmit="return confirm('Delete this {target_label.lower()} and its list assignments?')">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
-                <button class="small-button" title="Pausing blocking allows queries; it does not disable a whitelist">{"Pause blocking" if scope["state"] == "active" else "Resume blocking"}</button>
-              </form>
-              <a class="small-button edit-link" href="/scopes/{int(scope["id"])}/edit">Edit & assign</a>
-              <form method="post" action="/admin/scopes/{int(scope["id"])}/delete" onsubmit="return confirm('Delete this scope and its list assignments?')">
-                <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
-                <button class="small-button danger">Delete</button>
+                <button class="small-button danger" type="submit"><span aria-hidden="true">×</span>Delete</button>
               </form>
             </div>
           </div>
@@ -2405,7 +2411,7 @@ def scopes_page(request: Request, q: str = "", kind: str = "",
         cards = '<div class="empty-card">No managed policy targets yet. Add a network, endpoint, or reverse-DNS hostname to start scoping policy.</div>'
 
     if edit_id is not None:
-        return page(request, "Edit policy target", "scopes", '<a class="text-link" href="/scopes">← All policy targets</a>' + cards, s)
+        return page(request, "Edit " + target_label.lower(), "scopes", '<a class="text-link" href="/scopes">← All policy targets</a>' + cards, s)
     type_options = "".join(f'<option value="{value}"{" selected" if kind == value else ""}>{label}</option>'
                            for value, label in (("", "All types"), ("network", "Networks"), ("client", "Endpoints"), ("hostname", "Hostnames")))
     pagination = f'<span>Page {page_number:,} of {pages:,}</span>'
@@ -2438,22 +2444,22 @@ def scopes_page(request: Request, q: str = "", kind: str = "",
             <label>IPv6 CIDR<input name="target_v6" placeholder="2001:db8:20::/64"></label>
           </div>
           <label class="full" data-scope-single-target>Endpoint IP / PTR hostname<input name="target" placeholder="192.168.20.44 or *.kids.home.arpa"></label>
-          <label>Initial state<select name="state"><option value="active">Active</option><option value="paused">Paused</option></select></label>
+          <label data-scope-blocking-state>Blocking state<select name="state"><option value="active">Active</option><option value="paused">Paused</option></select></label>
           <label class="full whitelist-target-panel" data-scope-whitelist>
                   <span class="whitelist-target-heading"><input type="checkbox" name="whitelisted" value="1"> <span><b>Whitelist target</b><small>Allow all domains for matching clients</small></span></span>
                   <span class="whitelist-target-description">Bypass all filtering targets and lists for this endpoint, network, or reverse-DNS hostname.</span>
                   <span class="whitelist-target-notes"><span>Respects schedule</span><span>Queries stay logged</span></span>
-                  <small class="whitelist-target-help">To restore filtering, turn this off and set the blocking state to Active.</small>
+                  <small class="whitelist-target-help">To use a blocklist target, turn this off and set the blocking state to Active.</small>
                 </label>
           <div class="form-section full schedule-section">
-            <div class="form-section-head"><div><b>Enforcement schedule</b><p>Optional. Limit when this policy target participates in policy.</p></div></div>
+            <div class="form-section-head"><div><b data-scope-schedule-title>Blocklist target schedule</b><p data-scope-schedule-help>Choose when this target applies its blocklists and assigned whitelists.</p></div></div>
             {new_scope_schedule_fields}
           </div>
           <div class="form-section full" data-scope-list-assignments>
             <div class="form-section-head"><div><b>Initial list assignments</b><p>Optional. Assign scoped block lists and whitelists; Global lists apply automatically.</p></div></div>
             {new_list_editor}
           </div>
-          <button class="primary-button full" type="submit">Add scope</button>
+          <button class="primary-button full" type="submit" data-scope-add-button>Add blocklist target</button>
         </form>
       </section>
     </div>'''
@@ -2660,7 +2666,7 @@ def toggle_scope(scope_id: int, request: Request):
     with db.connect() as con:
         con.execute("UPDATE scopes SET state=CASE state WHEN 'active' THEN 'paused' ELSE 'active' END WHERE id=?", (scope_id,))
     engine.reload_scopes()
-    return redirect(f"/scopes#scope-{scope_id}", notice="Scope state updated")
+    return redirect(f"/scopes#scope-{scope_id}", notice="Blocklist target blocking state updated")
 
 
 @app.post("/admin/scopes/{scope_id}/delete")
@@ -2670,7 +2676,7 @@ def delete_scope(scope_id: int, request: Request):
     with db.connect() as con:
         con.execute("DELETE FROM scopes WHERE id=?", (scope_id,))
     engine.reload_scopes()
-    return redirect("/scopes", notice="Scope deleted")
+    return redirect("/scopes", notice="Policy target deleted")
 
 @app.get("/queries/rows", response_class=HTMLResponse)
 @app.get("/queries", response_class=HTMLResponse)

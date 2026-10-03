@@ -149,6 +149,18 @@
       // restored when whitelisting is turned off.
       assignments.hidden = whitelist.querySelector("input").checked;
     }
+    var isWhitelist = !!(whitelist && whitelist.querySelector("input").checked);
+    // Preserve the stored blocking state; it only applies to blocklist targets.
+    var blockingState = form.querySelector("[data-scope-blocking-state]");
+    if (blockingState) blockingState.hidden = isWhitelist;
+    var scheduleTitle = form.querySelector("[data-scope-schedule-title]");
+    if (scheduleTitle) scheduleTitle.textContent = (isWhitelist ? "Whitelist" : "Blocklist") + " target schedule";
+    var scheduleHelp = form.querySelector("[data-scope-schedule-help]");
+    if (scheduleHelp) scheduleHelp.textContent = isWhitelist
+      ? "Choose when this target allows all domains. Outside the schedule, other matching targets and the default policy apply."
+      : "Choose when this target applies its blocklists and assigned whitelists.";
+    var addButton = form.querySelector("[data-scope-add-button]");
+    if (addButton) addButton.textContent = isWhitelist ? "Add whitelist target" : "Add blocklist target";
     var isNetwork = select.value === "network";
     networkFields.hidden = !isNetwork;
     singleTarget.hidden = isNetwork;
