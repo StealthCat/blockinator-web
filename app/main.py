@@ -34,7 +34,7 @@ from .inspector import inspect_policy, target_status
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.20.6"
+APP_VERSION = "1.20.7"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),
@@ -2332,9 +2332,9 @@ def scopes_page(request: Request, q: str = "", kind: str = "",
             f'<span class="pill {"green" if scope["state"] == "active" else "amber"}">'
             f'{"Blocking enabled" if scope["state"] == "active" else "Blocking paused"}</span>'
         )
-        toggle_html = "" if scope["whitelisted"] else f'''<form method="post" action="/admin/scopes/{int(scope["id"])}/toggle">
+        toggle_html = f'''<form method="post" action="/admin/scopes/{int(scope["id"])}/toggle">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
-                <button class="small-button target-toggle" type="submit"><span aria-hidden="true">{"Ⅱ" if scope["state"] == "active" else "▷"}</span>{"Pause blocking" if scope["state"] == "active" else "Resume blocking"}</button>
+                <button class="small-button target-toggle" type="submit"><span aria-hidden="true">{"Ⅱ" if scope["state"] == "active" else "▷"}</span>{"Pause" if scope["state"] == "active" else "Resume"}</button>
               </form>'''
         editor_html = f'''          <details open class="scope-editor" id="edit-scope-{int(scope["id"])}">
             <summary><span><b>Edit {target_label.lower()}</b><small>Identity, target behavior and schedule</small></span><span class="editor-chevron">⌄</span></summary>
@@ -2397,7 +2397,7 @@ def scopes_page(request: Request, q: str = "", kind: str = "",
             </div>
             <div class="actions scope-card-actions">
               {toggle_html}
-              <a class="small-button edit-link" href="/scopes/{int(scope["id"])}/edit"><span aria-hidden="true">✎</span>Edit {target_label.lower()}</a>
+              <a class="small-button edit-link" href="/scopes/{int(scope["id"])}/edit"><span aria-hidden="true">✎</span>Edit</a>
               <form method="post" action="/admin/scopes/{int(scope["id"])}/delete" onsubmit="return confirm('Delete this {target_label.lower()} and its list assignments?')">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                 <button class="small-button danger" type="submit"><span aria-hidden="true">×</span>Delete</button>
@@ -2666,7 +2666,7 @@ def toggle_scope(scope_id: int, request: Request):
     with db.connect() as con:
         con.execute("UPDATE scopes SET state=CASE state WHEN 'active' THEN 'paused' ELSE 'active' END WHERE id=?", (scope_id,))
     engine.reload_scopes()
-    return redirect(f"/scopes#scope-{scope_id}", notice="Blocklist target blocking state updated")
+    return redirect(f"/scopes#scope-{scope_id}", notice="Policy target state updated")
 
 
 @app.post("/admin/scopes/{scope_id}/delete")
