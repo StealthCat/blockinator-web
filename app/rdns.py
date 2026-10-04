@@ -40,11 +40,20 @@ class ReverseDnsResolver:
         ]
         self._cache: dict[str, tuple[float, str | None]] = {}
         self._lock = threading.RLock()
+        self._cache_generation = 0
         self._thread_local = threading.local()
         self._executor = ThreadPoolExecutor(
             max_workers=self.max_workers,
             thread_name_prefix="blockinator-rdns",
         )
+
+    def clear_cache(self) -> int:
+        """Invalidate positive/negative answers, including in-progress lookups."""
+        with self._lock:
+            count = len(self._cache)
+            self._cache.clear()
+            self._cache_generation += 1
+            return count
 
     def _cache_get(self, address: str) -> tuple[bool, str | None]:
         now = time.monotonic()
@@ -127,13 +136,18 @@ class ReverseDnsResolver:
         except ValueError:
             return None
 
-        hit, hostname = self._cache_get(canonical)
+        with self._lock:
+            generation = self._cache_generation
+            hit, hostname = self._cache_get(canonical)
         if hit:
             return hostname
 
         result = self.lookup(canonical)
         hostname = result.hostname if result.status == "resolved" else None
-        self._cache_put(canonical, hostname)
+        with self._lock:
+            if generation != self._cache_generation:
+                return None
+            self._cache_put(canonical, hostname)
         return hostname
 
     def resolve_many(self, addresses) -> dict[str, str | None]:

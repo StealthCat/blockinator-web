@@ -4,7 +4,7 @@
 
 # Blockinator
 
-Current source version: **1.20.8**. See [CHANGELOG.md](CHANGELOG.md) for version history. Source versions and published Docker tags are tracked separately; the pinned Docker examples below remain on the published 1.19.2 image.
+Current source version: **1.20.9**. See [CHANGELOG.md](CHANGELOG.md) for version history. Source versions and published Docker tags are tracked separately; the pinned Docker examples below remain on the published 1.19.2 image.
 
 **Blockinator** is a self-hosted DNS policy engine and management console designed to sit beside DNS servers such as Technitium DNS Server.
 
@@ -1061,6 +1061,11 @@ Shows application/storage information, the active ignored-record summary, proxy/
 | `TLS_RECONCILE_SECONDS` | Caddy/TLS reconciliation interval | `30` |
 
 The persisted System Settings timezone becomes authoritative after initialization; changing `TZ` later does not rewrite existing schedule timezones.
+
+### Flush learned PTR names
+
+Use **Settings → Runtime → PTR resolver → Flush PTR cache** to clear cached names and misses and queue fresh lookups for tracked clients. Existing query history is preserved. Hostname policy targets resume matching as fresh names are learned. This clears Blockinator’s cache; it does not flush an upstream DNS server.
+
 
 ## Data and backups
 

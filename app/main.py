@@ -34,7 +34,7 @@ from .inspector import inspect_policy, target_status
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.20.8"
+APP_VERSION = "1.20.9"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),
@@ -3551,11 +3551,24 @@ def settings_page(request: Request):
             <div><span>Workers</span><b>{int(ptr_status["workers"]):,}</b></div>
             <div><span>Resolver</span><b class="mono">{esc(ptr_status["resolver"])}</b></div>
           </div>
+          <form method="post" action="/admin/settings/ptr-cache/flush" class="editor-actions">
+            <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+            <button type="submit" class="small-button">Flush PTR cache</button>
+          </form>
+          <p class="panel-help">Clear learned hostnames and cached misses, then retry tracked clients in the background. Query history is preserved. Hostname targets cannot match until fresh PTR answers arrive.</p>
           {f'<div class="list-warning"><b>PTR resolver error:</b> {esc(ptr_status["last_error"])}</div>' if ptr_status["last_error"] else ""}
         </section>
       </section>
     </div>'''
     return page(request, "System Settings", "settings", body, s)
+
+@app.post("/admin/settings/ptr-cache/flush")
+@admin_action(require_session)
+def flush_ptr_cache(request: Request):
+    require_post_session(request)
+    count = engine.flush_ptr_cache()
+    return redirect("/settings#runtime", notice=f"PTR cache flushed; {count:,} tracked clients queued for fresh lookups")
+
 
 @app.post("/admin/settings/appearance")
 @admin_action(require_session)

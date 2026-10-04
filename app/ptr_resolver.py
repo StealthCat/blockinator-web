@@ -92,6 +92,8 @@ class PtrResolutionManager:
         if not self.retry_delays:
             self.retry_delays = self.RETRY_DELAYS_SECONDS
 
+        self._state_lock = threading.RLock()
+        self._stale_futures: set[Future] = set()
         self._observed: set[str] = set()
         self._recent_observed: dict[str, float] = {}
         self._observe_lock = threading.Lock()
@@ -197,22 +199,58 @@ class PtrResolutionManager:
             "last_error": self._last_error,
         }
 
+    def flush_cache(self) -> int:
+        """Clear learned answers and retry tracked clients without erasing history."""
+        with self._state_lock:
+            removed = {}
+            count = 0
+
+            def clear(con):
+                nonlocal count
+                rows = con.execute("SELECT client_ip FROM client_identities").fetchall()
+                removed.update({str(row["client_ip"]): None for row in rows})
+                now = int(time.time())
+                # Preserve clients that have an identity but no tracking row yet.
+                con.executemany("""INSERT OR IGNORE INTO client_ptr_status(
+                    client_ip,status,first_seen_at,last_seen_at,next_attempt_at,attempt_count)
+                    VALUES(?,'pending',?,?,0,0)""", [(ip, now, now) for ip in removed])
+                count = int(con.execute("SELECT COUNT(*) AS c FROM client_ptr_status").fetchone()["c"])
+                con.execute("DELETE FROM client_identities")
+                con.execute("""UPDATE client_ptr_status SET status='pending',client_name=NULL,
+                    last_attempt_at=NULL,last_success_at=NULL,next_attempt_at=0,
+                    attempt_count=0,last_error=NULL""")
+                con.execute("DELETE FROM settings WHERE `key` LIKE ?", ("ptr_backfill:%",))
+
+            self._write_transaction(clear)
+            self._stale_futures.update(self._futures)
+            for future in self._futures:
+                future.cancel()
+            self.rdns.clear_cache()
+            if removed and self.identity_callback is not None:
+                self.identity_callback(removed)
+            with self._observe_lock:
+                self._recent_observed.clear()
+            self._last_error = ""
+            return count
+
     def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
-                self._flush_observed()
-                self._collect_done()
-                self._run_backfill_if_due()
-                self._schedule_due()
-                self._collect_done()
-                self._backfill_known_names()
-                self._last_error = ""
+                with self._state_lock:
+                    self._flush_observed()
+                    self._collect_done()
+                    self._run_backfill_if_due()
+                    self._schedule_due()
+                    self._collect_done()
+                    self._backfill_known_names()
+                    self._last_error = ""
             except Exception as exc:
                 self._last_error = str(exc)[:500]
             self._stop_event.wait(self.reconcile_seconds)
 
         try:
-            self._collect_done()
+            with self._state_lock:
+                self._collect_done()
         except Exception:
             pass
 
@@ -383,6 +421,9 @@ class PtrResolutionManager:
         for future in done:
             address = self._futures.pop(future)
             self._inflight.discard(address)
+            if future in self._stale_futures:
+                self._stale_futures.discard(future)
+                continue
             try:
                 result = future.result()
             except Exception as exc:

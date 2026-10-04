@@ -2,6 +2,12 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.9 — Flush PTR cache
+
+- Add an authenticated, CSRF-protected PTR cache flush control in Settings → Runtime.
+- Clear learned identities and cached answers, queue tracked clients for fresh resolution, and preserve query history.
+- Discard stale in-flight results and serialize invalidation with policy reloads.
+
 ## 1.20.8 — Compact policy target search
 
 - Keep Search and Reset sized to their content and aligned with the target filters, with wrapping on narrow screens.

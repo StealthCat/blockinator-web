@@ -571,6 +571,12 @@ class PolicyEngine:
                     merged.pop(address, None)
             self._snapshot = replace(current, client_identities=merged)
 
+    def flush_ptr_cache(self) -> int:
+        # Serialize with full reloads so a snapshot built before the flush cannot
+        # bring back identities read from the database before invalidation.
+        with self._reload_lock:
+            return self.ptr_resolver.flush_cache()
+
     def ptr_status(self) -> dict[str, object]:
         return self.ptr_resolver.status_snapshot()
 
