@@ -78,10 +78,7 @@ def inspect_policy(engine, client_ip, qname, qtype, now=None):
                              "schedule_end": scope.schedule.end.isoformat(timespec="minutes"),
                              "scheduled": scope.schedule.enabled})
     selected = engine._matching_scopes(snapshot, ip, now)
-    candidate_mask = snapshot.global_list_mask if snapshot.global_blocklist_scope_mode == "all_clients" or any(selected) else 0
-    for scope in selected:
-        if scope:
-            candidate_mask |= scope.blocklist_mask
+    candidate_mask = engine._candidate_list_mask(snapshot, selected)
     suffixes = engine.suffixes(qname)
     lists = []
     for index, item in enumerate(snapshot.list_order):

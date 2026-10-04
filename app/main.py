@@ -34,7 +34,7 @@ from .inspector import inspect_policy, target_status
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.20.9"
+APP_VERSION = "1.20.10"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),
@@ -2949,7 +2949,7 @@ def policy_test_page(request: Request, client: str = "", domain: str = "", recor
               <dl class="policy-explanation"><div><dt>Winning target</dt><dd>{esc(decision.get("matched_scope") or "None")}</dd></div>
               <div><dt>Winning list / domain</dt><dd>{esc(decision.get("matched_list") or "None")} · {esc(decision.get("matched_domain") or "—")}</dd></div>
               <div><dt>Learned PTR hostname</dt><dd>{esc(result["hostname"] or "Not currently known; hostname targets cannot match yet")}</dd></div></dl>
-              <p class="panel-help">An active whitelist target overrides filtering targets. Otherwise endpoint, hostname and network priority determines pause behavior; applicable lists are combined and whitelist domains win. Global pause and ignored types bypass filtering.</p>
+              <p class="panel-help">An active whitelist target overrides filtering targets. Otherwise the highest-priority matching target (endpoint, then hostname, then network) supplies scoped lists and pause behavior. Global lists still apply; whitelist domains win. Global pause and ignored types bypass filtering.</p>
               <h4>Matching targets and schedules</h4><div class="table-wrap"><table><thead><tr><th>Target</th><th>Mode</th><th>Schedule</th></tr></thead><tbody>{scope_rows}</tbody></table></div>
               <h4>Applicable lists before bypass rules</h4><div class="table-wrap"><table><thead><tr><th>List</th><th>Type</th><th>Schedule</th><th>Domain match</th></tr></thead><tbody>{list_rows}</tbody></table></div></section>'''
         except (ValueError, TypeError) as exc:

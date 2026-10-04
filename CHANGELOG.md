@@ -2,6 +2,12 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.10 — Apply target precedence to scoped lists
+
+- Use only the highest-priority scheduled target’s list assignments instead of combining endpoint, hostname, and network assignments.
+- Preserve global lists, whitelist-target bypass, and fallback outside target schedules.
+- Keep Policy Tester list explanations consistent with the decision engine and document the precedence change.
+
 ## 1.20.9 — Flush PTR cache
 
 - Add an authenticated, CSRF-protected PTR cache flush control in Settings → Runtime.

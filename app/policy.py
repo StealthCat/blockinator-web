@@ -1331,6 +1331,16 @@ class PolicyEngine:
 
         return client, hostname, network
 
+    @staticmethod
+    def _candidate_list_mask(snapshot: PolicySnapshot, scopes: tuple[Scope | None, ...]) -> int:
+        # Matching scopes are ordered endpoint, hostname, network. An empty
+        # assignment set on the winner is intentional, not a fallback request.
+        selected = next((scope for scope in scopes if scope is not None), None)
+        mask = selected.blocklist_mask if selected is not None else 0
+        if snapshot.global_blocklist_scope_mode == "all_clients" or selected is not None:
+            mask |= snapshot.global_list_mask
+        return mask
+
     def _active_list_mask(
         self,
         snapshot: PolicySnapshot,
@@ -1462,18 +1472,9 @@ class PolicyEngine:
             effective_scope = None
 
         scheduled_mask = self._active_list_mask(snapshot, now)
-        candidate_mask = 0
-        if (
-            snapshot.global_blocklist_scope_mode == "all_clients"
-            or effective_scope is not None
-        ):
-            candidate_mask |= snapshot.global_list_mask
-        if network_scope is not None:
-            candidate_mask |= network_scope.blocklist_mask
-        if hostname_scope is not None:
-            candidate_mask |= hostname_scope.blocklist_mask
-        if client_scope is not None:
-            candidate_mask |= client_scope.blocklist_mask
+        candidate_mask = self._candidate_list_mask(
+            snapshot, (client_scope, hostname_scope, network_scope)
+        )
 
         active_mask = candidate_mask & scheduled_mask
         if not active_mask:

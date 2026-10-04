@@ -4,7 +4,7 @@
 
 # Blockinator
 
-Current source version: **1.20.9**. See [CHANGELOG.md](CHANGELOG.md) for version history. Source versions and published Docker tags are tracked separately; the pinned Docker examples below remain on the published 1.19.2 image.
+Current source version: **1.20.10**. See [CHANGELOG.md](CHANGELOG.md) for version history. Source versions and published Docker tags are tracked separately; the pinned Docker examples below remain on the published 1.19.2 image.
 
 **Blockinator** is a self-hosted DNS policy engine and management console designed to sit beside DNS servers such as Technitium DNS Server.
 
@@ -371,12 +371,9 @@ A Network target may contain IPv4, IPv6, or both. Dual-stack targets share one n
 
 ### List precedence
 
-List assignments are additive. The active policy set may include:
+Scoped lists come only from the highest-priority matching target whose target schedule is active: exact client IP, then exact PTR hostname or the most-specific wildcard PTR suffix, then the most-specific network. Lower-priority targets do not contribute blocklists or domain whitelists, even if the winning target has no assignments. For example, a hostname target with no assigned lists does not inherit its network's blocklists.
 
-- globally applied lists;
-- lists assigned to the matching Network;
-- lists assigned to the matching PTR hostname; and
-- lists assigned to the matching Endpoint.
+Globally applied lists still participate according to the configured global-list reach. Outside a target's schedule, selection falls back to the next matching target. A disabled or out-of-schedule list does not cause target fallback. Matching whitelist targets continue to bypass filtering regardless of specificity.
 
 Every active list is still subject to its own enabled state and schedule.
 
