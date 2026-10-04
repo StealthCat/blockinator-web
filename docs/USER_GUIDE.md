@@ -22,7 +22,7 @@ Policy handling proceeds in this order:
 
 The record-type bypass occurs before PTR observation, policy-target matching, list evaluation, and Query Log creation. If all questions use ignored types, Blockinator immediately returns an allow decision with reason `ignored_record_type`; otherwise non-ignored questions are evaluated normally.
 
-The highest-priority scheduled matching target determines the displayed target and pause behavior. If that target is paused, the query is permitted. Otherwise, list assignments from the matching Endpoint, hostname, and Network are combined as described below.
+The highest-priority scheduled matching target determines the displayed target, pause behavior, and scoped list assignments. If that target is paused, the query is permitted. Otherwise only its scoped lists apply, alongside applicable global lists.
 
 To whitelist clients, open **Policy Targets**, create or edit an **Endpoint**, **Network**, or **Reverse-DNS Hostname**, and check **Whitelist target**. Networks support IPv4, IPv6, or both; PTR targets support exact names and wildcard suffixes. PTR matching uses learned reverse-DNS identities, so hostname exemptions apply after the client's identity is known.
 
@@ -34,12 +34,9 @@ A Network target may contain IPv4, IPv6, or both. Dual-stack targets share one n
 
 ### List precedence
 
-List assignments are additive. The active policy set may include:
+Scoped lists come only from the highest-priority matching target whose target schedule is active: exact client IP, then exact PTR hostname or the most-specific wildcard PTR suffix, then the most-specific network. Lower-priority targets do not contribute blocklists or domain whitelists, even if the winning target has no assignments. For example, a hostname target with no assigned lists does not inherit its network's blocklists.
 
-- globally applied lists;
-- lists assigned to the matching Network;
-- lists assigned to the matching PTR hostname; and
-- lists assigned to the matching Endpoint.
+Globally applied lists still participate according to the configured global-list reach. Outside a target's schedule, selection falls back to the next matching target. A disabled or out-of-schedule list does not cause target fallback. Matching whitelist targets continue to bypass filtering regardless of specificity.
 
 Every active list is still subject to its own enabled state and schedule.
 
@@ -184,14 +181,27 @@ Recurring weekly schedules can be applied to:
 
 Schedules accept local **HH:MM** values; seconds and UTC offsets are rejected. Invalid saved schedules are inactive. Schedules support:
 
-- selectable weekdays;
-- start/end times;
+- up to 32 time windows, each with its own weekdays and start/end times;
+- enforcement whenever **any** window matches;
 - overnight windows; and
 - IANA timezones such as `America/New_York`.
 
 Selected weekdays represent the day the schedule starts. For example, Monday `22:00–06:00` remains active until Tuesday at 06:00.
 
 If start and end are equal, the schedule covers the full selected day.
+
+Use **Add time window** in a list or target's schedule editor. All windows share the selected timezone; they can overlap, and each has independent Every day / Weekdays / Weekends shortcuts. Remove an extra window with **Remove window**. Existing schedules retain their original days and times as Window 1.
+
+For a YouTube blocklist that is active all weekdays except 5–6 p.m., and on weekends from 6 p.m. through 10 a.m., set `America/New_York` and these windows:
+
+| Days | Start | End |
+| --- | --- | --- |
+| Mon–Fri | 00:00 | 17:00 |
+| Mon–Fri | 18:00 | 00:00 |
+| Sat–Sun | 00:00 | 10:00 |
+| Sat–Sun | 18:00 | 00:00 |
+
+Here `00:00` as an end time means midnight. The weekend midnight–10 a.m. window combines the overnight portion with the requested 8–10 a.m. block. A schedule defines when this list applies; other applicable lists can still block the same domain during its inactive hours.
 
 The **System Settings → Default timezone** controls Query Log display and is the initial timezone for newly created schedules. Existing schedules retain their own saved timezone.
 
@@ -248,6 +258,10 @@ RDNS_RECONCILE_SECONDS=1
 **System Settings → Runtime** shows PTR resolver status, tracked/resolved/no-PTR/retry counts, queue depth, in-flight work, worker count, and the active resolver source.
 
 Hostname policy is only as trustworthy as the PTR data supplied by the configured resolver/reverse zones.
+
+### Flush learned PTR names
+
+Use **Settings → Runtime → PTR resolver → Flush PTR cache** to clear cached names and misses and queue fresh lookups for tracked clients. Existing query history is preserved. Hostname policy targets resume matching as fresh names are learned. This clears Blockinator’s cache; it does not flush an upstream DNS server.
 
 ## Dashboard and Query Log
 

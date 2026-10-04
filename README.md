@@ -6,7 +6,7 @@
 
 Self-hosted DNS policy management with block lists, whitelists, schedules, and query history. Your DNS server sends query metadata; Blockinator returns an allow/block decision. Connect Technitium using the [companion plugin](https://github.com/StealthCat/blockinator-technitium).
 
-Current source version: **1.20.5** · [Changelog](CHANGELOG.md) · [Releases](https://github.com/StealthCat/blockinator-web/releases)
+Current source version: **1.20.11** · [Changelog](CHANGELOG.md) · [Releases](https://github.com/StealthCat/blockinator-web/releases)
 
 ## Features
 
@@ -101,7 +101,7 @@ Review release notes and preserve local edits. If Git reports a conflict, resolv
 | [Integration and API](docs/API.md) | Resolver configuration, authentication, and request/response examples |
 | [Development](docs/DEVELOPMENT.md) | Branch policy, tests, benchmarks, and releases |
 
-`main` contains stable code and current documentation; unreleased application work belongs on `dev`. Tags pin exact releases. The current published release and Docker image are **v1.20.1 / 1.20.1**; documentation updates may advance the source version separately.
+`main` contains stable code and current documentation; unreleased application work belongs on `dev`. Tags pin exact releases; Docker examples retain the previously published **1.20.1** image until a newer image is verified as published.
 
 ## License
 

@@ -2,6 +2,41 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.11 — Multiple daily schedule windows
+
+- Add up to 32 independent day/time windows to blocklists, whitelists, and policy targets with a shared timezone and OR matching.
+- Preserve existing single-window schedules through SQLite/MySQL schema upgrades.
+- Add window controls, per-window day presets, complete summaries, and next-transition calculations across overlapping and overnight windows.
+- Validate every saved window and cover weekday/weekend boundaries, DST, round trips, and migration.
+
+## 1.20.10 — Apply target precedence to scoped lists
+
+- Use only the highest-priority scheduled target’s list assignments instead of combining endpoint, hostname, and network assignments.
+- Preserve global lists, whitelist-target bypass, and fallback outside target schedules.
+- Keep Policy Tester list explanations consistent with the decision engine and document the precedence change.
+
+## 1.20.9 — Flush PTR cache
+
+- Add an authenticated, CSRF-protected PTR cache flush control in Settings → Runtime.
+- Clear learned identities and cached answers, queue tracked clients for fresh resolution, and preserve query history.
+- Discard stale in-flight results and serialize invalidation with policy reloads.
+
+## 1.20.8 — Compact policy target search
+
+- Keep Search and Reset sized to their content and aligned with the target filters, with wrapping on narrow screens.
+
+## 1.20.7 — Compact policy target actions
+
+- Shorten policy target action labels to Pause, Resume, and Edit.
+- Restore pause/resume controls on whitelist targets using the existing target-state action.
+
+## 1.20.6 — Clear policy target terminology and polished controls
+
+- Distinguish blocklist targets from whitelist targets in cards, editors, schedules, and creation buttons.
+- Hide blocking state and pause/resume controls for whitelist targets, whose bypass follows their schedule independently of blocking state.
+- Polish policy target actions with consistent sizing, icons, theme-aware colors, responsive layouts, and keyboard focus states.
+- Advance beyond the versions already used on main; this change is based on dev.
+
 ## 1.20.5 — Streamlined README
 
 - Focus the README on a concise overview, one complete recommended setup, and the stable-main update procedure.

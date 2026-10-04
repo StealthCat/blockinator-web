@@ -93,45 +93,67 @@
     var toggle = editor.querySelector("[data-schedule-toggle]");
     var controls = editor.querySelector("[data-schedule-controls]");
     if (!toggle || !controls) return;
+    controls.hidden = !toggle.checked;
     controls.classList.toggle("schedule-disabled", !toggle.checked);
-    if (editor.classList.contains("target-schedule-editor")) {
-      controls.hidden = !toggle.checked;
-      var status = editor.querySelector("[data-schedule-status]");
-      var days = Array.from(editor.querySelectorAll('input[name="schedule_day"]:checked'));
-      var start = editor.querySelector('[name="schedule_start"]').value;
-      var end = editor.querySelector('[name="schedule_end"]').value;
-      var zone = editor.querySelector('[name="schedule_timezone"]').value.trim();
-      status.textContent = !toggle.checked ? "Always active. This target has no time restriction." :
-        !days.length ? "Select at least one day for this target to be active." :
-        days.map(function (input) { return input.nextElementSibling.textContent; }).join(", ") +
-        " · " + (start === end ? "All day" : start + "–" + end + (end < start ? " (overnight)" : "")) + " · " + zone;
-    }
-    controls.setAttribute("aria-disabled", toggle.checked ? "false" : "true");
-    controls.querySelectorAll("input").forEach(function (input) {
-      if (toggle.checked) {
-        input.removeAttribute("tabindex");
-      } else {
-        input.setAttribute("tabindex", "-1");
-      }
+    var windows = Array.from(editor.querySelectorAll("[data-schedule-window]"));
+    var zone = editor.querySelector('[name="schedule_timezone"]').value.trim();
+    var summaries = windows.map(function (window, index) {
+      window.querySelector('[data-window-number]').textContent = index + 1;
+      var days = Array.from(window.querySelectorAll('input[type="checkbox"]:checked'));
+      var times = window.querySelectorAll('input[type="time"]');
+      var start = times[0].value, end = times[1].value;
+      if (!days.length) return "Window " + (index + 1) + ": select at least one day";
+      return days.map(function (input) { return input.nextElementSibling.textContent; }).join(", ") +
+        " · " + (start === end ? "All day" : start + "–" + end + (end < start ? " (overnight)" : ""));
     });
+    editor.querySelector('[data-schedule-status]').textContent = !toggle.checked
+      ? "Always active. No time restriction." : summaries.join(" OR ") + " · " + zone;
+    editor.querySelector('[data-add-schedule-window]').disabled = windows.length >= 32;
+    controls.setAttribute("aria-disabled", toggle.checked ? "false" : "true");
   }
 
   function initializeScheduleControls() {
     document.querySelectorAll("[data-schedule-editor]").forEach(function (editor) {
-      var toggle = editor.querySelector("[data-schedule-toggle]");
-      if (!toggle) return;
+      var windows = editor.querySelector('[data-schedule-windows]');
+      var nextId = Math.max.apply(null, Array.from(windows.children).map(function (row) {
+        return Number(row.getAttribute('data-schedule-window'));
+      })) + 1;
       syncScheduleControls(editor);
-      editor.addEventListener("change", function () {
-        syncScheduleControls(editor);
-      });
-      editor.querySelectorAll("[data-schedule-days]").forEach(function (button) {
-        button.addEventListener("click", function () {
-          var selected = button.getAttribute("data-schedule-days").split(",");
-          editor.querySelectorAll('input[name="schedule_day"]').forEach(function (input) {
+      editor.addEventListener("change", function () { syncScheduleControls(editor); });
+      editor.addEventListener("click", function (event) {
+        var button = event.target.closest('button');
+        if (!button || !editor.contains(button)) return;
+        if (button.hasAttribute('data-add-schedule-window')) {
+          if (windows.children.length >= 32) return;
+          var row = windows.firstElementChild.cloneNode(true);
+          var index = nextId++;
+          row.setAttribute('data-schedule-window', index);
+          row.querySelectorAll('input').forEach(function (input) {
+            input.name = input.name + '_' + index;
+            if (input.type === 'checkbox') input.checked = true;
+            if (input.type === 'time') input.value = '00:00';
+          });
+          var marker = document.createElement('input');
+          marker.type = 'hidden'; marker.name = 'schedule_window'; marker.value = index;
+          row.prepend(marker);
+          var remove = document.createElement('button');
+          remove.type = 'button'; remove.className = 'small-button danger';
+          remove.setAttribute('data-remove-schedule-window', ''); remove.textContent = 'Remove window';
+          row.querySelector('.schedule-window-head').appendChild(remove);
+          windows.appendChild(row);
+          syncScheduleControls(editor);
+          row.querySelector('input[type="checkbox"]').focus();
+        } else if (button.hasAttribute('data-remove-schedule-window')) {
+          button.closest('[data-schedule-window]').remove();
+          syncScheduleControls(editor);
+          editor.querySelector('[data-add-schedule-window]').focus();
+        } else if (button.hasAttribute('data-schedule-days')) {
+          var selected = button.getAttribute('data-schedule-days').split(',');
+          button.closest('[data-schedule-window]').querySelectorAll('input[type="checkbox"]').forEach(function (input) {
             input.checked = selected.indexOf(input.value) !== -1;
           });
           syncScheduleControls(editor);
-        });
+        }
       });
     });
   }
@@ -149,6 +171,18 @@
       // restored when whitelisting is turned off.
       assignments.hidden = whitelist.querySelector("input").checked;
     }
+    var isWhitelist = !!(whitelist && whitelist.querySelector("input").checked);
+    // Preserve the stored blocking state; it only applies to blocklist targets.
+    var blockingState = form.querySelector("[data-scope-blocking-state]");
+    if (blockingState) blockingState.hidden = isWhitelist;
+    var scheduleTitle = form.querySelector("[data-scope-schedule-title]");
+    if (scheduleTitle) scheduleTitle.textContent = (isWhitelist ? "Whitelist" : "Blocklist") + " target schedule";
+    var scheduleHelp = form.querySelector("[data-scope-schedule-help]");
+    if (scheduleHelp) scheduleHelp.textContent = isWhitelist
+      ? "Choose when this target allows all domains. Outside the schedule, other matching targets and the default policy apply."
+      : "Choose when this target applies its blocklists and assigned whitelists.";
+    var addButton = form.querySelector("[data-scope-add-button]");
+    if (addButton) addButton.textContent = isWhitelist ? "Add whitelist target" : "Add blocklist target";
     var isNetwork = select.value === "network";
     networkFields.hidden = !isNetwork;
     singleTarget.hidden = isNetwork;

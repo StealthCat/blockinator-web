@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .schedules import extra_schedule_windows
+
 import ipaddress
 import json
 import queue
@@ -65,12 +67,16 @@ class CompiledSchedule:
     end: time
     timezone: ZoneInfo | None
     valid: bool = True
+    windows: tuple[CompiledSchedule, ...] = ()
 
     def is_active(self, now_utc: datetime | None = None) -> bool:
         if not self.enabled:
             return True
         if not self.valid or self.timezone is None or not self.days:
             return False
+
+        if any(window.is_active(now_utc) for window in self.windows):
+            return True
 
         current_utc = now_utc or datetime.now(timezone.utc)
         if current_utc.tzinfo is None:
@@ -107,6 +113,7 @@ def _compile_schedule(
     start_text: str,
     end_text: str,
     timezone_name: str,
+    windows_text: str | None = None,
 ) -> CompiledSchedule:
     try:
         if not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", start_text) or not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", end_text):
@@ -114,7 +121,9 @@ def _compile_schedule(
         start = time.fromisoformat(start_text)
         end = time.fromisoformat(end_text)
         tz = ZoneInfo(timezone_name)
-        return CompiledSchedule(bool(enabled), days, start, end, tz, True)
+        windows = tuple(_compile_schedule(True, frozenset(item['days']), item['start'], item['end'], timezone_name)
+                        for item in extra_schedule_windows(windows_text))
+        return CompiledSchedule(bool(enabled), days, start, end, tz, all(window.valid for window in windows), windows)
     except (ValueError, ZoneInfoNotFoundError, TypeError):
         return CompiledSchedule(
             bool(enabled),
@@ -571,6 +580,12 @@ class PolicyEngine:
                     merged.pop(address, None)
             self._snapshot = replace(current, client_identities=merged)
 
+    def flush_ptr_cache(self) -> int:
+        # Serialize with full reloads so a snapshot built before the flush cannot
+        # bring back identities read from the database before invalidation.
+        with self._reload_lock:
+            return self.ptr_resolver.flush_cache()
+
     def ptr_status(self) -> dict[str, object]:
         return self.ptr_resolver.status_snapshot()
 
@@ -615,6 +630,7 @@ class PolicyEngine:
                         str(row["schedule_start"] or "00:00"),
                         str(row["schedule_end"] or "00:00"),
                         str(row["schedule_timezone"] or "UTC"),
+                        row["schedule_windows"],
                     ),
                 )
                 bit = 1 << len(list_order)
@@ -737,6 +753,7 @@ class PolicyEngine:
                         str(row["schedule_start"] or "00:00"),
                         str(row["schedule_end"] or "00:00"),
                         str(row["schedule_timezone"] or "UTC"),
+                        row["schedule_windows"],
                     ),
                 )
 
@@ -953,6 +970,7 @@ class PolicyEngine:
                         str(row["schedule_start"] or "00:00"),
                         str(row["schedule_end"] or "00:00"),
                         str(row["schedule_timezone"] or "UTC"),
+                        row["schedule_windows"],
                     ),
                 )
                 bit = 1 << len(list_order)
@@ -1145,6 +1163,7 @@ class PolicyEngine:
                             str(row["schedule_start"] or "00:00"),
                             str(row["schedule_end"] or "00:00"),
                             str(row["schedule_timezone"] or "UTC"),
+                            row["schedule_windows"],
                         ),
                     )
 
@@ -1325,6 +1344,16 @@ class PolicyEngine:
 
         return client, hostname, network
 
+    @staticmethod
+    def _candidate_list_mask(snapshot: PolicySnapshot, scopes: tuple[Scope | None, ...]) -> int:
+        # Matching scopes are ordered endpoint, hostname, network. An empty
+        # assignment set on the winner is intentional, not a fallback request.
+        selected = next((scope for scope in scopes if scope is not None), None)
+        mask = selected.blocklist_mask if selected is not None else 0
+        if snapshot.global_blocklist_scope_mode == "all_clients" or selected is not None:
+            mask |= snapshot.global_list_mask
+        return mask
+
     def _active_list_mask(
         self,
         snapshot: PolicySnapshot,
@@ -1456,18 +1485,9 @@ class PolicyEngine:
             effective_scope = None
 
         scheduled_mask = self._active_list_mask(snapshot, now)
-        candidate_mask = 0
-        if (
-            snapshot.global_blocklist_scope_mode == "all_clients"
-            or effective_scope is not None
-        ):
-            candidate_mask |= snapshot.global_list_mask
-        if network_scope is not None:
-            candidate_mask |= network_scope.blocklist_mask
-        if hostname_scope is not None:
-            candidate_mask |= hostname_scope.blocklist_mask
-        if client_scope is not None:
-            candidate_mask |= client_scope.blocklist_mask
+        candidate_mask = self._candidate_list_mask(
+            snapshot, (client_scope, hostname_scope, network_scope)
+        )
 
         active_mask = candidate_mask & scheduled_mask
         if not active_mask:

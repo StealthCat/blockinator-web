@@ -103,6 +103,7 @@ class Database:
                     schedule_start TEXT NOT NULL DEFAULT '00:00',
                     schedule_end TEXT NOT NULL DEFAULT '00:00',
                     schedule_timezone TEXT NOT NULL DEFAULT 'UTC',
+                    schedule_windows TEXT,
                     last_updated TEXT,
                     last_refresh_attempt TEXT,
                     last_error TEXT,
@@ -140,6 +141,7 @@ class Database:
                     schedule_start TEXT NOT NULL DEFAULT '00:00',
                     schedule_end TEXT NOT NULL DEFAULT '00:00',
                     schedule_timezone TEXT NOT NULL DEFAULT 'UTC',
+                    schedule_windows TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -328,6 +330,7 @@ class Database:
                 row["name"] for row in con.execute("PRAGMA table_info(blocklists)")
             }
             schedule_columns = {
+                "schedule_windows": "TEXT",
                 "schedule_enabled": "INTEGER NOT NULL DEFAULT 0",
                 "schedule_days": "TEXT NOT NULL DEFAULT '0,1,2,3,4,5,6'",
                 "schedule_start": "TEXT NOT NULL DEFAULT '00:00'",
@@ -392,6 +395,7 @@ class Database:
                             schedule_start TEXT NOT NULL DEFAULT '00:00',
                             schedule_end TEXT NOT NULL DEFAULT '00:00',
                             schedule_timezone TEXT NOT NULL DEFAULT 'UTC',
+                            schedule_windows TEXT,
                             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                         )
                         """
@@ -400,11 +404,11 @@ class Database:
                         """
                         INSERT INTO scopes(
                             id,name,kind,target,state,schedule_enabled,schedule_days,
-                            schedule_start,schedule_end,schedule_timezone,created_at
+                            schedule_start,schedule_end,schedule_timezone,schedule_windows,created_at
                         )
                         SELECT
                             id,name,kind,target,state,schedule_enabled,schedule_days,
-                            schedule_start,schedule_end,schedule_timezone,created_at
+                            schedule_start,schedule_end,schedule_timezone,schedule_windows,created_at
                         FROM scopes_legacy
                         """
                     )

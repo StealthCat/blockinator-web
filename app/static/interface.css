@@ -358,3 +358,68 @@ html[data-table-density="compact"] .query-domain small, html[data-table-density=
 [data-form-message] { grid-column: 1 / -1; overflow-wrap: anywhere; }
 
 [data-schedule-controls][hidden] { display: none !important; }
+
+/* Policy target actions share sizing and emphasis in both themes. */
+[data-scope-blocking-state][hidden] { display: none !important; }
+.scope-card-actions { align-items: center; flex-wrap: wrap; gap: 8px; }
+.scope-card-actions form { display: flex; margin: 0; }
+:is(.scopes-layout, .editable-scope-card) :is(.small-button, .primary-button) {
+  min-height: 40px;
+  border-radius: 9px;
+  text-decoration: none;
+  line-height: 1.25;
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.scope-card-actions .small-button { padding: 10px 14px; white-space: nowrap; }
+.scope-card-actions .edit-link {
+  color: var(--accent); background: var(--accent-soft); border-color: var(--border-strong);
+}
+.scope-card-actions .edit-link:hover { border-color: var(--accent); background: var(--surface-hover); }
+.scope-card-actions .danger { background: transparent; border-color: var(--border-soft); color: var(--red); }
+.scope-card-actions .danger:hover { background: var(--red-soft); border-color: var(--red); }
+.scope-card-actions [aria-hidden] { font-size: 16px; line-height: 1; }
+.target-blocklist-badge { color: var(--accent); background: var(--accent-soft); }
+:is(.scopes-layout, .editable-scope-card) :is(.small-button, .primary-button):focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 3px;
+}
+.scope-schedule-summary { color: var(--text-muted); }
+@media (max-width: 760px) {
+  .scope-card-actions { width: 100%; justify-content: flex-start; }
+  .scope-card-actions > :is(form, a) { flex: 1 1 auto; }
+  .scope-card-actions form > button { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.scopes-layout, .editable-scope-card) :is(.small-button, .primary-button) { transition: none; }
+}
+
+/* Fit target search actions to their content instead of generic grid tracks. */
+.scope-filter-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.scope-filter-bar > label { display: grid; gap: 6px; min-width: 0; flex: 1 1 140px; }
+.scope-filter-bar > label:first-child { flex: 2 1 220px; }
+.scope-filter-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+.scope-filter-actions .primary-button { width: auto; min-height: 40px; height: 40px; padding: 9px 16px; flex: 0 0 auto; }
+.scope-filter-actions .text-link { display: inline-flex; align-items: center; min-height: 40px; }
+@media (max-width: 760px) {
+  .scope-filter-actions .primary-button, .scope-filter-actions .text-link { min-height: 44px; height: 44px; }
+}
+
+/* Multiple independent windows share a timezone and combine with OR. */
+.schedule-editor .schedule-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.schedule-editor .schedule-controls[hidden] { display: none; }
+.schedule-windows { display: grid; gap: 12px; min-width: 0; }
+.schedule-window { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 14px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--surface-1); }
+.schedule-window-head { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.schedule-window .schedule-days { grid-column: 1 / -1; min-width: 0; }
+.schedule-window label { display: grid; gap: 6px; min-width: 0; }
+.schedule-window .schedule-day-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.schedule-editor [data-add-schedule-window] { justify-self: start; width: auto; }
+.schedule-editor .schedule-status { overflow-wrap: anywhere; line-height: 1.6; }
+.scope-schedule-summary, .schedule-meta { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .schedule-window { padding: 10px; gap: 10px; }
+  .schedule-window-head { flex-wrap: wrap; }
+  .schedule-window .schedule-day span { padding: 8px 2px; }
+}
+
+.schedule-window .schedule-day input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }

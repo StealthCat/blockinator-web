@@ -408,7 +408,7 @@ def test_endpoint_whitelist_create_edit_and_type_change(web, browser):
     assert web.engine.decide(form['target'], 'example.org').reason == 'endpoint_whitelisted'
     page = client.get('/scopes')
     assert page.status_code == 200
-    assert 'Whitelisted</span>' in page.text
+    assert 'Whitelist target</span>' in page.text
     assert 'name="whitelisted" value="1" checked' in client.get(f'/scopes/{sid}/edit').text
     form.pop('whitelisted')
     assert client.post(f'/admin/scopes/{sid}/edit', data=form).status_code == 303
