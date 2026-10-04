@@ -403,3 +403,23 @@ html[data-table-density="compact"] .query-domain small, html[data-table-density=
 @media (max-width: 760px) {
   .scope-filter-actions .primary-button, .scope-filter-actions .text-link { min-height: 44px; height: 44px; }
 }
+
+/* Multiple independent windows share a timezone and combine with OR. */
+.schedule-editor .schedule-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.schedule-editor .schedule-controls[hidden] { display: none; }
+.schedule-windows { display: grid; gap: 12px; min-width: 0; }
+.schedule-window { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 14px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--surface-1); }
+.schedule-window-head { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.schedule-window .schedule-days { grid-column: 1 / -1; min-width: 0; }
+.schedule-window label { display: grid; gap: 6px; min-width: 0; }
+.schedule-window .schedule-day-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.schedule-editor [data-add-schedule-window] { justify-self: start; width: auto; }
+.schedule-editor .schedule-status { overflow-wrap: anywhere; line-height: 1.6; }
+.scope-schedule-summary, .schedule-meta { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .schedule-window { padding: 10px; gap: 10px; }
+  .schedule-window-head { flex-wrap: wrap; }
+  .schedule-window .schedule-day span { padding: 8px 2px; }
+}
+
+.schedule-window .schedule-day input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }

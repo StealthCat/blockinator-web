@@ -13,7 +13,8 @@ def next_transition(schedule, now):
     candidates = set()
     # Include hourly boundaries to handle clocks jumping over a nonexistent
     # local start/end time. Both folds cover repeated times in autumn.
-    times = {schedule.start, schedule.end, *(time(hour, 0) for hour in range(24))}
+    times = {boundary for window in (schedule, *schedule.windows) for boundary in (window.start, window.end)}
+    times.update(time(hour, 0) for hour in range(24))
     for offset in range(9):
         day = local.date() + timedelta(days=offset)
         for wall_time in times:
@@ -30,7 +31,7 @@ def next_transition(schedule, now):
 def target_status(row, global_blocking=True, now=None):
     now = now or datetime.now(timezone.utc)
     schedule = _compile_schedule(bool(row["schedule_enabled"]), _parse_schedule_days(row["schedule_days"]),
-                                 row["schedule_start"], row["schedule_end"], row["schedule_timezone"])
+                                 row["schedule_start"], row["schedule_end"], row["schedule_timezone"], row["schedule_windows"])
     if not global_blocking:
         label = "Global blocking paused"
     elif schedule.enabled and not schedule.valid:
@@ -44,6 +45,16 @@ def target_status(row, global_blocking=True, now=None):
     else:
         label = "Filtering active"
     return label, next_transition(schedule, now)
+
+
+def compiled_schedule_summary(schedule):
+    if not schedule.enabled:
+        return "Always active"
+    days = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    return " OR ".join(
+        ", ".join(days[day] for day in sorted(window.days)) + " · " +
+        window.start.strftime("%H:%M") + "–" + window.end.strftime("%H:%M")
+        for window in (schedule, *schedule.windows))
 
 
 def inspect_policy(engine, client_ip, qname, qtype, now=None):
@@ -76,7 +87,7 @@ def inspect_policy(engine, client_ip, qname, qtype, now=None):
                              "timezone": str(scope.schedule.timezone or "Invalid"),
                              "schedule_start": scope.schedule.start.isoformat(timespec="minutes"),
                              "schedule_end": scope.schedule.end.isoformat(timespec="minutes"),
-                             "scheduled": scope.schedule.enabled})
+                             "scheduled": scope.schedule.enabled, "schedule_summary": compiled_schedule_summary(scope.schedule)})
     selected = engine._matching_scopes(snapshot, ip, now)
     candidate_mask = engine._candidate_list_mask(snapshot, selected)
     suffixes = engine.suffixes(qname)

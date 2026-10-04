@@ -4,7 +4,7 @@
 
 # Blockinator
 
-Current source version: **1.20.10**. See [CHANGELOG.md](CHANGELOG.md) for version history. Source versions and published Docker tags are tracked separately; the pinned Docker examples below remain on the published 1.19.2 image.
+Current source version: **1.20.11**. See [CHANGELOG.md](CHANGELOG.md) for version history. Source versions and published Docker tags are tracked separately; the pinned Docker examples below remain on the published 1.19.2 image.
 
 **Blockinator** is a self-hosted DNS policy engine and management console designed to sit beside DNS servers such as Technitium DNS Server.
 
@@ -516,14 +516,28 @@ Recurring weekly schedules can be applied to:
 
 Schedules support:
 
-- selectable weekdays;
-- start/end times;
+- up to 32 time windows, each with its own weekdays and start/end times;
+- enforcement whenever **any** window matches;
 - overnight windows; and
 - IANA timezones such as `America/New_York`.
 
 Selected weekdays represent the day the schedule starts. For example, Monday `22:00–06:00` remains active until Tuesday at 06:00.
 
 If start and end are equal, the schedule covers the full selected day.
+
+Use **Add time window** in a list or target's schedule editor. All windows share the selected timezone; they can overlap, and each has independent Every day / Weekdays / Weekends shortcuts. Remove an extra window with **Remove window**. Existing schedules retain their original days and times as Window 1.
+
+For a YouTube blocklist that is active all weekdays except 5–6 p.m., and on weekends from 6 p.m. through 10 a.m., set `America/New_York` and these windows:
+
+| Days | Start | End |
+| --- | --- | --- |
+| Mon–Fri | 00:00 | 17:00 |
+| Mon–Fri | 18:00 | 00:00 |
+| Sat–Sun | 00:00 | 10:00 |
+| Sat–Sun | 18:00 | 00:00 |
+
+Here `00:00` as an end time means midnight. The weekend midnight–10 a.m. window combines the overnight portion with the requested 8–10 a.m. block. A schedule defines when this list applies; other applicable lists can still block the same domain during its inactive hours.
+
 
 The **System Settings → Default timezone** controls Query Log display and is the initial timezone for newly created schedules. Existing schedules retain their own saved timezone.
 

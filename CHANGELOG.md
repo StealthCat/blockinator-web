@@ -2,6 +2,13 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.11 — Multiple daily schedule windows
+
+- Add up to 32 independent day/time windows to blocklists, whitelists, and policy targets with a shared timezone and OR matching.
+- Preserve existing single-window schedules through SQLite/MySQL schema upgrades.
+- Add window controls, per-window day presets, complete summaries, and next-transition calculations across overlapping and overnight windows.
+- Validate every saved window and cover weekday/weekend boundaries, DST, round trips, and migration.
+
 ## 1.20.10 — Apply target precedence to scoped lists
 
 - Use only the highest-priority scheduled target’s list assignments instead of combining endpoint, hostname, and network assignments.

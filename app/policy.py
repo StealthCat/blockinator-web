@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .schedules import extra_schedule_windows
+
 import ipaddress
 import json
 import queue
@@ -65,12 +67,16 @@ class CompiledSchedule:
     end: time
     timezone: ZoneInfo | None
     valid: bool = True
+    windows: tuple[CompiledSchedule, ...] = ()
 
     def is_active(self, now_utc: datetime | None = None) -> bool:
         if not self.enabled:
             return True
         if not self.valid or self.timezone is None or not self.days:
             return False
+
+        if any(window.is_active(now_utc) for window in self.windows):
+            return True
 
         current_utc = now_utc or datetime.now(timezone.utc)
         if current_utc.tzinfo is None:
@@ -107,6 +113,7 @@ def _compile_schedule(
     start_text: str,
     end_text: str,
     timezone_name: str,
+    windows_text: str | None = None,
 ) -> CompiledSchedule:
     try:
         if not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", start_text) or not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", end_text):
@@ -114,7 +121,9 @@ def _compile_schedule(
         start = time.fromisoformat(start_text)
         end = time.fromisoformat(end_text)
         tz = ZoneInfo(timezone_name)
-        return CompiledSchedule(bool(enabled), days, start, end, tz, True)
+        windows = tuple(_compile_schedule(True, frozenset(item['days']), item['start'], item['end'], timezone_name)
+                        for item in extra_schedule_windows(windows_text))
+        return CompiledSchedule(bool(enabled), days, start, end, tz, all(window.valid for window in windows), windows)
     except (ValueError, ZoneInfoNotFoundError, TypeError):
         return CompiledSchedule(
             bool(enabled),
@@ -621,6 +630,7 @@ class PolicyEngine:
                         str(row["schedule_start"] or "00:00"),
                         str(row["schedule_end"] or "00:00"),
                         str(row["schedule_timezone"] or "UTC"),
+                        row["schedule_windows"],
                     ),
                 )
                 bit = 1 << len(list_order)
@@ -743,6 +753,7 @@ class PolicyEngine:
                         str(row["schedule_start"] or "00:00"),
                         str(row["schedule_end"] or "00:00"),
                         str(row["schedule_timezone"] or "UTC"),
+                        row["schedule_windows"],
                     ),
                 )
 
@@ -959,6 +970,7 @@ class PolicyEngine:
                         str(row["schedule_start"] or "00:00"),
                         str(row["schedule_end"] or "00:00"),
                         str(row["schedule_timezone"] or "UTC"),
+                        row["schedule_windows"],
                     ),
                 )
                 bit = 1 << len(list_order)
@@ -1151,6 +1163,7 @@ class PolicyEngine:
                             str(row["schedule_start"] or "00:00"),
                             str(row["schedule_end"] or "00:00"),
                             str(row["schedule_timezone"] or "UTC"),
+                            row["schedule_windows"],
                         ),
                     )
 

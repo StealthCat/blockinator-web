@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+from .schedules import extra_schedule_windows, MAX_SCHEDULE_WINDOWS
 from .ui import icon, query_details_html
 from .auth import AuthManager, SESSION_COOKIE, SESSION_TTL_SECONDS
 from .blocklists import MAX_BYTES, fetch_url, normalize_domain, parse_blocklist
@@ -34,7 +35,7 @@ from .inspector import inspect_policy, target_status
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.20.10"
+APP_VERSION = "1.20.11"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),
@@ -311,7 +312,7 @@ DAY_LABELS = [
 ]
 
 
-def parse_schedule_form(form, label: str = "block list") -> tuple[bool, str, str, str, str]:
+def parse_schedule_form(form, label: str = "block list") -> tuple[bool, str, str, str, str, str]:
     enabled = str(form.get("schedule_enabled", "")) == "1"
     days: list[int] = []
     for raw in form.getlist("schedule_day"):
@@ -347,7 +348,22 @@ def parse_schedule_form(form, label: str = "block list") -> tuple[bool, str, str
     if not days:
         days = list(range(7))
 
-    return enabled, ",".join(str(day) for day in sorted(days)), start, end, tz_name
+    window_ids = form.getlist("schedule_window")
+    if len(window_ids) >= MAX_SCHEDULE_WINDOWS or len(set(window_ids)) != len(window_ids):
+        raise ValueError(f"Use at most {MAX_SCHEDULE_WINDOWS} unique schedule windows")
+    windows = []
+    for window_id in window_ids:
+        if not re.fullmatch(r"[1-9][0-9]{0,5}", str(window_id)):
+            raise ValueError("Invalid schedule window identifier")
+        try:
+            extra_days = [int(day) for day in form.getlist(f"schedule_day_{window_id}")]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid schedule day") from exc
+        windows.append({"days": extra_days,
+                        "start": str(form.get(f"schedule_start_{window_id}", "")),
+                        "end": str(form.get(f"schedule_end_{window_id}", ""))})
+    windows_text = json.dumps(extra_schedule_windows(json.dumps(windows)))
+    return enabled, ",".join(str(day) for day in sorted(days)), start, end, tz_name, windows_text
 
 
 def schedule_days_set(value: str | None) -> set[int]:
@@ -365,6 +381,17 @@ def schedule_days_set(value: str | None) -> set[int]:
 def schedule_summary(row) -> str:
     if not row["schedule_enabled"]:
         return "Always active"
+    try:
+        windows = extra_schedule_windows(row["schedule_windows"] if "schedule_windows" in row.keys() else None)
+    except ValueError:
+        return "Invalid schedule windows"
+    if windows:
+        first = {key: row[key] for key in ("schedule_enabled", "schedule_days", "schedule_start", "schedule_end", "schedule_timezone")}
+        summaries = [schedule_summary(first)]
+        for window in windows:
+            summaries.append(schedule_summary({**first, "schedule_days": ",".join(map(str, window['days'])),
+                "schedule_start": window['start'], "schedule_end": window['end']}))
+        return " OR ".join(summaries)
     selected = schedule_days_set(row["schedule_days"])
     if selected == set(range(7)):
         day_text = "Every day"
@@ -381,49 +408,56 @@ def schedule_summary(row) -> str:
     )
 
 
+def schedule_window_html(index, days, start, end):
+    suffix = f"_{index}" if index else ""
+    marker = f'<input type="hidden" name="schedule_window" value="{index}">' if index else ""
+    day_buttons = "".join(
+        f'<label class="schedule-day"><input type="checkbox" name="schedule_day{suffix}" value="{day}"'
+        f'{" checked" if day in days else ""}><span>{label}</span></label>' for day, label in DAY_LABELS)
+    remove = '<button type="button" class="small-button danger" data-remove-schedule-window>Remove window</button>' if index else ''
+    return f'''<div class="schedule-window" data-schedule-window="{index}">{marker}
+      <div class="schedule-window-head"><b>Window <span data-window-number>{index + 1}</span></b>{remove}</div>
+      <div class="schedule-days"><span class="schedule-label">Days the schedule starts</span>
+        <div class="schedule-presets" role="group" aria-label="Select schedule days">
+          <button type="button" class="small-button" data-schedule-days="0,1,2,3,4,5,6">Every day</button>
+          <button type="button" class="small-button" data-schedule-days="0,1,2,3,4">Weekdays</button>
+          <button type="button" class="small-button" data-schedule-days="5,6">Weekends</button>
+        </div><div class="schedule-day-grid">{day_buttons}</div>
+      </div>
+      <label>Start time<input type="time" name="schedule_start{suffix}" value="{esc(start)}"></label>
+      <label>End time<input type="time" name="schedule_end{suffix}" value="{esc(end)}"></label>
+    </div>'''
+
+
 def schedule_fields_html(row=None, default_timezone: str = "UTC", *, policy_target: bool = False) -> str:
     enabled = bool(row["schedule_enabled"]) if row is not None else False
     days = schedule_days_set(row["schedule_days"]) if row is not None else set(range(7))
     start = str(row["schedule_start"] or "00:00") if row is not None else "00:00"
     end = str(row["schedule_end"] or "00:00") if row is not None else "00:00"
-    tz_name = (
-        str(row["schedule_timezone"] or default_timezone)
-        if row is not None
-        else default_timezone
-    )
+    tz_name = str(row["schedule_timezone"] or default_timezone) if row is not None else default_timezone
     if row is None:
         try:
             ZoneInfo(tz_name)
         except (ZoneInfoNotFoundError, ValueError):
             tz_name = "UTC"
-    day_buttons = "".join(
-        f'<label class="schedule-day">'
-        f'<input type="checkbox" name="schedule_day" value="{day}"'
-        f'{" checked" if day in days else ""}>'
-        f'<span>{label}</span></label>'
-        for day, label in DAY_LABELS
-    )
-    presets = ('<div class="schedule-presets" role="group" aria-label="Select schedule days">'
-               '<button type="button" class="small-button" data-schedule-days="0,1,2,3,4,5,6">Every day</button>'
-               '<button type="button" class="small-button" data-schedule-days="0,1,2,3,4">Weekdays</button>'
-               '<button type="button" class="small-button" data-schedule-days="5,6">Weekends</button></div>') if policy_target else ""
-    status = '<p class="schedule-status" data-schedule-status aria-live="polite"></p>' if policy_target else ""
+    error = ""
+    try:
+        extras = extra_schedule_windows(row["schedule_windows"] if row is not None and "schedule_windows" in row.keys() else None)
+    except ValueError:
+        extras = []
+        error = '<p class="list-warning">Stored schedule windows are invalid. Review and save the schedule to repair it.</p>'
+    windows = schedule_window_html(0, days, start, end) + "".join(
+        schedule_window_html(index, set(window['days']), window['start'], window['end'])
+        for index, window in enumerate(extras, 1))
     return f'''<div class="schedule-editor full{" target-schedule-editor" if policy_target else ""}" data-schedule-editor>
-      <label class="check schedule-toggle">
-        <input type="checkbox" name="schedule_enabled" value="1" data-schedule-toggle{" checked" if enabled else ""}>
-        {"Use a target schedule" if policy_target else "Enforce only during a schedule"}
-      </label>
-      {status}
+      <label class="check schedule-toggle"><input type="checkbox" name="schedule_enabled" value="1" data-schedule-toggle{" checked" if enabled else ""}>
+        {"Use a target schedule" if policy_target else "Enforce only during a schedule"}</label>
+      <p class="schedule-status" data-schedule-status aria-live="polite"></p>{error}
       <div class="schedule-controls{" schedule-disabled" if not enabled else ""}" data-schedule-controls>
-        <div class="schedule-days">
-          <span class="schedule-label">{"Days the schedule starts" if policy_target else "Days"}</span>
-          {presets}
-          <div class="schedule-day-grid">{day_buttons}</div>
-        </div>
-        <label>Start time<input type="time" name="schedule_start" value="{esc(start)}"></label>
-        <label>End time<input type="time" name="schedule_end" value="{esc(end)}"></label>
         <label class="schedule-timezone">Timezone<input name="schedule_timezone" value="{esc(tz_name)}" placeholder="America/New_York"></label>
-        <p class="schedule-help full">Selected days are the days the window begins. Overnight ranges such as 22:00–06:00 continue into the following morning. Equal start/end times mean the full selected day.</p>
+        <div class="schedule-windows" data-schedule-windows>{windows}</div>
+        <button type="button" class="small-button" data-add-schedule-window>Add time window</button>
+        <p class="schedule-help full">Active when any window matches. Selected days are the days the window begins. Overnight ranges such as 22:00–06:00 continue into the following morning. Equal start/end times mean the full selected day. Use 00:00 as the end time for midnight.</p>
       </div>
     </div>'''
 
@@ -1834,7 +1868,7 @@ def add_list(request: Request):
     text = str(form.get("text", ""))
     global_list = str(form.get("global_list", "")) == "1"
     try:
-        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
+        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone, schedule_windows = parse_schedule_form(
             form, list_label
         )
     except ValueError as e:
@@ -1896,6 +1930,7 @@ def add_list(request: Request):
             list_id = int(cur.lastrowid)
             db.replace_list_domains(con, list_id, parsed.domains)
             con.execute("UPDATE blocklists SET entry_count=?,last_updated=CURRENT_TIMESTAMP WHERE id=?", (len(parsed.domains), list_id))
+            con.execute("UPDATE blocklists SET schedule_windows=? WHERE id=?", (schedule_windows, list_id))
             assigned = _save_list_scope_assignments(con, list_id, scope_ids)
             con.execute("COMMIT")
         except Exception as e:
@@ -1934,7 +1969,7 @@ def edit_list(list_id: int, request: Request):
     enabled = str(form.get("enabled", "")) == "1"
     global_list = str(form.get("global_list", "")) == "1"
     try:
-        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
+        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone, schedule_windows = parse_schedule_form(
             form, list_label
         )
     except ValueError as e:
@@ -2019,6 +2054,7 @@ def edit_list(list_id: int, request: Request):
                     list_id,
                 ),
             )
+            con.execute("UPDATE blocklists SET schedule_windows=? WHERE id=?", (schedule_windows, list_id))
             assigned = _save_list_scope_assignments(con, list_id, scope_ids)
             if invalidate_source:
                 con.execute("UPDATE blocklists SET source_hash=NULL,source_etag=NULL,source_last_modified=NULL,last_refresh_attempt=NULL WHERE id=?", (list_id,))
@@ -2525,7 +2561,7 @@ def add_scope(request: Request):
     state = str(form.get("state", "active")).strip().lower()
     whitelisted = 1 if form.get("whitelisted") == "1" else 0
     try:
-        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
+        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone, schedule_windows = parse_schedule_form(
             form, "policy target"
         )
     except ValueError as e:
@@ -2571,6 +2607,7 @@ def add_scope(request: Request):
                 ),
             )
             scope_id = int(cur.lastrowid)
+            con.execute("UPDATE scopes SET schedule_windows=? WHERE id=?", (schedule_windows, scope_id))
             _save_scope_network_targets(con, scope_id, kind, target_v4, target_v6)
             assigned = _save_scope_blocklist_assignments(con, scope_id, blocklist_ids)
             con.execute("COMMIT")
@@ -2596,7 +2633,7 @@ def edit_scope(scope_id: int, request: Request):
     state = str(form.get("state", "active")).strip().lower()
     whitelisted = 1 if form.get("whitelisted") == "1" else 0
     try:
-        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone = parse_schedule_form(
+        schedule_enabled, schedule_days, schedule_start, schedule_end, schedule_timezone, schedule_windows = parse_schedule_form(
             form, "policy target"
         )
     except ValueError as e:
@@ -2645,6 +2682,7 @@ def edit_scope(scope_id: int, request: Request):
                     scope_id,
                 ),
             )
+            con.execute("UPDATE scopes SET schedule_windows=? WHERE id=?", (schedule_windows, scope_id))
             _save_scope_network_targets(con, scope_id, kind, target_v4, target_v6)
             assigned = _save_scope_blocklist_assignments(con, scope_id, blocklist_ids)
             con.execute("COMMIT")
@@ -2939,7 +2977,7 @@ def policy_test_page(request: Request, client: str = "", domain: str = "", recor
             outcome = "Ignored" if result["ignored"] else "Blocked" if decision["block"] else "Allowed"
             scope_rows = "".join(f'<tr><td><a href="/scopes/{row["id"]}/edit">{esc(row["name"])}</a><small>{esc(row["target"])}</small></td>'
                 f'<td>{"Whitelist" if row["whitelisted"] else esc(row["state"])}</td>'
-                f'<td>{"Active" if row["schedule_active"] else "Inactive"} · {esc(row["timezone"])}<small>{esc(row["schedule_start"])}–{esc(row["schedule_end"]) if row["scheduled"] else "always"}</small></td></tr>'
+                f'<td>{"Active" if row["schedule_active"] else "Inactive"} · {esc(row["timezone"])}<small>{esc(row["schedule_summary"])}</small></td></tr>'
                 for row in result["scopes"]) or '<tr><td colspan="3">No matching target. The unmatched-client default is ' + esc(result["unmatched_scope_action"]) + '.</td></tr>'
             list_rows = "".join(f'<tr><td><a href="/{"whitelists" if row["type"] == "whitelist" else "lists"}/{row["id"]}/edit">{esc(row["name"])}</a></td>'
                 f'<td>{esc(row["type"])}</td><td>{"Active" if row["enabled"] and row["schedule_active"] else "Inactive"} · {esc(row["timezone"])}</td><td>{esc(row["matched_domain"] or "No domain match")}</td></tr>'

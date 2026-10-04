@@ -312,6 +312,7 @@ class MySQLBackend:
                 schedule_start VARCHAR(16) NOT NULL DEFAULT '00:00',
                 schedule_end VARCHAR(16) NOT NULL DEFAULT '00:00',
                 schedule_timezone VARCHAR(128) NOT NULL DEFAULT 'UTC',
+                schedule_windows TEXT NULL,
                 last_updated DATETIME NULL,
                 last_refresh_attempt DATETIME NULL,
                 last_error LONGTEXT NULL,
@@ -352,6 +353,7 @@ class MySQLBackend:
                 schedule_start VARCHAR(16) NOT NULL DEFAULT '00:00',
                 schedule_end VARCHAR(16) NOT NULL DEFAULT '00:00',
                 schedule_timezone VARCHAR(128) NOT NULL DEFAULT 'UTC',
+                schedule_windows TEXT NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """,
@@ -484,6 +486,9 @@ class MySQLBackend:
                 JOIN domains ON domains.id=memberships.domain_id
                 """
             )
+
+            for table in ("scopes", "blocklists"):
+                self._ensure_column(con, table, "schedule_windows", "TEXT NULL")
 
             self._ensure_column(con, "scopes", "whitelisted", "TINYINT(1) NOT NULL DEFAULT 0")
 
