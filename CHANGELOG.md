@@ -2,6 +2,12 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.13 — README release overview
+
+- Summarize the v1.20.12 application fixes and upgrade considerations in the README.
+- Document multiple recurring schedule windows, scoped-list target priority, and the PTR cache flush control in the feature overview.
+- Distinguish the published application release from subsequent source documentation updates; keep Docker image examples pinned until a newer image is verified.
+
 ## 1.20.12 — Code review fixes
 
 - Detach a list from its source URL when its contents are replaced by paste or upload, so a later save or refresh cannot silently overwrite them; make Save, not Refresh, the Enter-key default on the list editor.

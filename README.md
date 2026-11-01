@@ -6,13 +6,21 @@
 
 Self-hosted DNS policy management with block lists, whitelists, schedules, and query history. Your DNS server sends query metadata; Blockinator returns an allow/block decision. Connect Technitium using the [companion plugin](https://github.com/StealthCat/blockinator-technitium).
 
-Current source version: **1.20.12** · [Changelog](CHANGELOG.md) · [Releases](https://github.com/StealthCat/blockinator-web/releases)
+Current source version: **1.20.13** · [Changelog](CHANGELOG.md) · [Releases](https://github.com/StealthCat/blockinator-web/releases)
+
+## Latest application release: v1.20.12
+
+[v1.20.12](https://github.com/StealthCat/blockinator-web/releases/tag/v1.20.12) fixes list editing and refresh reliability, repeated or stale toggle submissions, concurrent API key changes, client identity handling, MySQL query logging, and TLS configuration recovery. List and API key timestamps now use the configured timezone, and malformed requests receive appropriate errors. See the [full changelog](CHANGELOG.md#12012--code-review-fixes).
+
+Back up your data before updating. Existing installations keep their settings; MySQL upgrades widen the query-name column automatically. Before migrating SQLite to MySQL, resolve any list or target names flagged as case-insensitive conflicts. The source version above also includes documentation updates after the application release.
 
 ## Features
 
-- Target IPv4/IPv6 networks, individual clients, or PTR hostnames, with whitelist precedence and timezone-aware schedules.
+- Target IPv4/IPv6 networks, individual clients, or PTR hostnames, with whitelist precedence and up to 32 recurring schedule windows per list or target in a shared timezone.
+- Apply scoped lists from the highest-priority scheduled target (endpoint → hostname → network), alongside global lists.
 - Import lists from URLs, files, or pasted rules, or manage domains manually.
 - Explain decisions with Policy Tester; search query history and view traffic and response-time statistics.
+- Flush learned PTR identities and cached answers from **System Settings → Runtime** and refresh tracked clients in the background while preserving query history.
 - Use SQLite or MySQL, managed HTTPS through Caddy, administrator accounts, and named API keys.
 - Choose system, dark, or light themes in a responsive management console.
 
