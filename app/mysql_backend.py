@@ -388,7 +388,7 @@ class MySQLBackend:
                 client_port INT NULL,
                 protocol VARCHAR(32) NULL,
                 policy_scheme VARCHAR(16) NULL,
-                qname VARCHAR(253) NULL,
+                qname VARCHAR(255) NULL,
                 qtype VARCHAR(32) NULL,
                 qclass VARCHAR(32) NULL,
                 blocked TINYINT(1) NOT NULL,
@@ -528,6 +528,14 @@ class MySQLBackend:
                 "blocklists",
                 "source_hash",
                 128,
+            )
+            # A maximum-length FQDN with its trailing dot is 254 characters;
+            # VARCHAR(253) made strict-mode MySQL reject the whole log batch.
+            self._ensure_varchar_min_length(
+                con,
+                "query_log",
+                "qname",
+                255,
             )
             self._ensure_index(
                 con,

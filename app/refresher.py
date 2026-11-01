@@ -111,26 +111,27 @@ class BlocklistRefresher:
             if not list_ids:
                 return []
 
+            def refresh_one(list_id: int) -> RefreshResult:
+                # Isolate failures: an exception escaping one list must not
+                # skip the policy reload for other lists already committed.
+                try:
+                    return self._refresh_list(list_id, reload_engine=False)
+                except Exception as exc:
+                    return RefreshResult(
+                        list_id=list_id,
+                        refreshed=False,
+                        error=str(exc) or type(exc).__name__,
+                    )
+
             workers = min(self.max_workers, len(list_ids))
             if workers <= 1:
-                results = [
-                    self._refresh_list(list_id, reload_engine=False)
-                    for list_id in list_ids
-                ]
+                results = [refresh_one(list_id) for list_id in list_ids]
             else:
                 with ThreadPoolExecutor(
                     max_workers=workers,
                     thread_name_prefix="blockinator-list-refresh",
                 ) as executor:
-                    results = list(
-                        executor.map(
-                            lambda list_id: self._refresh_list(
-                                list_id,
-                                reload_engine=False,
-                            ),
-                            list_ids,
-                        )
-                    )
+                    results = list(executor.map(refresh_one, list_ids))
 
             if any(result.changed for result in results):
                 self._reload_policy_lists()

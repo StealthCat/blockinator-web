@@ -511,8 +511,10 @@ class PtrResolutionManager:
                 )
 
             self._write_transaction(write_no_ptr)
-            if previous_name is not None:
-                updates[address] = None
+            # Always clear the in-memory identity: the status row may already
+            # have no name while the snapshot still holds one from elsewhere
+            # (for example a reload that raced this write).
+            updates[address] = None
 
         else:
             attempt_count = int(row["attempt_count"] or 0) + 1

@@ -81,7 +81,9 @@ def parse_blocklist_lines(
     domains: set[str] = set()
     ignored = 0
     for raw in lines:
-        line = raw.strip()
+        # Drop a UTF-8 byte-order mark (usually on the first line); it is not
+        # whitespace to str.strip() and would corrupt the first entry.
+        line = raw.strip().lstrip("\ufeff").strip()
         if not line or line.startswith(("#", "!", ";", "[")):
             continue
 

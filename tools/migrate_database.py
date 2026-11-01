@@ -14,6 +14,7 @@ import json
 import os
 import sqlite3
 import sys
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -556,6 +557,36 @@ def validate_schema(source: Endpoint, destination: Endpoint) -> dict[str, tuple[
     return schema
 
 
+# MySQL stores these UNIQUE names with utf8mb4_unicode_ci, which treats case,
+# accents and trailing spaces as equal; SQLite compares them as distinct.
+MYSQL_CI_UNIQUE_NAMES = (("blocklists", "name"), ("scopes", "name"))
+
+
+def _mysql_ci_key(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", str(value))
+    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return stripped.casefold().rstrip(" ")
+
+
+def find_mysql_name_conflicts(source: Endpoint) -> list[str]:
+    """Return names that would collide under MySQL's case-insensitive UNIQUE keys."""
+    if source.kind != "sqlite":
+        return []
+    assert source.connection is not None
+    conflicts: list[str] = []
+    for table, column in MYSQL_CI_UNIQUE_NAMES:
+        groups: dict[str, list[str]] = {}
+        for row in source.connection.execute(
+            f"SELECT {quote_identifier('sqlite', column)} AS value "
+            f"FROM {quote_identifier('sqlite', table)}"
+        ):
+            groups.setdefault(_mysql_ci_key(row["value"]), []).append(str(row["value"]))
+        for names in groups.values():
+            if len(names) > 1:
+                conflicts.append(f"{table}.{column}: " + ", ".join(repr(name) for name in sorted(names)))
+    return conflicts
+
+
 def migrate_data(
     source: Endpoint,
     destination: Endpoint,
@@ -565,6 +596,14 @@ def migrate_data(
     progress=print,
 ) -> MigrationSummary:
     schema = validate_schema(source, destination)
+    if destination.kind == "mysql":
+        conflicts = find_mysql_name_conflicts(source)
+        if conflicts:
+            # Fail before clearing the destination rather than mid-copy.
+            raise RuntimeError(
+                "names that differ only by case, accents or trailing spaces "
+                "cannot coexist in MySQL; rename them first: " + "; ".join(conflicts)
+            )
     source_counts = {table: source.count(table) for table in TABLE_ORDER}
 
     progress("Clearing destination Blockinator tables...")
@@ -870,6 +909,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             for table in TABLE_ORDER:
                 print(f"  {table}: {counts[table]:,}")
+            if args.destination == "mysql":
+                for conflict in find_mysql_name_conflicts(source):
+                    print(f"  Conflict for MySQL unique names: {conflict}")
 
         if args.dry_run:
             print("\nDry run complete. Destination was not modified.")
