@@ -320,31 +320,52 @@ class AuthManager:
         self.reload_api_keys()
         return raw
 
+    def _lock_enabled_api_keys(self, con) -> int:
+        """Start a write transaction and return the enabled-key count.
+
+        The count-then-modify guards below must be serialized; otherwise two
+        concurrent disable/delete requests can each see two enabled keys and
+        together leave none. SQLite's BEGIN IMMEDIATE takes the write lock;
+        MySQL needs a locking read on the enabled rows.
+        """
+        con.execute("BEGIN IMMEDIATE")
+        lock_suffix = " FOR UPDATE" if getattr(self.db, "backend", "sqlite") == "mysql" else ""
+        return len(con.execute(f"SELECT id FROM api_keys WHERE enabled=1{lock_suffix}").fetchall())
+
     def set_api_key_enabled(self, key_id: int, enabled: bool) -> None:
         with self.db.connect() as con:
-            row = con.execute("SELECT enabled FROM api_keys WHERE id=?", (key_id,)).fetchone()
-            if not row:
-                raise ValueError("API key not found")
-            if not enabled:
-                active = int(con.execute("SELECT COUNT(*) c FROM api_keys WHERE enabled=1").fetchone()["c"])
-                if active <= 1 and bool(row["enabled"]):
+            active = self._lock_enabled_api_keys(con)
+            try:
+                row = con.execute("SELECT enabled FROM api_keys WHERE id=?", (key_id,)).fetchone()
+                if not row:
+                    raise ValueError("API key not found")
+                if not enabled and active <= 1 and bool(row["enabled"]):
                     raise ValueError("at least one API key must remain enabled")
-            con.execute(
-                "UPDATE api_keys SET enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (1 if enabled else 0, key_id),
-            )
+                con.execute(
+                    "UPDATE api_keys SET enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (1 if enabled else 0, key_id),
+                )
+                con.execute("COMMIT")
+            except Exception:
+                con.execute("ROLLBACK")
+                raise
         self.reload_api_keys()
 
     def delete_api_key(self, key_id: int) -> None:
         with self.db.connect() as con:
-            row = con.execute("SELECT enabled FROM api_keys WHERE id=?", (key_id,)).fetchone()
-            if not row:
-                return
-            if bool(row["enabled"]):
-                active = int(con.execute("SELECT COUNT(*) c FROM api_keys WHERE enabled=1").fetchone()["c"])
-                if active <= 1:
+            active = self._lock_enabled_api_keys(con)
+            try:
+                row = con.execute("SELECT enabled FROM api_keys WHERE id=?", (key_id,)).fetchone()
+                if not row:
+                    con.execute("ROLLBACK")
+                    return
+                if bool(row["enabled"]) and active <= 1:
                     raise ValueError("cannot delete the only enabled API key")
-            con.execute("DELETE FROM api_keys WHERE id=?", (key_id,))
+                con.execute("DELETE FROM api_keys WHERE id=?", (key_id,))
+                con.execute("COMMIT")
+            except Exception:
+                con.execute("ROLLBACK")
+                raise
         self.reload_api_keys()
 
     def list_api_keys(self) -> list[dict[str, Any]]:

@@ -40,8 +40,15 @@
               }
               throw new Error(detail);
             }
-            // Successful handlers redirect to their canonical GET page.
-            window.location.assign(response.redirected ? url.href : window.location.href);
+            // Successful handlers redirect to their canonical GET page. Fetch
+            // drops the redirect's #fragment, so keep the current one (for
+            // example the active Settings tab) when staying on the same page.
+            if (response.redirected && !url.hash && url.pathname === window.location.pathname) {
+              url.hash = window.location.hash;
+            }
+            // Assigning an identical URL with a fragment would only scroll, not reload.
+            if (!response.redirected || url.href === window.location.href) { window.location.reload(); return; }
+            window.location.assign(url.href);
           }).catch(function (error) {
             message.classList.add('bad');
             message.textContent = error.message + ' Your entries have been preserved.';
@@ -699,6 +706,12 @@
         signal: controller.signal,
         headers: { "Accept": "application/json" }
       }).then(function (response) {
+        // An expired session redirects to the HTML login page; follow it
+        // instead of polling forever with a JSON parse failure.
+        if (response.redirected && new URL(response.url).pathname === "/login") {
+          window.location.assign(response.url);
+          throw new Error("Session expired");
+        }
         if (!response.ok) throw new Error("Statistics request failed");
         return response.json();
       }).then(function (payload) {

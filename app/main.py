@@ -35,7 +35,7 @@ from .inspector import inspect_policy, target_status
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.20.11"
+APP_VERSION = "1.20.12"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),
@@ -109,6 +109,16 @@ class PolicyResponseTimingMiddleware:
 
 app = FastAPI(title="Blockinator", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+
+
+@app.exception_handler(OverflowError)
+async def _integer_overflow_handler(request: Request, exc: OverflowError):
+    # Path/query integers are unbounded in Python but SQLite INTEGER is
+    # 64-bit; IDs and cursors beyond that range cannot exist, so answer 400
+    # instead of an internal server error.
+    if "SQLite INTEGER" in str(exc) or "out of range" in str(exc):
+        return JSONResponse({"detail": "Numeric value out of range"}, status_code=400)
+    return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
 
 db = Database()
 statistics_cache = StatisticsCache(db)
@@ -186,7 +196,10 @@ class ClientInfo(BaseModel):
     @field_validator("ip")
     @classmethod
     def valid_ip(cls, value):
-        return str(ipaddress.ip_address(value))
+        ip = ipaddress.ip_address(value)
+        # Dual-stack DNS servers report IPv4 clients as ::ffff:a.b.c.d; use the
+        # IPv4 form so client, network, and PTR identity scopes still match.
+        return str(getattr(ip, "ipv4_mapped", None) or ip)
 
 
 class DecisionRequest(BaseModel):
@@ -528,6 +541,19 @@ def require_post_session(request: Request):
     return request.state.admin_session, request.state.admin_form
 
 
+def desired_enabled(form, current: bool) -> bool:
+    """Return the state a toggle button asked for.
+
+    Toggle forms send the target state rendered on the button so a stale tab or
+    a repeated submit sets that state instead of flipping it back. Requests
+    without the field keep the legacy invert behaviour.
+    """
+    value = str(form.get("enabled", "") if form is not None else "").strip()
+    if value in {"0", "1"}:
+        return value == "1"
+    return not current
+
+
 def set_session_cookie(response, request, session):
     response.set_cookie(
         SESSION_COOKIE, session.token, max_age=SESSION_TTL_SECONDS, httponly=True,
@@ -857,7 +883,7 @@ def dashboard(request: Request):
       <article class="stat"><span>Policy targets</span><strong>{totals["clients"] + totals["networks"] + totals["hostnames"]:,}</strong><small>{totals["networks"]} networks · {totals["clients"]} endpoints · {totals["hostnames"]} hostnames</small></article>
     </div>
     <section class="panel status-panel"><div><span class="big-dot {"green" if global_on else "amber"}"></span><div><h3>Global blocking is {"active" if global_on else "paused"}</h3><p>{"Policy decisions are enforced." if global_on else "All requests are currently allowed."}</p></div></div>
-      <form method="post" action="/admin/global-toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="{"danger-button" if global_on else "primary-button"}">{"Pause blocking" if global_on else "Resume blocking"}</button></form>
+      <form method="post" action="/admin/global-toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><input type="hidden" name="enabled" value="{"0" if global_on else "1"}"><button class="{"danger-button" if global_on else "primary-button"}">{"Pause blocking" if global_on else "Resume blocking"}</button></form>
     </section>
     <section class="panel"><div class="panel-head"><div><h3>Recent DNS activity</h3><p>Latest policy decisions from connected resolvers · times shown in {esc(display_timezone)}.</p></div><a class="text-link" href="/queries">View all →</a></div>
       <div class="table-wrap"><table class="query-table"><thead><tr><th>Domain / type</th><th>Client</th><th>Decision / reason</th><th>Response time</th><th>Time / details</th></tr></thead><tbody>{rows}</tbody></table></div>
@@ -964,11 +990,12 @@ def statistics_api(
 @app.post("/admin/global-toggle")
 @admin_action(require_session)
 def global_toggle(request: Request):
-    _, _form = require_post_session(request)
+    _, form = require_post_session(request)
     current = db.get_setting("global_blocking", "1") == "1"
-    db.set_setting("global_blocking", "0" if current else "1")
+    enabled = desired_enabled(form, current)
+    db.set_setting("global_blocking", "1" if enabled else "0")
     engine.reload_settings()
-    return redirect("/", notice="Global blocking paused" if current else "Global blocking resumed")
+    return redirect("/", notice="Global blocking resumed" if enabled else "Global blocking paused")
 
 @app.get("/lists", response_class=HTMLResponse)
 @console_read
@@ -989,6 +1016,7 @@ def _managed_lists_page(request: Request, list_type: str):
     active_key = "whitelists" if is_whitelist else "lists"
     singular_label = "whitelist" if is_whitelist else "block list"
     plural_label = "whitelists" if is_whitelist else "block lists"
+    display_timezone = system_default_timezone()
     with db.connect() as con:
         rows = con.execute(
             "SELECT * FROM blocklists WHERE list_type=? ORDER BY name COLLATE NOCASE",
@@ -1093,7 +1121,7 @@ def _managed_lists_page(request: Request, list_type: str):
         if r["source_type"] == "url":
             refresh_summary = f'Auto-refresh every {int(r["refresh_minutes"]):,} minute{"s" if int(r["refresh_minutes"]) != 1 else ""}'
             refresh_detail = (
-                f'Last attempt {r["last_refresh_attempt"]}'
+                f'Last attempt {format_timestamp_for_timezone(r["last_refresh_attempt"], display_timezone)}'
                 if r["last_refresh_attempt"]
                 else "Waiting for first scheduled refresh"
             )
@@ -1120,12 +1148,13 @@ def _managed_lists_page(request: Request, list_type: str):
               <span>{esc(assignment_text)}</span>
               <span class="schedule-meta {"scheduled" if r["schedule_enabled"] else ""}">{esc(list_schedule_summary)}</span>
               <span class="refresh-meta {"scheduled" if r["source_type"] == "url" else ""}" title="{esc(refresh_detail)}">{esc(refresh_summary)}</span>
-              <span>Updated {esc(r["last_updated"] or "Never")}</span>
+              <span>Updated {esc(format_timestamp_for_timezone(r["last_updated"], display_timezone) or "Never")}</span>
             </div>
             {error_html}
             <div class="actions list-card-actions">
               <form method="post" action="/admin/lists/{int(r["id"])}/toggle">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+                <input type="hidden" name="enabled" value="{"0" if r["enabled"] else "1"}">
                 <button class="small-button">{"Disable" if r["enabled"] else "Enable"}</button>
               </form>
               <a class="small-button edit-link" href="{base_path}/{int(r["id"])}/edit">Edit</a>
@@ -1354,7 +1383,7 @@ def managed_list_edit_page(list_id: int, request: Request):
 
     preview_lines = [str(row["domain"]) for row in preview_rows]
     preview_text = "\n".join(preview_lines) if preview_lines else "No entries to preview."
-    last_updated = str(blocklist["last_updated"] or "Never")
+    last_updated = format_timestamp_for_timezone(blocklist["last_updated"], system_default_timezone()) or "Never"
     list_state_label = "Enabled" if blocklist["enabled"] else "Disabled"
     scope_state_label = "Global" if global_list else "Scoped"
     schedule_state_label = "Scheduled" if blocklist["schedule_enabled"] else "Always active"
@@ -1416,6 +1445,8 @@ def managed_list_edit_page(list_id: int, request: Request):
       <form method="post" action="/admin/lists/{list_id}/edit"
             enctype="multipart/form-data" class="list-edit-workspace" id="list-edit-form">
         <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+        <!-- First submit button is the implicit (Enter key) default: keep it Save, not Refresh. -->
+        <button class="sr-only" type="submit" name="action" value="save" tabindex="-1" aria-hidden="true">Save Changes</button>
 
         <section class="list-edit-card" id="general">
           <div class="list-edit-card-head">
@@ -1607,8 +1638,8 @@ def manual_list_domains_page(
     where_sql = "blocklist_id=?"
     args: list[object] = [list_id]
     if q:
-        where_sql += " AND domain LIKE ?"
-        args.append("%" + q.lower() + "%")
+        where_sql += " AND domain LIKE ? ESCAPE '!'"
+        args.append(literal_pattern(q.lower(), "contains"))
 
     with db.connect() as con:
         total = int(
@@ -1895,6 +1926,9 @@ def add_list(request: Request):
         except ValueError as exc:
             return redirect(base_path, error=str(exc))
         source_type = "upload"
+        # Uploaded content is authoritative; a leftover URL would make the
+        # list ambiguous and could later be refreshed over the upload.
+        source_url = ""
     elif source_url:
         try:
             content = fetch_url(source_url)
@@ -2005,9 +2039,14 @@ def edit_list(list_id: int, request: Request):
         elif getattr(replacement_file, "filename", None):
             replacement_content = read_upload(replacement_file).decode("utf-8", errors="replace")
             source_type = "upload"
+            source_url = ""
         elif replacement_text.strip():
             replacement_content = replacement_text
             source_type = "manual"
+            # Replacing contents by hand detaches the list from its URL;
+            # otherwise the next save would switch it back to a URL list and
+            # the refresher would overwrite the pasted entries.
+            source_url = ""
         elif source_url:
             source_type = "url"
         elif source_type == "url":
@@ -2078,15 +2117,16 @@ def edit_list(list_id: int, request: Request):
 @app.post("/admin/lists/{list_id}/toggle")
 @admin_action(require_session)
 def toggle_list(list_id: int, request: Request):
-    require_post_session(request)
+    _, form = require_post_session(request)
     with db.connect() as con:
         row = con.execute("SELECT * FROM blocklists WHERE id=?", (list_id,)).fetchone()
         if not row:
             return redirect("/lists", error="List not found")
         base_path = _list_base_path(row)
+        enabled = desired_enabled(form, bool(row["enabled"]))
         con.execute(
-            "UPDATE blocklists SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?",
-            (list_id,),
+            "UPDATE blocklists SET enabled=? WHERE id=?",
+            (1 if enabled else 0, list_id),
         )
     engine.reload_lists()
     return redirect(f"{base_path}#list-{list_id}", notice="List state updated")
@@ -2370,6 +2410,7 @@ def scopes_page(request: Request, q: str = "", kind: str = "",
         )
         toggle_html = f'''<form method="post" action="/admin/scopes/{int(scope["id"])}/toggle">
                 <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
+                <input type="hidden" name="enabled" value="{"0" if scope["state"] == "active" else "1"}">
                 <button class="small-button target-toggle" type="submit"><span aria-hidden="true">{"Ⅱ" if scope["state"] == "active" else "▷"}</span>{"Pause" if scope["state"] == "active" else "Resume"}</button>
               </form>'''
         editor_html = f'''          <details open class="scope-editor" id="edit-scope-{int(scope["id"])}">
@@ -2700,9 +2741,13 @@ def edit_scope(scope_id: int, request: Request):
 @app.post("/admin/scopes/{scope_id}/toggle")
 @admin_action(require_session)
 def toggle_scope(scope_id: int, request: Request):
-    require_post_session(request)
+    _, form = require_post_session(request)
     with db.connect() as con:
-        con.execute("UPDATE scopes SET state=CASE state WHEN 'active' THEN 'paused' ELSE 'active' END WHERE id=?", (scope_id,))
+        row = con.execute("SELECT state FROM scopes WHERE id=?", (scope_id,)).fetchone()
+        if not row:
+            return redirect("/scopes", error="Policy target not found")
+        enabled = desired_enabled(form, row["state"] == "active")
+        con.execute("UPDATE scopes SET state=? WHERE id=?", ("active" if enabled else "paused", scope_id))
     engine.reload_scopes()
     return redirect(f"/scopes#scope-{scope_id}", notice="Policy target state updated")
 
@@ -3071,8 +3116,8 @@ def security_page(request: Request):
     keys = auth.list_api_keys()
     cards = ""
     for k in keys:
-        cards += f'''<article class="key-card"><div><h3>{esc(k["name"])}</h3><p class="mono">{esc(k["key_prefix"])}</p><small>Last used: {esc(k["last_used_at"] or "Never")}</small></div><span class="pill {"green" if k["enabled"] else "gray"}">{"Enabled" if k["enabled"] else "Disabled"}</span>
-        <div class="actions"><form method="post" action="/admin/api-keys/{k["id"]}/toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button">{"Disable" if k["enabled"] else "Enable"}</button></form><form method="post" action="/admin/api-keys/{k["id"]}/delete"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button danger">Delete</button></form></div></article>'''
+        cards += f'''<article class="key-card"><div><h3>{esc(k["name"])}</h3><p class="mono">{esc(k["key_prefix"])}</p><small>Last used: {esc(format_timestamp_for_timezone(k["last_used_at"], system_default_timezone()) or "Never")}</small></div><span class="pill {"green" if k["enabled"] else "gray"}">{"Enabled" if k["enabled"] else "Disabled"}</span>
+        <div class="actions"><form method="post" action="/admin/api-keys/{k["id"]}/toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><input type="hidden" name="enabled" value="{"0" if k["enabled"] else "1"}"><button class="small-button">{"Disable" if k["enabled"] else "Enable"}</button></form><form method="post" action="/admin/api-keys/{k["id"]}/delete"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button danger">Delete</button></form></div></article>'''
     reveal = getattr(request.state, "new_api_key", None)
     reveal_box = f'<div class="secret-box"><b>Copy this API key now</b><code>{esc(reveal)}</code><p>It will not be shown again.</p></div>' if reveal else ""
     body = f'''{reveal_box}<div class="split-grid"><section class="panel action-panel"><div class="panel-kicker">Console access</div><h3>Administrator credentials</h3><p class="panel-help">Update the account used to sign in to this Blockinator console.</p><form method="post" action="/admin/credentials" class="form-grid"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><label>Username<input name="username" value="{esc(s.username)}" required></label><label>Current password<input type="password" name="current_password" required></label><label>New password<input type="password" name="new_password"></label><label>Confirm new password<input type="password" name="confirm_password"></label><button class="primary-button">Update credentials</button></form></section>
@@ -3116,13 +3161,13 @@ def create_key(request: Request):
 @app.post("/admin/api-keys/{key_id}/toggle")
 @admin_action(require_session)
 def toggle_key(key_id: int, request: Request):
-    require_post_session(request)
+    _, form = require_post_session(request)
     with db.connect() as con:
         row = con.execute("SELECT enabled FROM api_keys WHERE id=?", (key_id,)).fetchone()
     if not row:
         return redirect("/security", error="API key not found")
     try:
-        auth.set_api_key_enabled(key_id, not bool(row["enabled"]))
+        auth.set_api_key_enabled(key_id, desired_enabled(form, bool(row["enabled"])))
     except ValueError as e:
         return redirect("/security", error=str(e))
     return redirect("/security", notice="API key state updated")

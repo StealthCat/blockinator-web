@@ -499,6 +499,10 @@ class PolicyEngine:
         self.last_reload_error = None
         self._reload_errors = {}
         self._recovery_wakeup = threading.Event()
+        # Identity changes applied while a full reload is rebuilding. The
+        # reload reads client_identities early; replaying this journal at swap
+        # time keeps additions *and removals* made meanwhile.
+        self._identity_journal: dict[str, str | None] | None = None
         self._recovery_stop = threading.Event()
         self._owns_rdns = rdns is None
         self.rdns = rdns or ReverseDnsResolver()
@@ -578,6 +582,8 @@ class PolicyEngine:
                     merged[address] = hostname
                 else:
                     merged.pop(address, None)
+                if self._identity_journal is not None:
+                    self._identity_journal[address] = hostname or None
             self._snapshot = replace(current, client_identities=merged)
 
     def flush_ptr_cache(self) -> int:
@@ -599,6 +605,15 @@ class PolicyEngine:
 
     @serialized_reload
     def reload(self) -> None:
+        with self._write_lock:
+            self._identity_journal = {}
+        try:
+            self._reload_full()
+        finally:
+            with self._write_lock:
+                self._identity_journal = None
+
+    def _reload_full(self) -> None:
         with self.db.connect() as con:
             con.execute("BEGIN")
             settings = {
@@ -862,10 +877,14 @@ class PolicyEngine:
         # critical section only merges identities learned while we were rebuilding
         # and swaps the immutable snapshot reference.
         with self._write_lock:
-            current_identities = self._snapshot.client_identities
-            if current_identities:
+            journal = self._identity_journal or {}
+            if journal:
                 merged = dict(new_snapshot.client_identities)
-                merged.update(current_identities)
+                for address, hostname in journal.items():
+                    if hostname:
+                        merged[address] = hostname
+                    else:
+                        merged.pop(address, None)
                 new_snapshot = replace(new_snapshot, client_identities=merged)
             self._snapshot = new_snapshot
             self._active_list_cache = (None, -1, 0)
@@ -1424,6 +1443,7 @@ class PolicyEngine:
                 "invalid_client_ip",
                 response_mode=snapshot.response_mode,
             )
+        ip = getattr(ip, "ipv4_mapped", None) or ip
 
         now = now_utc or datetime.now(timezone.utc)
         if now.tzinfo is None:

@@ -543,23 +543,33 @@ class Database:
                     """
                 )
 
-            for row in con.execute(
-                """
-                SELECT client_ip, client_name, MAX(id) AS latest_id
-                FROM query_log
-                WHERE client_name IS NOT NULL AND TRIM(client_name) <> ''
-                GROUP BY client_ip
-                """
-            ):
-                con.execute(
+            # One-time migration of identities from pre-identity-table logs.
+            # Repeating it on every start would resurrect names that PTR
+            # resolution later removed (no PTR) or that an admin flushed.
+            backfilled = con.execute(
+                "SELECT value FROM settings WHERE `key`='client_identities_backfilled'"
+            ).fetchone()
+            if backfilled is None:
+                for row in con.execute(
                     """
-                    INSERT INTO client_identities(client_ip,client_name,updated_at)
-                    VALUES(?,?,CURRENT_TIMESTAMP)
-                    ON CONFLICT(client_ip) DO UPDATE SET
-                        client_name=excluded.client_name,
-                        updated_at=CURRENT_TIMESTAMP
-                    """,
-                    (row["client_ip"], row["client_name"]),
+                    SELECT client_ip, client_name, MAX(id) AS latest_id
+                    FROM query_log
+                    WHERE client_name IS NOT NULL AND TRIM(client_name) <> ''
+                    GROUP BY client_ip
+                    """
+                ).fetchall():
+                    con.execute(
+                        """
+                        INSERT INTO client_identities(client_ip,client_name,updated_at)
+                        VALUES(?,?,CURRENT_TIMESTAMP)
+                        ON CONFLICT(client_ip) DO UPDATE SET
+                            client_name=excluded.client_name,
+                            updated_at=CURRENT_TIMESTAMP
+                        """,
+                        (row["client_ip"], row["client_name"]),
+                    )
+                con.execute(
+                    "INSERT OR REPLACE INTO settings(`key`,value) VALUES('client_identities_backfilled','1')"
                 )
 
             con.execute("INSERT OR IGNORE INTO settings(`key`,value) VALUES('global_blocking','1')")
@@ -662,10 +672,16 @@ class Database:
         )
         con.executemany(insert_domain_sql, [(domain,) for domain in unique_domains])
 
+        # On MySQL (REPEATABLE READ) a plain SELECT reads the transaction's
+        # snapshot and misses domain rows another session committed after it
+        # began; INSERT IGNORE skipped those as duplicates, so their
+        # memberships would be silently lost. A locking read sees the latest
+        # committed rows.
+        lock_suffix = " LOCK IN SHARE MODE" if self.backend == "mysql" else ""
         for chunk in self._domain_chunks(unique_domains):
             placeholders = ",".join("?" for _ in chunk)
             rows = con.execute(
-                f"SELECT id,domain FROM domains WHERE domain IN ({placeholders})",
+                f"SELECT id,domain FROM domains WHERE domain IN ({placeholders}){lock_suffix}",
                 chunk,
             ).fetchall()
             memberships = [(list_id, int(row["id"])) for row in rows]

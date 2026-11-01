@@ -2,6 +2,21 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.12 — Code review fixes
+
+- Detach a list from its source URL when its contents are replaced by paste or upload, so a later save or refresh cannot silently overwrite them; make Save, not Refresh, the Enter-key default on the list editor.
+- Make dashboard, list, policy-target, and API-key toggles apply the state shown on the button, so stale tabs or repeated submits cannot flip it back.
+- Serialize API key disable/delete so concurrent requests cannot leave no enabled key.
+- Return 403 for malformed non-ASCII CSRF tokens and 400 for out-of-range numeric IDs and cursors instead of 500 errors.
+- Treat LIKE wildcards in manual-list domain search literally, and show list refresh/update and API key last-used times in the configured timezone.
+- Keep the active Settings tab after JavaScript form saves and send expired sessions on the Statistics page to sign in.
+- Run the legacy client-identity backfill once, so restarts no longer restore PTR names that were removed or flushed, and keep identity removals made during a full policy reload.
+- Match IPv4-mapped IPv6 client addresses (`::ffff:a.b.c.d`) against IPv4 targets.
+- Widen MySQL `query_log.qname` to 255 characters so maximum-length names no longer drop log batches, and use locking reads for list memberships so concurrent domain inserts are not missed.
+- Let TLS settings be saved when the stored mode can no longer render, and serialize the TLS reconciler with configuration changes.
+- Isolate per-list refresh failures so other refreshed lists still reload into policy, and ignore UTF-8 byte-order marks in list files.
+- Detect SQLite list/target names that would collide under MySQL's case-insensitive unique keys before a migration clears the destination.
+
 ## 1.20.11 — Multiple daily schedule windows
 
 - Add up to 32 independent day/time windows to blocklists, whitelists, and policy targets with a shared timezone and OR matching.

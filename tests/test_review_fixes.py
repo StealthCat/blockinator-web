@@ -467,3 +467,114 @@ def test_system_theme_can_be_saved_and_renders_on_login_and_console(web, browser
     finally:
         web.db.set_setting('ui_theme', original)
         web._update_runtime_settings_cache(ui_theme=original)
+
+
+def test_pasted_replacement_detaches_url_source(web, browser, monkeypatch):
+    monkeypatch.setattr(web, "fetch_url", lambda url: "ads.example.org\n")
+    list_id = create_list(web, browser, source_url="https://example.org/list")
+    client, session = browser
+    base = {"csrf_token": session.csrf_token, "format": "domains", "enabled": "1",
+            "source_url": "https://example.org/list"}
+    response = client.post(f"/admin/lists/{list_id}/edit", data={**base, "name": "Pasted", "replacement_text": "manual.example.org"})
+    assert "error=" not in response.headers["location"]
+    # The URL must be detached; otherwise the edit form keeps showing it and
+    # the next ordinary save converts the pasted list back into a URL list.
+    assert "https://example.org/list" not in client.get(f"/lists/{list_id}/edit").text
+    response = client.post(f"/admin/lists/{list_id}/edit", data={**base, "name": "Renamed", "source_url": ""})
+    assert "error=" not in response.headers["location"]
+    with web.db.connect() as con:
+        row = con.execute("SELECT source_type,source_url FROM blocklists WHERE id=?", (list_id,)).fetchone()
+        assert (row["source_type"], row["source_url"]) == ("manual", None)
+        assert con.execute("SELECT domain FROM block_entries WHERE blocklist_id=?", (list_id,)).fetchone()["domain"] == "manual.example.org"
+
+
+def test_upload_on_create_ignores_source_url(web, browser):
+    client, session = browser
+    response = client.post(
+        "/admin/lists",
+        data={"csrf_token": session.csrf_token, "name": "Uploaded", "format": "domains", "global_list": "1",
+              "source_url": "https://example.org/list"},
+        files={"file": ("list.txt", b"upload.example.org\n")},
+    )
+    assert "error=" not in response.headers["location"]
+    with web.db.connect() as con:
+        row = con.execute("SELECT source_type,source_url FROM blocklists WHERE name='Uploaded'").fetchone()
+        assert (row["source_type"], row["source_url"]) == ("upload", None)
+
+
+def test_list_edit_form_defaults_to_save(web, browser):
+    list_id = create_list(web, browser)
+    client, _ = browser
+    html = client.get(f"/lists/{list_id}/edit").text
+    form = html[html.index('id="list-edit-form"'):]
+    assert form.index('value="save"') < form.index('value="refresh"')
+
+
+def test_toggles_apply_requested_state(web, browser):
+    client, session = browser
+    try:
+        for _ in range(2):
+            client.post("/admin/global-toggle", data={"csrf_token": session.csrf_token, "enabled": "0"})
+        assert web.db.get_setting("global_blocking", "1") == "0"
+    finally:
+        client.post("/admin/global-toggle", data={"csrf_token": session.csrf_token, "enabled": "1"})
+    assert web.db.get_setting("global_blocking", "1") == "1"
+
+    list_id = create_list(web, browser)
+    for _ in range(2):
+        client.post(f"/admin/lists/{list_id}/toggle", data={"csrf_token": session.csrf_token, "enabled": "0"})
+    with web.db.connect() as con:
+        assert con.execute("SELECT enabled FROM blocklists WHERE id=?", (list_id,)).fetchone()["enabled"] == 0
+    # Requests without the field keep the legacy invert behaviour.
+    client.post(f"/admin/lists/{list_id}/toggle", data={"csrf_token": session.csrf_token})
+    with web.db.connect() as con:
+        assert con.execute("SELECT enabled FROM blocklists WHERE id=?", (list_id,)).fetchone()["enabled"] == 1
+
+
+def test_non_ascii_csrf_token_is_forbidden(web, browser):
+    client, _ = browser
+    response = client.post("/admin/global-toggle", data={"csrf_token": "é"})
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("path", ["/queries?before=1180591620717411303424", "/lists/99999999999999999999999/edit"])
+def test_out_of_range_integers_are_client_errors(web, browser, path):
+    client, _ = browser
+    assert client.get(path).status_code == 400
+
+
+def test_manual_list_search_treats_wildcards_literally(web, browser):
+    list_id = create_list(web, browser, text="ads.example.org\nadsx.example.org")
+    client, _ = browser
+    assert "adsx.example.org" in client.get(f"/lists/{list_id}/domains", params={"q": "adsx"}).text
+    for wildcard in ("%", "ads_."):
+        assert "adsx.example.org" not in client.get(f"/lists/{list_id}/domains", params={"q": wildcard}).text
+
+
+def test_concurrent_api_key_disables_keep_one_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_PASSWORD", "concurrency-test-password")
+    monkeypatch.setenv("POLICY_API_KEY", "concurrency-policy-key-long-enough")
+    database = Database(tmp_path / "keys.db")
+    manager = AuthManager(database)
+    try:
+        with database.connect() as con:
+            con.execute("DELETE FROM api_keys")
+        first, _ = manager.create_api_key("first", "first-key-long-enough-for-tests")
+        second, _ = manager.create_api_key("second", "second-key-long-enough-for-tests")
+        barrier = threading.Barrier(2)
+
+        def disable(key_id):
+            barrier.wait()
+            try:
+                manager.set_api_key_enabled(key_id, False)
+                return True
+            except ValueError:
+                return False
+
+        with ThreadPoolExecutor(2) as pool:
+            results = list(pool.map(disable, [first, second]))
+        assert results.count(True) == 1
+        with database.connect() as con:
+            assert con.execute("SELECT COUNT(*) c FROM api_keys WHERE enabled=1").fetchone()["c"] == 1
+    finally:
+        manager.close()

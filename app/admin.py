@@ -69,7 +69,11 @@ def admin_action(require_session):
             part_limit = MAX_BYTES if request.url.path.startswith("/admin/lists") else 1024 * 1024
             async with request.form(max_files=4, max_fields=MAX_FORM_FIELDS, max_part_size=part_limit) as form:
                 token = str(form.get("csrf_token", ""))
-                if not token or not secrets.compare_digest(token, session.csrf_token):
+                # compare_digest rejects non-ASCII str input with TypeError; compare
+                # bytes so a malformed token is a 403, not a 500.
+                if not token or not secrets.compare_digest(
+                    token.encode("utf-8"), str(session.csrf_token).encode("utf-8")
+                ):
                     raise HTTPException(403, "invalid CSRF token")
                 request.state.admin_session = session
                 request.state.admin_form = form

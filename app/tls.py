@@ -627,12 +627,19 @@ class TlsManager:
             self.ca_root_path,
             self.eab_hmac_path,
         ]
-        backups = self._backups(secret_paths)
-        previous = self.load_settings()
-        previous_config = self.render_caddy_json(previous)
-        previous_hash = _config_hash(previous_config)
-
         with self._lock:
+            # Snapshot files and the previous config under the lock so a
+            # concurrent configure() or reconcile cannot interleave.
+            backups = self._backups(secret_paths)
+            previous = self.load_settings()
+            try:
+                previous_config = self.render_caddy_json(previous)
+            except Exception:
+                # The saved mode may no longer render (e.g. uploaded files
+                # missing). Fall back to the bootstrap HTTP config so the
+                # admin can still save a working configuration.
+                previous_config = self.render_caddy_json(TlsSettings())
+            previous_hash = _config_hash(previous_config)
             try:
                 if certificate_pem is not None:
                     self._write_atomic(self.cert_path, certificate_pem, 0o644)
@@ -747,21 +754,24 @@ class TlsManager:
                 self._set_last_error(probe_error)
             else:
                 try:
-                    settings = self.load_settings()
-                    config = self.render_caddy_json(settings)
-                    desired_hash = _config_hash(config)
-                    should_apply = (
-                        not was_reachable
-                        or not managed
-                        or desired_hash != self._last_applied_hash
-                    )
-                    if should_apply:
-                        self._load(config)
-                        self._record_success(
-                            settings,
-                            desired_hash,
-                            save_settings=False,
+                    # Hold the configure() lock so a reconcile that read the
+                    # old settings cannot re-apply them after an admin change.
+                    with self._lock:
+                        settings = self.load_settings()
+                        config = self.render_caddy_json(settings)
+                        desired_hash = _config_hash(config)
+                        should_apply = (
+                            not was_reachable
+                            or not managed
+                            or desired_hash != self._last_applied_hash
                         )
+                        if should_apply:
+                            self._load(config)
+                            self._record_success(
+                                settings,
+                                desired_hash,
+                                save_settings=False,
+                            )
                 except Exception as exc:
                     self._set_last_error(str(exc))
 
