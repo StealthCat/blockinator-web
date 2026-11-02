@@ -566,4 +566,3 @@ class PtrResolutionManager:
                     raise
         assert last_error is not None
         raise last_error
-
