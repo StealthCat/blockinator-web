@@ -39,7 +39,7 @@ from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_
 BASE_DIR = Path(__file__).resolve().parent
 log = logging.getLogger("blockinator")
 
-APP_VERSION = "1.20.18"
+APP_VERSION = "1.20.19"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),
@@ -548,7 +548,10 @@ def local_redirect_path(path: str) -> str:
     target = urlsplit(path)
     if target.scheme or target.netloc:
         return "/"
-    return path
+    # Rebuild the destination with an application-controlled root. Validation
+    # above rejects browser-normalized network paths; request data supplies
+    # only the suffix, never the redirect's URL prefix.
+    return "/" + path.lstrip("/")
 
 
 def redirect(path: str, notice: str | None = None, error: str | None = None):

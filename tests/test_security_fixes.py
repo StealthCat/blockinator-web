@@ -73,6 +73,26 @@ def test_external_redirect_targets_fall_back_to_root(web, path):
     assert response.headers["location"] == "/?error=x"
 
 
+@pytest.mark.parametrize("path", [
+    "/lists/3/domains?page_num=2&q=a%22b#entries", "/settings#tls", "/",
+])
+def test_redirect_keeps_local_target_when_messages_contain_urls(web, path):
+    from urllib.parse import parse_qs, urlsplit
+
+    main, _, _ = web
+    response = main.redirect(path, notice="//evil.example/", error="https://evil.example/?x=1#bad")
+    location = urlsplit(response.headers["location"])
+    expected = urlsplit(path)
+    assert location.scheme == location.netloc == ""
+    assert location.path == expected.path
+    assert location.fragment == expected.fragment
+    query = parse_qs(location.query)
+    assert query["notice"] == ["//evil.example/"]
+    assert query["error"] == ["https://evil.example/?x=1#bad"]
+    for key, value in parse_qs(expected.query).items():
+        assert query[key] == value
+
+
 # ---- Exception exposure (CodeQL #17, #18) ----
 
 def test_runtime_api_hides_reload_exception_details(web):

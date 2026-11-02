@@ -2,6 +2,11 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.19 — Complete local redirect hardening
+
+1. Rebuild validated redirect destinations from a fixed application-local root, so request-derived list identifiers cannot control the URL prefix. Resolves the remaining CodeQL URL-redirection finding (#19).
+2. Verify that local queries and fragments survive redirects even when notice and error messages contain external URLs.
+
 ## 1.20.18 — Test cleanup for code scanning
 
 1. Represent pre-1.20.17 API keys in tests with a fixed legacy-format placeholder instead of hashing sample keys with SHA-256, which code scanning reported as weak hashing of a credential. No application changes.
