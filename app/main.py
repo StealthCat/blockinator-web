@@ -3036,6 +3036,9 @@ def dashboard_alerts_html():
         alerts.append("The list refresh worker is not running.")
     if not engine.ptr_resolver.running:
         alerts.append("The PTR resolver worker is not running.")
+    stale_keys = sum(1 for key in auth.list_api_keys() if key["needs_rotation"])
+    if stale_keys:
+        alerts.append(f'{stale_keys:,} API key{"s" if stale_keys != 1 else ""} from before 1.20.17 no longer authenticate{"s" if stale_keys == 1 else ""}; rotate {"them" if stale_keys != 1 else "it"} on the Access & Security page.')
     now = datetime.now(timezone.utc)
     with db.connect() as con:
         rows = con.execute("SELECT name,last_refresh_attempt,last_error,refresh_minutes FROM blocklists WHERE source_type='url' AND enabled=1").fetchall()
@@ -3167,7 +3170,7 @@ def security_page(request: Request):
     keys = auth.list_api_keys()
     cards = ""
     for k in keys:
-        cards += f'''<article class="key-card"><div><h3>{esc(k["name"])}</h3><p class="mono">{esc(k["key_prefix"])}</p><small>Last used: {esc(format_timestamp_for_timezone(k["last_used_at"], system_default_timezone()) or "Never")}</small></div><span class="pill {"green" if k["enabled"] else "gray"}">{"Enabled" if k["enabled"] else "Disabled"}</span>
+        cards += f'''<article class="key-card"><div><h3>{esc(k["name"])}</h3><p class="mono">{esc(k["key_prefix"])}</p><small>Last used: {esc(format_timestamp_for_timezone(k["last_used_at"], system_default_timezone()) or "Never")}</small></div><span class="pill {"red" if k["needs_rotation"] else "green" if k["enabled"] else "gray"}">{"Rotation required" if k["needs_rotation"] else "Enabled" if k["enabled"] else "Disabled"}</span>
         <div class="actions"><form method="post" action="/admin/api-keys/{k["id"]}/toggle"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><input type="hidden" name="enabled" value="{"0" if k["enabled"] else "1"}"><button class="small-button">{"Disable" if k["enabled"] else "Enable"}</button></form><form method="post" action="/admin/api-keys/{k["id"]}/delete"><input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}"><button class="small-button danger">Delete</button></form></div></article>'''
     reveal = getattr(request.state, "new_api_key", None)
     reveal_box = f'<div class="secret-box"><b>Copy this API key now</b><code>{esc(reveal)}</code><p>It will not be shown again.</p></div>' if reveal else ""

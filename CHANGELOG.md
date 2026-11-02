@@ -4,7 +4,7 @@ Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch
 
 ## 1.20.17 — Code-scanning remediations
 
-1. Store API keys as salted scrypt digests (per-installation salt) instead of unsalted SHA-256. Existing keys keep working and are re-stored with scrypt the first time each is used; verified keys are cached in memory so DNS decision requests do not re-run the KDF. Rolling back to 1.20.16 or earlier after a key has been used requires rotating that key.
+1. **Breaking — rotate API keys after upgrading.** API keys are now stored as salted scrypt digests (per-installation salt) instead of unsalted SHA-256, and keys created before 1.20.17 no longer authenticate. They are marked "Rotation required" in Access & Security and listed on the dashboard; rotate each one (or create a new key) and update the DNS server plugin. Verified keys are cached in memory so DNS decision requests do not re-run the KDF.
 2. Validate every console redirect as a local application path, rejecting absolute, scheme-relative, and browser-normalized network paths.
 3. Stop showing raw exception text in the console and runtime API: policy-preview input errors use fixed messages, unexpected list/target/TLS save failures and PTR resolver errors are summarized and logged server-side, and `/api/v1/runtime` reports a generic policy reload failure.
 4. HTML-escape every request-derived value on the list editor, manual-domain, target, and query pages, and render list links from the stored list ID.

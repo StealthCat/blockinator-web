@@ -66,14 +66,10 @@ def hash_api_key(raw: str, salt: bytes) -> str:
     return API_KEY_HASH_PREFIX + digest.hex()
 
 
-def is_legacy_api_key_hash(stored: str) -> bool:
-    """True for keys stored before 1.20.17 as unsalted SHA-256 hex digests."""
-    return len(stored) == 64 and all(c in "0123456789abcdef" for c in stored)
-
-
-def legacy_api_key_hash(raw: str) -> str:
-    """Pre-1.20.17 digest, used only to upgrade existing keys on first use."""
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+def api_key_needs_rotation(stored: str) -> bool:
+    """True for keys stored before 1.20.17 (unsalted SHA-256), which no longer
+    authenticate and must be rotated to receive a scrypt digest."""
+    return not stored.startswith("scrypt$")
 
 
 def key_prefix(raw: str) -> str:
@@ -97,7 +93,6 @@ class AuthManager:
         self.db = db
         self._api_lock = threading.RLock()
         self._api_keys: dict[str, dict[str, Any]] = {}
-        self._legacy_api_keys: dict[str, dict[str, Any]] = {}
         self._verified_api_keys: dict[str, str] = {}
         self._rejected_api_keys: dict[str, None] = {}
         self._last_used_write: dict[int, float] = {}
@@ -303,15 +298,13 @@ class AuthManager:
             rows = con.execute(
                 "SELECT id,name,key_hash,key_prefix FROM api_keys WHERE enabled=1"
             ).fetchall()
-        current: dict[str, dict[str, Any]] = {}
-        legacy: dict[str, dict[str, Any]] = {}
-        for r in rows:
-            stored = str(r["key_hash"])
-            info = {"id": int(r["id"]), "name": str(r["name"]), "prefix": str(r["key_prefix"])}
-            (legacy if is_legacy_api_key_hash(stored) else current)[stored] = info
+        current = {
+            str(r["key_hash"]): {"id": int(r["id"]), "name": str(r["name"]), "prefix": str(r["key_prefix"])}
+            for r in rows
+            if not api_key_needs_rotation(str(r["key_hash"]))
+        }
         with self._api_lock:
             self._api_keys = current
-            self._legacy_api_keys = legacy
             # A rejected key may since have been created; re-derive on next use.
             self._rejected_api_keys.clear()
 
@@ -320,31 +313,6 @@ class AuthManager:
             if len(cache) >= _API_KEY_CACHE_LIMIT:
                 cache.pop(next(iter(cache)))
             cache[raw] = value
-
-    def _upgrade_legacy_api_key(self, raw: str) -> dict[str, Any] | None:
-        """Re-store a pre-1.20.17 SHA-256 key with the scrypt digest."""
-        with self._api_lock:
-            if not self._legacy_api_keys:
-                return None
-        legacy = legacy_api_key_hash(raw)
-        with self._api_lock:
-            info = self._legacy_api_keys.get(legacy)
-        if info is None:
-            return None
-        digest = self._api_key_digest(raw)
-        try:
-            with self.db.connect() as con:
-                con.execute(
-                    "UPDATE api_keys SET key_hash=? WHERE id=? AND key_hash=?",
-                    (digest, info["id"], legacy),
-                )
-        except Exception:
-            # Keep authenticating with the legacy digest; retry next reload.
-            return info
-        with self._api_lock:
-            self._legacy_api_keys.pop(legacy, None)
-            self._api_keys[digest] = info
-        return info
 
     def verify_api_key(self, raw: str | None) -> dict[str, Any] | None:
         if not raw:
@@ -357,8 +325,6 @@ class AuthManager:
             hashed = self._api_key_digest(raw)
         with self._api_lock:
             info = self._api_keys.get(hashed)
-        if info is None:
-            info = self._upgrade_legacy_api_key(raw)
         if info is None:
             with self._api_lock:
                 self._verified_api_keys.pop(raw, None)
@@ -463,6 +429,12 @@ class AuthManager:
 
     def list_api_keys(self) -> list[dict[str, Any]]:
         with self.db.connect() as con:
-            return [dict(r) for r in con.execute(
-                "SELECT id,name,key_prefix,enabled,created_at,updated_at,last_used_at FROM api_keys ORDER BY name COLLATE NOCASE"
-            )]
+            rows = con.execute(
+                "SELECT id,name,key_hash,key_prefix,enabled,created_at,updated_at,last_used_at FROM api_keys ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+        keys = []
+        for r in rows:
+            item = dict(r)
+            item["needs_rotation"] = api_key_needs_rotation(str(item.pop("key_hash")))
+            keys.append(item)
+        return keys

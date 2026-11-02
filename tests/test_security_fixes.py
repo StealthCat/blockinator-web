@@ -172,24 +172,37 @@ def test_api_keys_are_stored_with_salted_scrypt(tmp_path, monkeypatch):
     second.close()
 
 
-def test_legacy_sha256_api_key_still_verifies_and_is_upgraded(tmp_path, monkeypatch):
+def test_legacy_sha256_api_key_is_rejected_and_flagged_for_rotation(tmp_path, monkeypatch):
     db, auth = _auth(tmp_path, monkeypatch)
     legacy_raw = "legacy-key-created-before-scrypt-storage"
     with db.connect() as con:
-        con.execute(
+        legacy_id = con.execute(
             "INSERT INTO api_keys(name,key_hash,key_prefix) VALUES(?,?,?)",
             ("Legacy", hashlib.sha256(legacy_raw.encode()).hexdigest(), "legacy-k…"),
-        )
+        ).lastrowid
     auth.reload_api_keys()
 
-    assert auth.verify_api_key(legacy_raw)["name"] == "Legacy"
-    with db.connect() as con:
-        stored = str(con.execute("SELECT key_hash FROM api_keys WHERE name='Legacy'").fetchone()["key_hash"])
-    assert stored.startswith(API_KEY_HASH_PREFIX)
-    auth.reload_api_keys()
-    assert auth.verify_api_key(legacy_raw)["name"] == "Legacy"
-    assert auth.verify_api_key("legacy-key-created-before-scrypt-storagX") is None
+    assert auth.verify_api_key(legacy_raw) is None
+    flags = {key["name"]: key["needs_rotation"] for key in auth.list_api_keys()}
+    assert flags == {"Primary": False, "Legacy": True}
+    assert all("key_hash" not in key for key in auth.list_api_keys())
+
+    rotated = auth.rotate_api_key(legacy_id)
+    assert auth.verify_api_key(rotated)["name"] == "Legacy"
+    assert not any(key["needs_rotation"] for key in auth.list_api_keys())
     auth.close()
+
+
+def test_console_warns_about_api_keys_needing_rotation(web):
+    main, client, _ = web
+    with main.db.connect() as con:
+        con.execute(
+            "INSERT INTO api_keys(name,key_hash,key_prefix) VALUES(?,?,?)",
+            ("Old resolver", hashlib.sha256(b"old-resolver-key-long-enough").hexdigest(), "old-reso…"),
+        )
+    main.auth.reload_api_keys()
+    assert "Rotation required" in client.get("/security").text
+    assert "1 API key from before 1.20.17 no longer authenticates; rotate it" in client.get("/").text
 
 
 def test_rejected_api_key_is_accepted_after_it_is_created(tmp_path, monkeypatch):
