@@ -2,6 +2,12 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.16 — Dependency updates
+
+1. Update pydantic to 2.14.2, cryptography to 50.0.2, and dnspython to 2.9.1; require PyMySQL 1.2.3 or later (includes the 1.2.1 SQL-escaping security fix) and tzdata 2026.6 or later.
+2. Update GitHub Actions workflows to actions/checkout v7 and actions/setup-python v7.
+3. Retrospective note: the python-multipart 0.0.31 and dnspython 2.9.0 updates from Dependabot pull request #17 were merged to main after 1.20.14 without a version number and first shipped as part of 1.20.15.
+
 ## 1.20.15 — Restore complete application source
 
 1. Restore the application routes and console code accidentally replaced by a truncation marker in the 1.20.13 documentation update. Preserve the subsequent dependency security configuration.
