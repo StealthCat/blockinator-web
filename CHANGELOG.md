@@ -2,6 +2,11 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.15 — Restore complete application source
+
+1. Restore the application routes and console code accidentally replaced by a truncation marker in the 1.20.13 documentation update. Preserve the subsequent dependency security configuration.
+2. Allow version comparison against a syntactically broken historical revision while retaining full syntax validation for the current source.
+
 ## 1.20.14 — Dependency security checks
 
 1. Enable weekly Dependabot updates for Python packages, Docker base images, and GitHub Actions, mirroring MrPatchy.
