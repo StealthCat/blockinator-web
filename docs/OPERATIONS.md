@@ -168,7 +168,7 @@ Security features include:
 - multiple named API keys;
 - API-key enable/disable and deletion;
 - API-key fingerprints and last-used timestamps;
-- API keys stored only as SHA-256 hashes; and
+- API keys stored only as salted `scrypt` digests (keys created before 1.20.17 used SHA-256 and must be rotated); and
 - in-memory API-key verification on the hot path.
 
 ## Environment variables
@@ -261,7 +261,7 @@ Blockinator does not automatically synchronize database backends while running. 
 - List downloads accept only HTTP(S). Every connection, including redirects, validates resolved addresses and connects to those exact addresses. Private/local destinations require explicit `BLOCKLIST_PRIVATE_HOSTS` entries (comma-separated exact hostnames or CIDRs). Example: `feeds.internal,10.20.0.0/16`. Environment HTTP proxies are intentionally ignored for these downloads. Uploads and pasted lists obey `MAX_BLOCKLIST_BYTES` too.
 - Policy rebuild writers are serialized; decisions continue using the current snapshot. List creation/replacement commits metadata, assignments and membership together. Changing source URL/format clears conditional-download validators so the next refresh reparses the source.
 - Query logging stays asynchronous. Confirmed pre-commit failures receive up to three write attempts. Ambiguous commits are counted as uncertain and never replayed, preventing duplicates. Shutdown allows up to five seconds to drain; logging is best-effort and cannot guarantee delivery during process termination or prolonged database outages.
-- `/healthz` reports process liveness. `/readyz` reports policy readiness and returns 503 following a failed reload. The administrator-session-authenticated `/api/v1/runtime` endpoint (a resolver API key alone is insufficient) and **System Settings → Runtime** expose policy generation, logger queue/drop/failure metrics, and background worker state. Monitoring should alert on worker stoppage, errors, drops and uncertain writes separately from policy readiness.
+- `/healthz` reports process liveness. `/readyz` reports policy readiness and returns 503 following a failed reload. The administrator-session-authenticated `/api/v1/runtime` endpoint (a resolver API key alone is insufficient) and **System Settings → Runtime** expose policy generation, logger queue/drop/failure metrics, and background worker state. Error fields there are summaries; exception details are written to the container log (`docker compose logs blockinator`). Monitoring should alert on worker stoppage, errors, drops and uncertain writes separately from policy readiness.
 - Statistics snapshots are shared for five seconds per window/timezone. Query Log refresh requests only authenticated row fragments, avoiding repeated filter-option scans. Statistics refreshes time out after 15 seconds and resume after browser back/forward restoration.
 
 Dashboard warnings surface pending rebuilds, dropped or uncertain log writes, failed/overdue URL refreshes, and stopped workers. A failed rebuild retries automatically while decisions continue using the previous policy snapshot. Readiness and logger health are separate signals.

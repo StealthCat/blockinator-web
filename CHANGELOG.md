@@ -2,6 +2,17 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.17 — Code-scanning remediations
+
+1. **Breaking — rotate API keys after upgrading.** API keys are now stored as salted scrypt digests (per-installation salt) instead of unsalted SHA-256, and keys created before 1.20.17 no longer authenticate. They are marked "Rotation required" in Access & Security and listed on the dashboard; rotate each one (or create a new key) and update the DNS server plugin. Verified keys are cached in memory so DNS decision requests do not re-run the KDF.
+2. Validate every console redirect as a local application path, rejecting absolute, scheme-relative, and browser-normalized network paths.
+3. Stop showing raw exception text in the console and runtime API: policy-preview input errors use fixed messages, unexpected list/target/TLS save failures and PTR resolver errors are summarized and logged server-side, and `/api/v1/runtime` reports a generic policy reload failure.
+4. HTML-escape every request-derived value on the list editor, manual-domain, target, and query pages, and render list links from the stored list ID.
+5. Build the live query-log refresh request from a fixed `/queries/rows` path and the known filter parameters only.
+6. Write all managed TLS files (certificate, key, custom CA root, EAB HMAC) owner-only (0600); the bundled Caddy container reads them as root.
+7. Give the test workflow explicit read-only `contents` permissions and pin the Docker publishing actions to verified commit SHAs.
+8. Make blocklist, TLS, and manual-list search tests assert exact results instead of substring matches.
+
 ## 1.20.16 — Dependency updates
 
 1. Update pydantic to 2.14.2, cryptography to 50.0.2, and dnspython to 2.9.1; require PyMySQL 1.2.3 or later (includes the 1.2.1 SQL-escaping security fix) and tzdata 2026.6 or later.

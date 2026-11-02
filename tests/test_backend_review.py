@@ -22,10 +22,13 @@ def _engine(tmp_path: Path):
 
 
 def test_utf8_bom_does_not_corrupt_first_entry():
-    for list_format in ("auto", "hosts"):
+    expected = {
+        "auto": {"ads.example.com", "tracker.example.com"},
+        "hosts": {"ads.example.com"},
+    }
+    for list_format, domains in expected.items():
         parsed = parse_blocklist("﻿0.0.0.0 ads.example.com\ntracker.example.com\n", list_format)
-        assert "ads.example.com" in parsed.domains
-        assert "0.0.0.0" not in parsed.domains
+        assert parsed.domains == domains
 
 
 def test_ipv4_mapped_client_matches_ipv4_scope(tmp_path):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import threading
 import time
@@ -10,6 +11,8 @@ from typing import Callable
 
 from .db import Database
 from .rdns import ReverseDnsResolver, ReverseDnsResult
+
+log = logging.getLogger("blockinator.ptr")
 
 
 def _normalize_ptr_hostname(value: str | None) -> str | None:
@@ -184,7 +187,8 @@ class PtrResolutionManager:
                 if status in counts:
                     counts[status] = int(row["c"] or 0)
         except Exception as exc:
-            self._last_error = str(exc)[:500]
+            log.warning("PTR status query failed", exc_info=True)
+            self._last_error = f"{type(exc).__name__}; details are in the server log"
 
         with self._observe_lock:
             queued_observations = len(self._observed)
@@ -245,7 +249,8 @@ class PtrResolutionManager:
                     self._backfill_known_names()
                     self._last_error = ""
             except Exception as exc:
-                self._last_error = str(exc)[:500]
+                log.warning("PTR reconciliation failed", exc_info=True)
+                self._last_error = f"{type(exc).__name__}; details are in the server log"
             self._stop_event.wait(self.reconcile_seconds)
 
         try:

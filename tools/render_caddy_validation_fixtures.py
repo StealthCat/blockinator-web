@@ -82,8 +82,8 @@ def main() -> int:
     )
 
     cert_pem, key_pem = certificate_pair("blockinator.example.test")
-    manager._write_atomic(manager.cert_path, cert_pem, 0o644)
-    manager._write_atomic(manager.key_path, key_pem, 0o600)
+    manager._write_atomic(manager.cert_path, cert_pem)
+    manager._write_atomic(manager.key_path, key_pem)
     write_json(
         output / "upload.json",
         manager.render_caddy_json(
@@ -95,11 +95,10 @@ def main() -> int:
     )
 
     ca_pem, _ = certificate_pair("private-ca.example.test")
-    manager._write_atomic(manager.ca_root_path, ca_pem, 0o644)
+    manager._write_atomic(manager.ca_root_path, ca_pem)
     manager._write_atomic(
         manager.eab_hmac_path,
         b"YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4\n",
-        0o600,
     )
     write_json(
         output / "acme.json",

@@ -6,7 +6,7 @@
 
 Self-hosted DNS policy management with block lists, whitelists, schedules, and query history. Your DNS server sends query metadata; Blockinator returns an allow/block decision. Connect Technitium using the [companion plugin](https://github.com/StealthCat/blockinator-technitium).
 
-Current source version: **1.20.16** · [Changelog](CHANGELOG.md) · [Releases](https://github.com/StealthCat/blockinator-web/releases)
+Current source version: **1.20.17** · [Changelog](CHANGELOG.md) · [Releases](https://github.com/StealthCat/blockinator-web/releases)
 
 ## Latest application release: v1.20.12
 
@@ -96,6 +96,8 @@ docker compose stop
 git pull --ff-only
 docker compose up -d --build
 ```
+
+**Updating from 1.20.16 or earlier:** API keys created before 1.20.17 stop authenticating. After updating, open **Access & Security**, rotate each key marked *Rotation required* (or create a new one), and update the API key in your DNS server plugin.
 
 Review release notes and preserve local edits. If Git reports a conflict, resolve it without forcing or resetting the checkout. For existing tag checkouts, follow [Moving to main](docs/INSTALLATION.md#moving-an-existing-tag-checkout-to-main) first.
 

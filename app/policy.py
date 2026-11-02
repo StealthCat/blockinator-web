@@ -4,6 +4,7 @@ from .schedules import extra_schedule_windows
 
 import ipaddress
 import json
+import logging
 import queue
 import re
 import threading
@@ -17,6 +18,8 @@ from .db import Database
 from .ptr_resolver import PtrResolutionManager
 from .rollups import insert_query_logs, delete_query_logs
 from .rdns import ReverseDnsResolver
+
+log = logging.getLogger("blockinator.policy")
 
 
 def normalize_hostname(value: str | None) -> str | None:
@@ -371,6 +374,7 @@ class QueryLogger:
                 with self.db.connect() as con:
                     self._run_connected(con)
             except Exception as exc:
+                log.warning("Query log write failed", exc_info=True)
                 with self._metrics_lock:
                     self.write_failures += 1
                     self.last_error = type(exc).__name__
@@ -472,6 +476,7 @@ def serialized_reload(method):
             try:
                 result = method(self, *args, **kwargs)
             except Exception as exc:
+                log.error("Policy %s failed", method.__name__, exc_info=True)
                 self._reload_errors[method.__name__] = type(exc).__name__
                 self.last_reload_error = ", ".join(f"{name}: {error}" for name, error in self._reload_errors.items())
                 self._recovery_wakeup.set()
