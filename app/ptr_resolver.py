@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import threading
 import time
@@ -184,7 +185,8 @@ class PtrResolutionManager:
                 if status in counts:
                     counts[status] = int(row["c"] or 0)
         except Exception as exc:
-            self._last_error = str(exc)[:500]
+            logging.getLogger(__name__).exception("PTR resolver operation failed")
+            self._last_error = "PTR resolver unavailable; see server logs"
 
         with self._observe_lock:
             queued_observations = len(self._observed)
@@ -245,7 +247,8 @@ class PtrResolutionManager:
                     self._backfill_known_names()
                     self._last_error = ""
             except Exception as exc:
-                self._last_error = str(exc)[:500]
+                logging.getLogger(__name__).exception("PTR resolver operation failed")
+                self._last_error = "PTR resolver unavailable; see server logs"
             self._stop_event.wait(self.reconcile_seconds)
 
         try:
@@ -563,3 +566,4 @@ class PtrResolutionManager:
                     raise
         assert last_error is not None
         raise last_error
+

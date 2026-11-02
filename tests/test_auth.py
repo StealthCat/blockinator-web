@@ -6,6 +6,32 @@ from app.auth import AuthManager
 from app.db import Database
 
 
+def test_salted_api_keys_and_legacy_compatibility(tmp_path):
+    import hashlib
+    from app.auth import hash_api_key
+
+    raw = "compatibility-key-long-enough-for-tests"
+    encoded = hash_api_key(raw)
+    assert encoded.startswith("scrypt$")
+    assert hash_api_key(raw) != encoded
+    db = Database(str(tmp_path / "compatibility.db"))
+    legacy = hashlib.sha256(raw.encode()).hexdigest()
+    with db.connect() as con:
+        con.execute("INSERT INTO api_keys(name,key_hash,key_prefix) VALUES(?,?,?)", ("old", legacy, "compat"))
+    auth = AuthManager(db, bootstrap=False)
+    try:
+        assert auth.verify_api_key(raw)["name"] == "old"
+        key_id, new_raw = auth.create_api_key("new")
+        assert auth.verify_api_key(new_raw)["id"] == key_id
+        assert auth.verify_api_key("wrong") is None
+        auth.set_api_key_enabled(key_id, False)
+        assert auth.verify_api_key(new_raw) is None
+        auth.rotate_api_key(1)
+        assert auth.verify_api_key(raw) is None
+    finally:
+        auth.close()
+
+
 def test_bootstrap_admin_and_multiple_api_keys(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ADMIN_USERNAME", "rootadmin")
     monkeypatch.setenv("ADMIN_PASSWORD", "correct-horse-battery")

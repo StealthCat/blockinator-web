@@ -1,6 +1,7 @@
 """Behavioral regressions for security, atomic updates and background work."""
 import asyncio
 import importlib
+from html.parser import HTMLParser
 import os
 import threading
 import time
@@ -546,9 +547,55 @@ def test_out_of_range_integers_are_client_errors(web, browser, path):
 def test_manual_list_search_treats_wildcards_literally(web, browser):
     list_id = create_list(web, browser, text="ads.example.org\nadsx.example.org")
     client, _ = browser
-    assert "adsx.example.org" in client.get(f"/lists/{list_id}/domains", params={"q": "adsx"}).text
+    class Domains(HTMLParser):
+        def __init__(self, text):
+            super().__init__()
+            self.values = []
+            self.in_domain = False
+            self.feed(text)
+
+        def handle_starttag(self, tag, attrs):
+            self.in_domain = tag == "span" and "manual-domain-name" in dict(attrs).get("class", "").split()
+
+        def handle_endtag(self, tag):
+            if tag == "span":
+                self.in_domain = False
+
+        def handle_data(self, value):
+            if self.in_domain:
+                self.values.append(value)
+
+    assert Domains(client.get(f"/lists/{list_id}/domains", params={"q": "adsx"}).text).values == ["adsx.example.org"]
     for wildcard in ("%", "ads_."):
-        assert "adsx.example.org" not in client.get(f"/lists/{list_id}/domains", params={"q": wildcard}).text
+        assert Domains(client.get(f"/lists/{list_id}/domains", params={"q": wildcard}).text).values == []
+
+
+@pytest.mark.parametrize("destination", ["https://example.org", "//example.org", "/\\example.org", "/\n/example.org", "javascript:alert(1)"])
+def test_redirect_rejects_external_destinations(web, destination):
+    with pytest.raises(ValueError, match="local application path"):
+        web.redirect(destination)
+
+
+def test_redirect_keeps_query_and_fragment(web):
+    from urllib.parse import parse_qs, urlsplit
+    location = web.redirect("/lists?q=example#entries", notice="Saved & done").headers["location"]
+    parsed = urlsplit(location)
+    assert parsed.path == "/lists"
+    assert parsed.fragment == "entries"
+    assert parse_qs(parsed.query) == {"q": ["example"], "notice": ["Saved & done"]}
+
+
+def test_console_escapes_request_values(web, browser):
+    client, _ = browser
+    malicious = '<img src=x onerror=alert(1)>'
+    response = client.get("/", params={"notice": malicious, "error": malicious})
+    assert malicious not in response.text
+    assert "&lt;img" in response.text
+    list_id = create_list(web, browser)
+    response = client.get(f"/lists/{list_id}/edit")
+    assert response.status_code == 200
+    assert f'action="/admin/lists/{list_id}/edit"' in response.text
+    assert client.get("/lists/%3Cscript%3E/edit").status_code in {400, 422}
 
 
 def test_concurrent_api_key_disables_keep_one_enabled(tmp_path, monkeypatch):

@@ -12,7 +12,4 @@ def test_auto_parser_accepts_domain_hosts_and_adblock():
         """,
         "auto",
     )
-    assert "ads.example.com" in result.domains
-    assert "tracker.example.net" in result.domains
-    assert "telemetry.example.org" in result.domains
-    assert "allowed.example.org" not in result.domains
+    assert result.domains == {"ads.example.com", "tracker.example.net", "telemetry.example.org"}

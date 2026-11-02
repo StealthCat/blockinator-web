@@ -7,6 +7,20 @@ from app.ptr_resolver import PtrResolutionManager
 from app.rdns import ReverseDnsResult
 
 
+def test_status_does_not_expose_database_exception(tmp_path, monkeypatch, caplog):
+    db = Database(str(tmp_path / "ptr.db"))
+    manager = PtrResolutionManager(db, FakeResolver([]))
+
+    def fail():
+        raise RuntimeError("private database credentials")
+
+    monkeypatch.setattr(db, "connect", fail)
+    status = manager.status_snapshot()
+    assert status["last_error"] == "PTR resolver unavailable; see server logs"
+    assert "private database credentials" not in str(status)
+    assert "private database credentials" in caplog.text
+
+
 class FakeResolver:
     def __init__(self, results):
         self.nameservers = ["192.0.2.53"]

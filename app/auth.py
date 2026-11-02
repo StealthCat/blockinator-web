@@ -45,7 +45,7 @@ def verify_password(password: str, encoded: str) -> bool:
 
 
 def hash_api_key(raw: str) -> str:
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return hash_password(raw)
 
 
 def key_prefix(raw: str) -> str:
@@ -69,6 +69,8 @@ class AuthManager:
         self.db = db
         self._api_lock = threading.RLock()
         self._api_keys: dict[str, dict[str, Any]] = {}
+        self._verified_keys: dict[bytes, dict[str, Any]] = {}
+        self._cache_secret = secrets.token_bytes(32)
         self._last_used_write: dict[int, float] = {}
         self._usage_queue: queue.Queue[int] = queue.Queue(maxsize=256)
         self._usage_stop = threading.Event()
@@ -257,6 +259,7 @@ class AuthManager:
                 "SELECT id,name,key_hash,key_prefix FROM api_keys WHERE enabled=1"
             ).fetchall()
         with self._api_lock:
+            self._verified_keys.clear()
             self._api_keys = {
                 str(r["key_hash"]): {
                     "id": int(r["id"]), "name": str(r["name"]), "prefix": str(r["key_prefix"])
@@ -267,11 +270,24 @@ class AuthManager:
     def verify_api_key(self, raw: str | None) -> dict[str, Any] | None:
         if not raw:
             return None
-        hashed = hash_api_key(raw)
+        cache_key = hmac.digest(self._cache_secret, raw.encode("utf-8"), "sha256")
         with self._api_lock:
-            info = self._api_keys.get(hashed)
-        if info is None:
-            return None
+            info = self._verified_keys.get(cache_key)
+            if info is None:
+                # Compatibility with keys stored before 1.20.16. New writes use
+                # salted scrypt; rotating an old key upgrades its stored hash.
+                legacy = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+                info = self._api_keys.get(legacy)
+                if info is None:
+                    for encoded, candidate in self._api_keys.items():
+                        if encoded.startswith("scrypt$") and verify_password(raw, encoded):
+                            info = candidate
+                            break
+                if info is None:
+                    return None
+                if len(self._verified_keys) >= 256:
+                    self._verified_keys.clear()
+                self._verified_keys[cache_key] = info
         now = time.monotonic()
         key_id = int(info["id"])
         with self._api_lock:

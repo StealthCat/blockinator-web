@@ -2,6 +2,13 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.17 — Code-scanning security fixes
+
+1. Restrict redirect destinations, escape list identifiers in console HTML, hide PTR exception details from UI/API responses, and constrain live query refresh requests.
+2. Store newly created and rotated API keys with salted scrypt; keep existing SHA-256 keys valid until rotation and cache successful verification in memory.
+3. Restrict TLS artifacts to owner access, set least-privilege test workflow permissions, and pin Docker publishing actions to immutable commits.
+4. Replace ambiguous domain substring assertions with exact parsed-value checks and add security regressions.
+
 ## 1.20.16 — Dependency updates
 
 1. Update pydantic to 2.14.2, cryptography to 50.0.2, and dnspython to 2.9.1; require PyMySQL 1.2.3 or later (includes the 1.2.1 SQL-escaping security fix) and tzdata 2026.6 or later.

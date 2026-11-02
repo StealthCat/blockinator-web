@@ -13,6 +13,17 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from app.db import Database
+
+
+def test_atomic_writer_never_grants_world_access(tmp_path, monkeypatch):
+    from app.tls import TlsManager
+    modes = []
+    monkeypatch.setattr(os, "chmod", lambda path, mode: modes.append(mode))
+    manager = object.__new__(TlsManager)
+    target = tmp_path / "artifact.pem"
+    manager._write_atomic(target, b"certificate", 0o644)
+    assert modes == [0o600]
+    assert target.read_bytes() == b"certificate"
 from app.tls import (
     DEFAULT_ACME_DIRECTORY,
     TlsManager,
@@ -80,7 +91,7 @@ def test_uploaded_certificate_and_key_validation():
         key_pem,
         "blockinator.example.com",
     )
-    assert "blockinator.example.com" in info.dns_names
+    assert set(info.dns_names) == {"blockinator.example.com"}
     assert info.not_after > datetime.now(timezone.utc)
 
 
@@ -176,8 +187,10 @@ def test_configure_uploaded_certificate_applies_and_persists(tmp_path, monkeypat
     tls_loader = loaded[-1]["apps"]["tls"]["certificates"]["load_files"][0]
     assert tls_loader["certificate"] == "/blockinator-tls/uploaded-cert.pem"
     assert tls_loader["key"] == "/blockinator-tls/uploaded-key.pem"
-    assert stat.S_IMODE(os.stat(manager.cert_path).st_mode) == 0o644
-    assert stat.S_IMODE(os.stat(manager.key_path).st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(os.stat(manager.cert_path).st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(os.stat(manager.key_path).st_mode) == 0o600
 
 
 def test_configure_acme_custom_root_and_eab(tmp_path, monkeypatch):
@@ -202,7 +215,8 @@ def test_configure_acme_custom_root_and_eab(tmp_path, monkeypatch):
     assert db.get_setting("tls_acme_eab_key_id") == "key-id"
     assert manager.ca_root_path.exists()
     assert manager.eab_hmac_path.exists()
-    assert stat.S_IMODE(os.stat(manager.eab_hmac_path).st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(os.stat(manager.eab_hmac_path).st_mode) == 0o600
     issuer = loaded[-1]["apps"]["tls"]["automation"]["policies"][0]["issuers"][0]
     assert issuer["external_account"]["mac_key"] == "hmac-secret"
 

@@ -29,8 +29,8 @@ def test_dedicated_list_editor_contains_existing_edit_controls():
     assert 'id="schedule"' in source
     assert 'id="import-update"' in source
     assert 'id="preview"' in source
-    assert 'action="/admin/lists/{list_id}/edit"' in source
-    assert 'action="/admin/lists/{list_id}/delete"' in source
+    assert 'action="/admin/lists/{esc(list_id)}/edit"' in source
+    assert 'action="/admin/lists/{esc(list_id)}/delete"' in source
     assert 'name="source_url"' in source
     assert 'name="refresh_minutes"' in source
     assert 'name="global_list"' in source
@@ -86,6 +86,6 @@ def test_manual_domain_back_link_returns_to_list_editor():
     end = source.index('@app.post("/admin/lists/{list_id}/domains/add")', start)
     page = source[start:end]
 
-    assert 'href="{base_path}/{list_id}/edit">← Back to edit ' in page
+    assert 'href="{base_path}/{esc(list_id)}/edit">← Back to edit ' in page
     assert 'href="{base_path}#list-{list_id}">← Back to ' not in page
 

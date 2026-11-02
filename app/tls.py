@@ -356,7 +356,7 @@ class TlsManager:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.chmod(tmp_name, mode)
+            os.chmod(tmp_name, 0o600)
             os.replace(tmp_name, path)
         finally:
             if os.path.exists(tmp_name):

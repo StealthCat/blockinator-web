@@ -406,7 +406,12 @@
       }
       controller = new AbortController();
       var timeout = window.setTimeout(function () { controller.abort(); }, 15000);
-      fetch("/queries/rows" + window.location.search, { credentials: "same-origin", cache: "no-store", signal: controller.signal,
+      var refreshParams = new URLSearchParams();
+      var currentParams = new URLSearchParams(window.location.search);
+      ["q", "client", "server", "target", "blocklist", "decision", "limit", "refresh", "page", "snapshot", "start", "end", "match", "before", "after"].forEach(function (key) {
+        if (currentParams.has(key)) refreshParams.set(key, currentParams.get(key));
+      });
+      fetch("/queries/rows?" + refreshParams.toString(), { credentials: "same-origin", cache: "no-store", signal: controller.signal,
         headers: { "Accept": "text/html" } }).then(function (response) {
         if (response.redirected && new URL(response.url).pathname === "/login") {
           stopped = true;
@@ -791,3 +796,4 @@
   initializeQueryLogRefresh();
   initializeStatisticsDashboard();
 })();
+
