@@ -2,6 +2,7 @@
 import asyncio
 import importlib
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -546,9 +547,13 @@ def test_out_of_range_integers_are_client_errors(web, browser, path):
 def test_manual_list_search_treats_wildcards_literally(web, browser):
     list_id = create_list(web, browser, text="ads.example.org\nadsx.example.org")
     client, _ = browser
-    assert "adsx.example.org" in client.get(f"/lists/{list_id}/domains", params={"q": "adsx"}).text
+    def listed_domains(query):
+        page = client.get(f"/lists/{list_id}/domains", params={"q": query}).text
+        return re.findall(r'<span class="manual-domain-name mono">([^<]*)</span>', page)
+
+    assert listed_domains("adsx") == ["adsx.example.org"]
     for wildcard in ("%", "ads_."):
-        assert "adsx.example.org" not in client.get(f"/lists/{list_id}/domains", params={"q": wildcard}).text
+        assert listed_domains(wildcard) == []
 
 
 def test_concurrent_api_key_disables_keep_one_enabled(tmp_path, monkeypatch):

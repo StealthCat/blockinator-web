@@ -80,7 +80,7 @@ def test_uploaded_certificate_and_key_validation():
         key_pem,
         "blockinator.example.com",
     )
-    assert "blockinator.example.com" in info.dns_names
+    assert info.dns_names == ("blockinator.example.com",)
     assert info.not_after > datetime.now(timezone.utc)
 
 
@@ -126,9 +126,8 @@ def test_http_and_acme_native_json_rendering(tmp_path):
     manager._write_atomic(
         manager.ca_root_path,
         _certificate_pair("ca.example.com")[0],
-        0o644,
     )
-    manager._write_atomic(manager.eab_hmac_path, b"secret-hmac\n", 0o600)
+    manager._write_atomic(manager.eab_hmac_path, b"secret-hmac\n")
     acme = manager.render_caddy_json(
         TlsSettings(
             mode="acme",
@@ -176,7 +175,8 @@ def test_configure_uploaded_certificate_applies_and_persists(tmp_path, monkeypat
     tls_loader = loaded[-1]["apps"]["tls"]["certificates"]["load_files"][0]
     assert tls_loader["certificate"] == "/blockinator-tls/uploaded-cert.pem"
     assert tls_loader["key"] == "/blockinator-tls/uploaded-key.pem"
-    assert stat.S_IMODE(os.stat(manager.cert_path).st_mode) == 0o644
+    # Public and private TLS artifacts are both owner-only.
+    assert stat.S_IMODE(os.stat(manager.cert_path).st_mode) == 0o600
     assert stat.S_IMODE(os.stat(manager.key_path).st_mode) == 0o600
 
 
@@ -203,6 +203,7 @@ def test_configure_acme_custom_root_and_eab(tmp_path, monkeypatch):
     assert manager.ca_root_path.exists()
     assert manager.eab_hmac_path.exists()
     assert stat.S_IMODE(os.stat(manager.eab_hmac_path).st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(manager.ca_root_path).st_mode) == 0o600
     issuer = loaded[-1]["apps"]["tls"]["automation"]["policies"][0]["issuers"][0]
     assert issuer["external_account"]["mac_key"] == "hmac-secret"
 
@@ -212,8 +213,8 @@ def test_failed_caddy_load_restores_previous_files_and_settings(tmp_path, monkey
     old_cert, old_key = _certificate_pair("old.example.com")
     new_cert, new_key = _certificate_pair("new.example.com")
 
-    manager._write_atomic(manager.cert_path, old_cert, 0o644)
-    manager._write_atomic(manager.key_path, old_key, 0o600)
+    manager._write_atomic(manager.cert_path, old_cert)
+    manager._write_atomic(manager.key_path, old_key)
     db.set_setting("tls_mode", "upload")
     db.set_setting("tls_hostname", "old.example.com")
 

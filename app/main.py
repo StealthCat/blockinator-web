@@ -3,13 +3,15 @@ from __future__ import annotations
 import html
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
+import urllib.error
 from datetime import datetime, time as dt_time, timezone
 from time import perf_counter_ns
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
@@ -35,7 +37,9 @@ from .inspector import inspect_policy, target_status
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.20.16"
+log = logging.getLogger("blockinator")
+
+APP_VERSION = "1.20.17"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),
@@ -514,7 +518,41 @@ def log_client_names(rows) -> dict[str, str | None]:
     return names
 
 
+def public_failure(action: str, exc: BaseException) -> str:
+    """Describe a failed console action without exposing internal details.
+
+    Validation errors carry messages written for administrators. Anything
+    else (database, network, Caddy, programming errors) is logged with its
+    traceback server-side and summarized generically in the console.
+    """
+    if isinstance(exc, ValueError):
+        return f"{action}: {exc}"
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"{action}: the source returned HTTP {int(exc.code)}"
+    log.error("%s failed", action, exc_info=(type(exc), exc, exc.__traceback__))
+    if isinstance(exc, OSError):
+        return f"{action}: a network or file error occurred; details are in the server log"
+    return f"{action}; details are in the server log"
+
+
+def local_redirect_path(path: str) -> str:
+    """Return ``path`` when it is an application-local path, otherwise ``/``.
+
+    Rejects absolute URLs, scheme-relative and browser-normalized network
+    paths (``//host``, ``/\\host``, or tabs/newlines that browsers strip).
+    """
+    if not isinstance(path, str) or not path.startswith("/") or path.startswith("//"):
+        return "/"
+    if "\\" in path or any(ord(char) < 0x20 or ord(char) == 0x7F for char in path):
+        return "/"
+    target = urlsplit(path)
+    if target.scheme or target.netloc:
+        return "/"
+    return path
+
+
 def redirect(path: str, notice: str | None = None, error: str | None = None):
+    path = local_redirect_path(path)
     parts = []
     if notice:
         parts.append("notice=" + quote(notice))
@@ -760,7 +798,9 @@ def readyz():
 def runtime_status(request: Request):
     require_session(request)
     return JSONResponse({"policy_generation": engine.generation,
-                         "policy_reload_error": engine.last_reload_error,
+                         "policy_reload_error": (
+                             "Policy reload failed; see the server log" if engine.last_reload_error else None
+                         ),
                          "logger": engine.logger.status(),
                          "refresher": refresher.status(),
                          "ptr": engine.ptr_status()}, headers={"Cache-Control": "no-store"})
@@ -1234,6 +1274,8 @@ def managed_list_edit_page(list_id: int, request: Request):
         if not blocklist:
             return redirect("/lists", error="List not found")
 
+        # Render links from the stored row id, never the raw request value.
+        list_id = int(blocklist["id"])
         base_path = _list_base_path(blocklist)
         requested_path = request.url.path
         if requested_path.startswith("/whitelists/") and base_path != "/whitelists":
@@ -1629,6 +1671,8 @@ def manual_list_domains_page(
         return redirect("/lists", error=error)
 
     assert blocklist is not None
+    # Render links from the stored row id, never the raw request value.
+    list_id = int(blocklist["id"])
     base_path = _list_base_path(blocklist)
     list_label = _list_label(blocklist)
     page_title = "Whitelist" if list_label == "whitelist" else "Block List"
@@ -1674,7 +1718,7 @@ def manual_list_domains_page(
                   <input type="hidden" name="csrf_token" value="{esc(s.csrf_token)}">
                   <input type="hidden" name="domain" value="{esc(domain)}">
                   <input type="hidden" name="return_q" value="{esc(q)}">
-                  <input type="hidden" name="return_page" value="{page_num}">
+                  <input type="hidden" name="return_page" value="{esc(page_num)}">
                   <button class="small-button danger" type="submit">Remove</button>
                 </form>
               </td>
@@ -1686,13 +1730,14 @@ def manual_list_domains_page(
         + "</td></tr>"
     )
 
-    query_suffix = "&q=" + quote(q) if q else ""
+    # URL-encode for the query string, then HTML-escape for the attribute.
+    query_suffix = esc("&q=" + quote(q)) if q else ""
     prev_link = (
-        f'<a class="small-button" href="{base_path}/{list_id}/domains?page_num={page_num - 1}{query_suffix}">← Previous</a>'
+        f'<a class="small-button" href="{base_path}/{list_id}/domains?page_num={esc(page_num - 1)}{query_suffix}">← Previous</a>'
         if page_num > 1 else '<span class="small-button disabled">← Previous</span>'
     )
     next_link = (
-        f'<a class="small-button" href="{base_path}/{list_id}/domains?page_num={page_num + 1}{query_suffix}">Next →</a>'
+        f'<a class="small-button" href="{base_path}/{list_id}/domains?page_num={esc(page_num + 1)}{query_suffix}">Next →</a>'
         if page_num < max_page else '<span class="small-button disabled">Next →</span>'
     )
 
@@ -1743,7 +1788,7 @@ def manual_list_domains_page(
             <div>
               <div class="panel-kicker">List entries</div>
               <h3>Domains</h3>
-              <p>{total:,} matching domain{"s" if total != 1 else ""} · page {page_num} of {max_page}</p>
+              <p>{total:,} matching domain{"s" if total != 1 else ""} · page {esc(page_num)} of {max_page}</p>
             </div>
             <span class="result-count">{total:,} results</span>
           </div>
@@ -1763,7 +1808,7 @@ def manual_list_domains_page(
 
           <div class="manual-domain-pagination">
             {prev_link}
-            <span>Page {page_num} of {max_page}</span>
+            <span>Page {esc(page_num)} of {max_page}</span>
             {next_link}
           </div>
         </section>
@@ -1933,7 +1978,7 @@ def add_list(request: Request):
         try:
             content = fetch_url(source_url)
         except Exception as e:
-            return redirect(base_path, error=f"Could not fetch list URL: {e}")
+            return redirect(base_path, error=public_failure("Could not fetch list URL", e))
         source_type = "url"
 
     if not content.strip():
@@ -1970,7 +2015,7 @@ def add_list(request: Request):
         except Exception as e:
             if con.in_transaction:
                 con.execute("ROLLBACK")
-            return redirect(base_path, error=f"Import failed: {e}")
+            return redirect(base_path, error=public_failure("Import failed", e))
     count, ignored = len(parsed.domains), parsed.ignored
 
     engine.reload()
@@ -2052,7 +2097,7 @@ def edit_list(list_id: int, request: Request):
         elif source_type == "url":
             source_type = "manual"
     except Exception as e:
-        return redirect(f"{base_path}/{list_id}/edit", error=f"Could not refresh list: {e}")
+        return redirect(f"{base_path}/{list_id}/edit", error=public_failure("Could not refresh list", e))
 
     parsed = None
     if replacement_content is not None:
@@ -2103,7 +2148,7 @@ def edit_list(list_id: int, request: Request):
             con.execute("COMMIT")
         except Exception as e:
             con.execute("ROLLBACK")
-            return redirect(f"{base_path}/{list_id}/edit", error=f"Could not save list: {e}")
+            return redirect(f"{base_path}/{list_id}/edit", error=public_failure("Could not save list", e))
 
     replaced_notice = (f"; replaced contents with {len(parsed.domains):,} entries ({parsed.ignored:,} ignored)" if parsed is not None else "")
 
@@ -2491,7 +2536,7 @@ def scopes_page(request: Request, q: str = "", kind: str = "",
         return page(request, "Edit " + target_label.lower(), "scopes", '<a class="text-link" href="/scopes">← All policy targets</a>' + cards, s)
     type_options = "".join(f'<option value="{value}"{" selected" if kind == value else ""}>{label}</option>'
                            for value, label in (("", "All types"), ("network", "Networks"), ("client", "Endpoints"), ("hostname", "Hostnames")))
-    pagination = f'<span>Page {page_number:,} of {pages:,}</span>'
+    pagination = f'<span>Page {esc(f"{page_number:,}")} of {pages:,}</span>'
     for number, label in ((page_number - 1, "Previous"), (page_number + 1, "Next")):
         if 1 <= number <= pages:
             url = "/scopes?" + urlencode({"q": q, "kind": kind, "page": number})
@@ -2729,7 +2774,7 @@ def edit_scope(scope_id: int, request: Request):
             con.execute("COMMIT")
         except Exception as e:
             con.execute("ROLLBACK")
-            return redirect(f"/scopes/{scope_id}/edit", error=f"Could not save scope: {e}")
+            return redirect(f"/scopes/{scope_id}/edit", error=public_failure("Could not save scope", e))
 
     engine.reload_scopes()
     return redirect(
@@ -2898,7 +2943,7 @@ def queries_page(
     controls = []
     if page_number > 1:
         controls.extend([page_link(1, "First"), page_link(page_number - 1, "Previous", **({"after": rows[0]["id"]} if rows else {}))])
-    controls.append(f'<span aria-current="page">Page {page_number:,} of {pages:,}</span>')
+    controls.append(f'<span aria-current="page">Page {esc(f"{page_number:,}")} of {pages:,}</span>')
     if page_number < pages:
         controls.extend([page_link(page_number + 1, "Next", **({"before": rows[-1]["id"]} if rows else {})), page_link(pages, "Last")])
     latest_url = "/queries?" + urlencode(parameters)
@@ -2937,7 +2982,7 @@ def queries_page(
 
     match_options = "".join(f'<option value="{value}"{" selected" if match == value else ""}>{label}</option>'
                             for value, label in (("contains", "Contains"), ("prefix", "Starts with"), ("exact", "Exact match")))
-    body = f'''<section class="panel" data-query-log-refresh="{refresh}" data-query-snapshot="{1 if pinned else 0}">
+    body = f'''<section class="panel" data-query-log-refresh="{esc(refresh)}" data-query-snapshot="{1 if pinned else 0}">
       <div class="panel-head query-head">
         <div><div class="panel-kicker">DNS activity</div><h3>Decision history</h3>
         <p>{esc(summary)}</p></div>
@@ -2959,7 +3004,7 @@ def queries_page(
         </select></label>
         <label>From ({esc(display_timezone)})<input type="datetime-local" step="1" name="start" value="{esc(start)}"></label>
         <label>Through ({esc(display_timezone)})<input type="datetime-local" step="1" name="end" value="{esc(end)}"></label>
-        <label>Results per page<input type="number" name="limit" min="25" max="500" step="1" value="{limit}"></label>
+        <label>Results per page<input type="number" name="limit" min="25" max="500" step="1" value="{esc(limit)}"></label>
         <label>Auto refresh<select name="refresh" title="Query log auto refresh interval">{refresh_options}</select></label>
         <button class="primary-button">Filter</button>
       </form>
@@ -3013,10 +3058,14 @@ def policy_test_page(request: Request, client: str = "", domain: str = "", recor
     result_html = ""
     zone = system_default_timezone()
     if client or domain:
+        failure = "Client IP must be a valid IPv4 or IPv6 address"
         try:
             address = str(ipaddress.ip_address(client.strip()))
+            failure = "Enter a valid domain name and DNS record type"
             question = Question(name=domain.strip(), type=record_type)
+            failure = "Preview time must be a valid local date and time"
             when = datetime.fromisoformat(query_range_bound(at, zone)) if at else datetime.now(timezone.utc)
+            failure = "The policy preview could not be generated"
             result = inspect_policy(engine, address, question.name, question.type, when)
             decision = result["decision"]
             outcome = "Ignored" if result["ignored"] else "Blocked" if decision["block"] else "Allowed"
@@ -3035,8 +3084,10 @@ def policy_test_page(request: Request, client: str = "", domain: str = "", recor
               <p class="panel-help">An active whitelist target overrides filtering targets. Otherwise the highest-priority matching target (endpoint, then hostname, then network) supplies scoped lists and pause behavior. Global lists still apply; whitelist domains win. Global pause and ignored types bypass filtering.</p>
               <h4>Matching targets and schedules</h4><div class="table-wrap"><table><thead><tr><th>Target</th><th>Mode</th><th>Schedule</th></tr></thead><tbody>{scope_rows}</tbody></table></div>
               <h4>Applicable lists before bypass rules</h4><div class="table-wrap"><table><thead><tr><th>List</th><th>Type</th><th>Schedule</th><th>Domain match</th></tr></thead><tbody>{list_rows}</tbody></table></div></section>'''
-        except (ValueError, TypeError) as exc:
-            result_html = f'<div class="flash bad" role="alert">{esc(str(exc))}</div>'
+        except (ValueError, TypeError):
+            # Exception text can carry internal detail; keep it in the server log.
+            log.info("Policy preview rejected: %s", failure, exc_info=True)
+            result_html = f'<div class="flash bad" role="alert">{esc(failure)}</div>'
     body = f'''<section class="panel"><h3>Test a policy decision</h3><p>Uses the active policy and currently learned PTR name. This preview does not send DNS requests, create log rows, or change settings.</p>
       <form method="get" class="form-grid"><label>Client IP<input name="client" value="{esc(client)}" required placeholder="192.168.1.42"></label>
       <label>Domain<input name="domain" value="{esc(domain)}" required placeholder="example.com"></label>
@@ -3817,7 +3868,7 @@ def save_tls_settings(request: Request):
             remove_eab_hmac=str(form.get("remove_acme_eab_hmac", "")) == "1",
         )
     except Exception as exc:
-        return redirect("/settings#tls", error=f"TLS settings were not applied: {exc}")
+        return redirect("/settings#tls", error=public_failure("TLS settings were not applied", exc))
 
     mode_label = {
         "http": "HTTP-only mode",

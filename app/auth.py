@@ -44,7 +44,35 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
-def hash_api_key(raw: str) -> str:
+# API keys are looked up on every DNS decision request, so their digest must
+# be deterministic. Use scrypt with a random installation-wide salt (stored in
+# settings) instead of a fast hash; verified keys are cached in memory so the
+# KDF runs once per key per process, not once per request.
+API_KEY_SCRYPT_N, API_KEY_SCRYPT_R, API_KEY_SCRYPT_P = 2**13, 8, 1
+API_KEY_SALT_SETTING = "api_key_kdf_salt"
+API_KEY_HASH_PREFIX = f"scrypt${API_KEY_SCRYPT_N}${API_KEY_SCRYPT_R}${API_KEY_SCRYPT_P}$"
+_API_KEY_CACHE_LIMIT = 256
+
+
+def hash_api_key(raw: str, salt: bytes) -> str:
+    digest = hashlib.scrypt(
+        raw.encode("utf-8"),
+        salt=salt,
+        n=API_KEY_SCRYPT_N,
+        r=API_KEY_SCRYPT_R,
+        p=API_KEY_SCRYPT_P,
+        dklen=32,
+    )
+    return API_KEY_HASH_PREFIX + digest.hex()
+
+
+def is_legacy_api_key_hash(stored: str) -> bool:
+    """True for keys stored before 1.20.17 as unsalted SHA-256 hex digests."""
+    return len(stored) == 64 and all(c in "0123456789abcdef" for c in stored)
+
+
+def legacy_api_key_hash(raw: str) -> str:
+    """Pre-1.20.17 digest, used only to upgrade existing keys on first use."""
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -69,14 +97,33 @@ class AuthManager:
         self.db = db
         self._api_lock = threading.RLock()
         self._api_keys: dict[str, dict[str, Any]] = {}
+        self._legacy_api_keys: dict[str, dict[str, Any]] = {}
+        self._verified_api_keys: dict[str, str] = {}
+        self._rejected_api_keys: dict[str, None] = {}
         self._last_used_write: dict[int, float] = {}
         self._usage_queue: queue.Queue[int] = queue.Queue(maxsize=256)
         self._usage_stop = threading.Event()
         self._usage_thread: threading.Thread | None = None
+        self._api_key_salt = self._load_api_key_salt()
         if bootstrap:
             self.bootstrap_from_environment()
         self.reload_api_keys()
         self.cleanup_sessions()
+
+    def _load_api_key_salt(self) -> bytes:
+        """Return the installation's API-key KDF salt, creating it once.
+
+        INSERT OR IGNORE keeps the first salt if several processes race.
+        """
+        with self.db.connect() as con:
+            con.execute(
+                "INSERT OR IGNORE INTO settings(`key`,value) VALUES(?,?)",
+                (API_KEY_SALT_SETTING, secrets.token_hex(16)),
+            )
+        return bytes.fromhex(self.db.get_setting(API_KEY_SALT_SETTING))
+
+    def _api_key_digest(self, raw: str) -> str:
+        return hash_api_key(raw, self._api_key_salt)
 
     def close(self) -> None:
         self._usage_stop.set()
@@ -154,7 +201,7 @@ class AuthManager:
             if key_count == 0:
                 con.execute(
                     "INSERT INTO api_keys(name,key_hash,key_prefix) VALUES(?,?,?)",
-                    ("Primary", hash_api_key(raw), key_prefix(raw)),
+                    ("Primary", self._api_key_digest(raw), key_prefix(raw)),
                 )
 
     # ---- administrator authentication ----
@@ -256,22 +303,68 @@ class AuthManager:
             rows = con.execute(
                 "SELECT id,name,key_hash,key_prefix FROM api_keys WHERE enabled=1"
             ).fetchall()
+        current: dict[str, dict[str, Any]] = {}
+        legacy: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            stored = str(r["key_hash"])
+            info = {"id": int(r["id"]), "name": str(r["name"]), "prefix": str(r["key_prefix"])}
+            (legacy if is_legacy_api_key_hash(stored) else current)[stored] = info
         with self._api_lock:
-            self._api_keys = {
-                str(r["key_hash"]): {
-                    "id": int(r["id"]), "name": str(r["name"]), "prefix": str(r["key_prefix"])
-                }
-                for r in rows
-            }
+            self._api_keys = current
+            self._legacy_api_keys = legacy
+            # A rejected key may since have been created; re-derive on next use.
+            self._rejected_api_keys.clear()
+
+    def _remember_api_key(self, cache: dict, raw: str, value) -> None:
+        with self._api_lock:
+            if len(cache) >= _API_KEY_CACHE_LIMIT:
+                cache.pop(next(iter(cache)))
+            cache[raw] = value
+
+    def _upgrade_legacy_api_key(self, raw: str) -> dict[str, Any] | None:
+        """Re-store a pre-1.20.17 SHA-256 key with the scrypt digest."""
+        with self._api_lock:
+            if not self._legacy_api_keys:
+                return None
+        legacy = legacy_api_key_hash(raw)
+        with self._api_lock:
+            info = self._legacy_api_keys.get(legacy)
+        if info is None:
+            return None
+        digest = self._api_key_digest(raw)
+        try:
+            with self.db.connect() as con:
+                con.execute(
+                    "UPDATE api_keys SET key_hash=? WHERE id=? AND key_hash=?",
+                    (digest, info["id"], legacy),
+                )
+        except Exception:
+            # Keep authenticating with the legacy digest; retry next reload.
+            return info
+        with self._api_lock:
+            self._legacy_api_keys.pop(legacy, None)
+            self._api_keys[digest] = info
+        return info
 
     def verify_api_key(self, raw: str | None) -> dict[str, Any] | None:
         if not raw:
             return None
-        hashed = hash_api_key(raw)
+        with self._api_lock:
+            hashed = self._verified_api_keys.get(raw)
+            if hashed is None and raw in self._rejected_api_keys:
+                return None
+        if hashed is None:
+            hashed = self._api_key_digest(raw)
         with self._api_lock:
             info = self._api_keys.get(hashed)
         if info is None:
+            info = self._upgrade_legacy_api_key(raw)
+        if info is None:
+            with self._api_lock:
+                self._verified_api_keys.pop(raw, None)
+            self._remember_api_key(self._rejected_api_keys, raw, None)
             return None
+        self._remember_api_key(self._verified_api_keys, raw, hashed)
         now = time.monotonic()
         key_id = int(info["id"])
         with self._api_lock:
@@ -298,7 +391,7 @@ class AuthManager:
             with self.db.connect() as con:
                 cur = con.execute(
                     "INSERT INTO api_keys(name,key_hash,key_prefix) VALUES(?,?,?)",
-                    (name, hash_api_key(raw), key_prefix(raw)),
+                    (name, self._api_key_digest(raw), key_prefix(raw)),
                 )
                 key_id = int(cur.lastrowid)
         except Exception as e:
@@ -313,7 +406,7 @@ class AuthManager:
         with self.db.connect() as con:
             cur = con.execute(
                 "UPDATE api_keys SET key_hash=?,key_prefix=?,updated_at=CURRENT_TIMESTAMP,last_used_at=NULL WHERE id=?",
-                (hash_api_key(raw), key_prefix(raw), key_id),
+                (self._api_key_digest(raw), key_prefix(raw), key_id),
             )
             if cur.rowcount != 1:
                 raise ValueError("API key not found")
