@@ -5,5 +5,5 @@ python-multipart==0.0.31
 pydantic==2.11.7
 dnspython==2.9.0
 tzdata>=2025.2
-cryptography==50.0.1
+cryptography==50.0.2
 PyMySQL>=1.1.1,<2
