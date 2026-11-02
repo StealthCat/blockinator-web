@@ -348,7 +348,11 @@ class TlsManager:
         self._caddy_reachable = True
         self._managed_config_present = True
 
-    def _write_atomic(self, path: Path, data: bytes, mode: int) -> None:
+    # Caddy (root in the bundled Compose stack) and Blockinator both run as
+    # the file owner, so every TLS artifact, public or private, stays owner-only.
+    TLS_FILE_MODE = 0o600
+
+    def _write_atomic(self, path: Path, data: bytes) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
         try:
@@ -356,7 +360,7 @@ class TlsManager:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.chmod(tmp_name, mode)
+            os.chmod(tmp_name, self.TLS_FILE_MODE)
             os.replace(tmp_name, path)
         finally:
             if os.path.exists(tmp_name):
@@ -370,8 +374,7 @@ class TlsManager:
             if data is None:
                 path.unlink(missing_ok=True)
             else:
-                mode = 0o600 if path in {self.key_path, self.eab_hmac_path} else 0o644
-                self._write_atomic(path, data, mode)
+                self._write_atomic(path, data)
 
     def _redact_caddy_error(self, value: str) -> str:
         redacted = value
@@ -642,21 +645,20 @@ class TlsManager:
             previous_hash = _config_hash(previous_config)
             try:
                 if certificate_pem is not None:
-                    self._write_atomic(self.cert_path, certificate_pem, 0o644)
+                    self._write_atomic(self.cert_path, certificate_pem)
                 if private_key_pem is not None:
-                    self._write_atomic(self.key_path, private_key_pem, 0o600)
+                    self._write_atomic(self.key_path, private_key_pem)
                 if remove_ca_root:
                     self.ca_root_path.unlink(missing_ok=True)
                 elif ca_root_pem is not None:
                     validate_ca_root(ca_root_pem)
-                    self._write_atomic(self.ca_root_path, ca_root_pem, 0o644)
+                    self._write_atomic(self.ca_root_path, ca_root_pem)
                 if remove_eab_hmac:
                     self.eab_hmac_path.unlink(missing_ok=True)
                 elif eab_hmac is not None and eab_hmac.strip():
                     self._write_atomic(
                         self.eab_hmac_path,
                         eab_hmac.strip().encode("utf-8") + b"\n",
-                        0o600,
                     )
 
                 cert_info: CertificateInfo | None = None

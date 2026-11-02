@@ -398,6 +398,19 @@
       return dirty || panel.querySelector("details[open]") ||
         (panel.contains(document.activeElement) && document.activeElement !== document.body);
     }
+    // Rebuild the refresh request from a fixed same-origin path and only the
+    // filter parameters /queries/rows understands.
+    var QUERY_ROW_PARAMS = ["q", "client", "server", "target", "blocklist", "decision", "limit",
+      "refresh", "page", "snapshot", "start", "end", "match", "before", "after"];
+    function queryRowsUrl() {
+      var current = new URLSearchParams(window.location.search);
+      var params = new URLSearchParams();
+      QUERY_ROW_PARAMS.forEach(function (name) {
+        current.getAll(name).forEach(function (value) { params.append(name, value); });
+      });
+      var query = params.toString();
+      return "/queries/rows" + (query ? "?" + query : "");
+    }
     function refresh() {
       if (document.hidden || interacting()) {
         if (status) status.textContent = dirty ? "Apply filters to resume live updates" : "Live updates paused while viewing";
@@ -406,7 +419,7 @@
       }
       controller = new AbortController();
       var timeout = window.setTimeout(function () { controller.abort(); }, 15000);
-      fetch("/queries/rows" + window.location.search, { credentials: "same-origin", cache: "no-store", signal: controller.signal,
+      fetch(queryRowsUrl(), { credentials: "same-origin", cache: "no-store", signal: controller.signal,
         headers: { "Accept": "text/html" } }).then(function (response) {
         if (response.redirected && new URL(response.url).pathname === "/login") {
           stopped = true;
