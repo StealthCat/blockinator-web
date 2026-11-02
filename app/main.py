@@ -35,7 +35,7 @@ from .inspector import inspect_policy, target_status
 from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_redirect_change
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.20.13"
+APP_VERSION = "1.20.14"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),

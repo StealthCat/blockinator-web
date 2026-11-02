@@ -2,6 +2,11 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.14 — Dependency security checks
+
+1. Enable weekly Dependabot updates for Python packages, Docker base images, and GitHub Actions, mirroring MrPatchy.
+2. Enable dependency alerts, grouped security updates, CodeQL extended scans, and AI scans in repository settings.
+
 ## 1.20.13 — README release overview
 
 - Summarize the v1.20.12 application fixes and upgrade considerations in the README.
