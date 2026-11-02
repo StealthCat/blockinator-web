@@ -6,7 +6,7 @@
 
 Self-hosted DNS policy management with block lists, whitelists, schedules, and query history. Your DNS server sends query metadata; Blockinator returns an allow/block decision. Connect Technitium using the [companion plugin](https://github.com/StealthCat/blockinator-technitium).
 
-Current source version: **1.20.17** · [Changelog](CHANGELOG.md) · [Releases](https://github.com/StealthCat/blockinator-web/releases)
+Current source version: **1.20.18** · [Changelog](CHANGELOG.md) · [Releases](https://github.com/StealthCat/blockinator-web/releases)
 
 ## Latest application release: v1.20.12
 

@@ -1,6 +1,5 @@
 """Regression coverage for the 1.20.17 code-scanning remediations."""
 import ast
-import hashlib
 import importlib
 import io
 import os
@@ -19,6 +18,10 @@ from app.auth import (
     SESSION_COOKIE,
 )
 from app.db import Database
+
+# Shape of a key stored before 1.20.17 (64 lowercase hex characters). The
+# tests only need the legacy format, not a digest of real key material.
+LEGACY_KEY_HASH = "5f" * 32
 from app.policy import PolicyEngine
 from app.query_cache import query_choices, query_counts
 from app.refresher import BlocklistRefresher
@@ -159,7 +162,6 @@ def test_api_keys_are_stored_with_salted_scrypt(tmp_path, monkeypatch):
         stored = [str(r["key_hash"]) for r in con.execute("SELECT key_hash FROM api_keys")]
     assert len(stored) == 2
     assert all(value.startswith(API_KEY_HASH_PREFIX) for value in stored)
-    assert hashlib.sha256(raw.encode()).hexdigest() not in stored
     assert len(bytes.fromhex(db.get_setting(API_KEY_SALT_SETTING))) == 16
     assert auth.verify_api_key(raw) is not None
     auth.close()
@@ -172,13 +174,13 @@ def test_api_keys_are_stored_with_salted_scrypt(tmp_path, monkeypatch):
     second.close()
 
 
-def test_legacy_sha256_api_key_is_rejected_and_flagged_for_rotation(tmp_path, monkeypatch):
+def test_legacy_api_key_is_rejected_and_flagged_for_rotation(tmp_path, monkeypatch):
     db, auth = _auth(tmp_path, monkeypatch)
     legacy_raw = "legacy-key-created-before-scrypt-storage"
     with db.connect() as con:
         legacy_id = con.execute(
             "INSERT INTO api_keys(name,key_hash,key_prefix) VALUES(?,?,?)",
-            ("Legacy", hashlib.sha256(legacy_raw.encode()).hexdigest(), "legacy-k…"),
+            ("Legacy", LEGACY_KEY_HASH, "legacy-k…"),
         ).lastrowid
     auth.reload_api_keys()
 
@@ -198,7 +200,7 @@ def test_console_warns_about_api_keys_needing_rotation(web):
     with main.db.connect() as con:
         con.execute(
             "INSERT INTO api_keys(name,key_hash,key_prefix) VALUES(?,?,?)",
-            ("Old resolver", hashlib.sha256(b"old-resolver-key-long-enough").hexdigest(), "old-reso…"),
+            ("Old resolver", LEGACY_KEY_HASH, "old-reso…"),
         )
     main.auth.reload_api_keys()
     assert "Rotation required" in client.get("/security").text

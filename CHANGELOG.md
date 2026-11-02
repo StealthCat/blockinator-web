@@ -2,6 +2,10 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.18 — Test cleanup for code scanning
+
+1. Represent pre-1.20.17 API keys in tests with a fixed legacy-format placeholder instead of hashing sample keys with SHA-256, which code scanning reported as weak hashing of a credential. No application changes.
+
 ## 1.20.17 — Code-scanning remediations
 
 1. **Breaking — rotate API keys after upgrading.** API keys are now stored as salted scrypt digests (per-installation salt) instead of unsalted SHA-256, and keys created before 1.20.17 no longer authenticate. They are marked "Rotation required" in Access & Security and listed on the dashboard; rotate each one (or create a new key) and update the DNS server plugin. Verified keys are cached in memory so DNS decision requests do not re-run the KDF.
