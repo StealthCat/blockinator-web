@@ -2,6 +2,26 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.24 — FastAPI update
+
+1. Update FastAPI from 0.116.1 to 0.162.0.
+
+## 1.20.23 — Uvicorn update
+
+1. Update Uvicorn from 0.35.0 to 0.54.0.
+
+## 1.20.22 — Docker login action update
+
+1. Update the pinned docker/login-action from v4.7.0 to v4.8.0.
+
+## 1.20.21 — python-multipart update
+
+1. Update python-multipart from 0.0.31 to 0.0.33.
+
+## 1.20.20 — dnspython security update
+
+1. Require dnspython 2.9.2 or later to address CVE-2026-128089 (GHSA-vvf4-9x63-8xvv), which allows excessive memory and CPU consumption when parsing malicious WKS records in text format.
+
 ## 1.20.19 — Complete local redirect hardening
 
 1. Rebuild validated redirect destinations from a fixed application-local root, so request-derived list identifiers cannot control the URL prefix. Resolves the remaining CodeQL URL-redirection finding (#19).
