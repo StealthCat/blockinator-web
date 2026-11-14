@@ -2,6 +2,10 @@
 
 Versions 1.19.3–1.19.13 were assigned retrospectively to completed main-branch updates when version tracking was corrected in 1.19.13. These entries describe source changes, not separately published releases or Docker tags. The existing published v1.19.2 tag is unchanged and includes some subsequently numbered work.
 
+## 1.20.24 — FastAPI update
+
+1. Update FastAPI from 0.116.1 to 0.162.0.
+
 ## 1.20.23 — Uvicorn update
 
 1. Update Uvicorn from 0.35.0 to 0.54.0.
