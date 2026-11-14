@@ -39,7 +39,7 @@ from .tls import DEFAULT_ACME_DIRECTORY, TlsManager, TlsSettings, validate_http_
 BASE_DIR = Path(__file__).resolve().parent
 log = logging.getLogger("blockinator")
 
-APP_VERSION = "1.20.20"
+APP_VERSION = "1.20.21"
 
 DNS_RECORD_TYPE_OPTIONS = (
     ("A", "IPv4 host addresses"),
